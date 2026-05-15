@@ -1,0 +1,240 @@
+package edu.whut.eval.app.security;
+
+import edu.whut.eval.application.auth.model.AuthenticatedUserSnapshot;
+import edu.whut.eval.application.auth.service.LoginAuthenticationService;
+import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
+import edu.whut.eval.common.exception.AuthenticationFailedException;
+import edu.whut.eval.domain.iam.model.IamScopeRule;
+import edu.whut.eval.application.auth.service.RefreshTokenCurrentUserLoader;
+import edu.whut.eval.infra.security.config.JwtConfigurationValidator;
+import edu.whut.eval.infra.security.config.SecurityConfiguration;
+import edu.whut.eval.infra.security.jwt.JwtAuthenticationFilter;
+import edu.whut.eval.infra.security.jwt.JwtClaimsParser;
+import edu.whut.eval.infra.security.jwt.JwtClaimsToCurrentUserMapper;
+import edu.whut.eval.infra.security.jwt.JwtTokenIssuer;
+import edu.whut.eval.infra.security.jwt.JwtTokenResolver;
+import edu.whut.eval.infra.security.jwt.RefreshTokenClaimsMapper;
+import edu.whut.eval.infra.security.web.RestAccessDeniedHandler;
+import edu.whut.eval.infra.security.web.RestAuthenticationEntryPoint;
+import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.Date;
+import java.util.List;
+import java.util.Set;
+
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@WebMvcTest(controllers = AuthController.class)
+@ContextConfiguration(classes = AuthControllerWebMvcTest.TestApplication.class)
+@Import({
+        AuthController.class,
+        AuthTokenResponseAssembler.class,
+        SecurityConfiguration.class,
+        RestAuthenticationEntryPoint.class,
+        RestAccessDeniedHandler.class,
+        JwtAuthenticationFilter.class,
+        JwtTokenResolver.class,
+        JwtClaimsParser.class,
+        JwtClaimsToCurrentUserMapper.class,
+        JwtTokenIssuer.class,
+        RefreshTokenClaimsMapper.class,
+        JwtConfigurationValidator.class,
+        GlobalExceptionHandler.class
+})
+@TestPropertySource(properties = {
+        "infra.security.jwt.enabled=true",
+        "infra.security.jwt.algorithm=HS256",
+        "infra.security.jwt.issuer=whut-eval",
+        "infra.security.jwt.audience=whut-eval-api",
+        "infra.security.jwt.access-token-ttl-seconds=7200",
+        "infra.security.jwt.refresh-token-ttl-seconds=604800",
+        "infra.security.jwt.clock-skew-seconds=60",
+        "infra.security.jwt.secret=test-jwt-secret-should-be-long-enough-1234567890",
+        "infra.security.jwt.user-id-claim=uid",
+        "infra.security.jwt.user-no-claim=uno",
+        "infra.security.jwt.user-name-claim=uname",
+        "infra.security.jwt.identity-claim=identity",
+        "infra.security.jwt.roles-claim=roles",
+        "infra.security.jwt.authorities-claim=authorities",
+        "infra.security.jwt.token-type-claim=token_type",
+        "infra.security.jwt.access-token-type=access",
+        "infra.security.jwt.refresh-token-type=refresh"
+})
+class AuthControllerWebMvcTest {
+
+    private static final String SECRET = "test-jwt-secret-should-be-long-enough-1234567890";
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @MockBean
+    private RefreshTokenCurrentUserLoader refreshTokenCurrentUserLoader;
+
+    @MockBean
+    private LoginAuthenticationService loginAuthenticationService;
+
+    @MockBean
+    private UserAuthorizationContextLoader userAuthorizationContextLoader;
+
+    @Test
+    void shouldIssueTokenPairWhenLoginSucceeds() throws Exception {
+        given(loginAuthenticationService.authenticate(eq("2024305999"), eq("secret")))
+                .willReturn(new AuthenticatedUserSnapshot(
+                        1001L,
+                        "2024305999",
+                        "Test User",
+                        "student",
+                        Set.of("student", "class-monitor"),
+                        Set.of("application.view.self", "application.view.assigned"),
+                        List.of(new IamScopeRule(
+                                101L,
+                                "application.view.self",
+                                "SELF",
+                                null,
+                                null,
+                                null,
+                                "{\"applicantUserId\":{\"eq\":\"currentUser.userId\"}}",
+                                10,
+                                "ACTIVE"
+                        ))
+                ));
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"credential\":\"2024305999\",\"password\":\"secret\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("OK"))
+                .andExpect(jsonPath("$.data.accessToken").isString())
+                .andExpect(jsonPath("$.data.refreshToken").isString())
+                .andExpect(jsonPath("$.data.accessTokenType").value("access"))
+                .andExpect(jsonPath("$.data.refreshTokenType").value("refresh"));
+    }
+
+    @Test
+    void shouldReturn401WhenLoginFails() throws Exception {
+        given(loginAuthenticationService.authenticate(eq("2024305999"), eq("bad-secret")))
+                .willThrow(new AuthenticationFailedException("登录账号或密码错误"));
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"credential\":\"2024305999\",\"password\":\"bad-secret\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4010"))
+                .andExpect(jsonPath("$.message").value("登录账号或密码错误"));
+    }
+
+    @Test
+    void shouldReturn401WhenRefreshTokenIsInvalid() throws Exception {
+        mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refreshToken\":\"invalid-token\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4010"));
+    }
+
+    @Test
+    void shouldReturn401WhenRefreshEndpointReceivesAccessToken() throws Exception {
+        String accessToken = createAccessToken();
+
+        mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refreshToken\":\"" + accessToken + "\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4010"))
+                .andExpect(jsonPath("$.message").value("refresh token 校验失败: JWT token type is not refresh"));
+    }
+
+    @Test
+    void shouldIssueNewTokenPairWhenRefreshTokenIsValid() throws Exception {
+        String refreshToken = createRefreshToken();
+        given(refreshTokenCurrentUserLoader.load(any())).willReturn(new AuthenticatedUserSnapshot(
+                1001L,
+                "2024305999",
+                "Test User",
+                "student",
+                Set.of("student", "class-monitor"),
+                Set.of("evaluation:apply:create", "evaluation:record:query"),
+                List.of(new IamScopeRule(
+                        101L,
+                        "application.view.assigned",
+                        "ORG_UNIT",
+                        3001L,
+                        null,
+                        null,
+                        null,
+                        10,
+                        "ACTIVE"
+                ))
+        ));
+
+        mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refreshToken\":\"" + refreshToken + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("OK"))
+                .andExpect(jsonPath("$.data.accessToken").isString())
+                .andExpect(jsonPath("$.data.accessTokenType").value("access"))
+                .andExpect(jsonPath("$.data.refreshToken").isString())
+                .andExpect(jsonPath("$.data.refreshTokenType").value("refresh"));
+    }
+
+    private String createAccessToken() {
+        Instant now = Instant.now();
+        return Jwts.builder()
+                .subject("1001")
+                .issuer("whut-eval")
+                .audience().add("whut-eval-api").and()
+                .issuedAt(Date.from(now))
+                .expiration(Date.from(now.plusSeconds(3600)))
+                .claim("token_type", "access")
+                .claim("uid", 1001L)
+                .claim("uno", "2024305999")
+                .claim("uname", "Test User")
+                .claim("identity", "student")
+                .claim("roles", List.of("student", "class-monitor"))
+                .claim("authorities", List.of("system:security:probe"))
+                .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
+                .compact();
+    }
+
+    private String createRefreshToken() {
+        Instant now = Instant.now();
+        return Jwts.builder()
+                .subject("1001")
+                .issuer("whut-eval")
+                .audience().add("whut-eval-api").and()
+                .issuedAt(Date.from(now))
+                .expiration(Date.from(now.plusSeconds(3600)))
+                .claim("token_type", "refresh")
+                .claim("uid", 1001L)
+                .claim("uno", "2024305999")
+                .claim("identity", "student")
+                .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
+                .compact();
+    }
+
+    @SpringBootConfiguration
+    @EnableAutoConfiguration
+    static class TestApplication {
+    }
+}

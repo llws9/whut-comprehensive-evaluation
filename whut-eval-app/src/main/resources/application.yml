@@ -1,0 +1,72 @@
+spring:
+  application:
+    name: whut-comprehensive-evaluation
+
+server:
+  port: 8080
+
+infra:
+  security:
+    token-header: Authorization
+    token-prefix: "Bearer "
+    allow-cookie-token: false
+    allow-query-token: false
+    token-query-parameter: access_token
+    token-cookie-name: ACCESS_TOKEN
+    permit-all-patterns:
+      - /error
+      - /actuator/health
+      - /actuator/info
+      - /api/public/**
+      - /api/auth/login
+      - /api/auth/refresh
+      - /swagger-ui/**
+      - /v3/api-docs/**
+    jwt:
+      enabled: true
+      algorithm: HS256
+      issuer: whut-eval
+      audience: whut-eval-api
+      access-token-ttl-seconds: 7200
+      refresh-token-ttl-seconds: 604800
+      clock-skew-seconds: 60
+      secret: ${WHUT_EVAL_JWT_SECRET:local-dev-jwt-secret-change-me-1234567890}
+      public-key: ${WHUT_EVAL_JWT_PUBLIC_KEY:}
+      private-key: ${WHUT_EVAL_JWT_PRIVATE_KEY:}
+      user-id-claim: uid
+      user-no-claim: uno
+      user-name-claim: uname
+      identity-claim: identity
+      roles-claim: roles
+      authorities-claim: authorities
+      token-type-claim: token_type
+      access-token-type: access
+      refresh-token-type: refresh
+  nacos:
+    connection:
+      server-address: 127.0.0.1:8848
+      namespace: public
+      username: nacos
+      password: nacos
+    definitions:
+      - name: shared-base-config
+        data-id: whut-eval-shared.yaml
+        group: WHUT_EVAL
+        timeout-ms: 3000
+        format: YAML
+        required: true
+        auto-refresh: true
+      - name: platform-rule-config
+        data-id: whut-eval-platform-rules.yaml
+        group: WHUT_EVAL
+        timeout-ms: 3000
+        format: YAML
+        required: true
+        auto-refresh: true
+      - name: oss-storage-config
+        data-id: whut-eval-oss-storage.yaml
+        group: WHUT_EVAL
+        timeout-ms: 3000
+        format: YAML
+        required: true
+        auto-refresh: true
