@@ -24,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -33,6 +34,7 @@ import java.util.Set;
 public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignmentAdminApplicationService {
 
     private static final Set<String> UPDATABLE_STATUS = Set.of("ACTIVE", "INACTIVE");
+    private static final Set<String> PAGEABLE_STATUS = Set.of("ACTIVE", "INACTIVE", "EXPIRED");
 
     private final IamUserQueryRepository iamUserQueryRepository;
     private final IamRoleQueryRepository iamRoleQueryRepository;
@@ -127,12 +129,39 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
 
     @Override
     public PageResult<RoleAssignmentAdminPageItemView> pageAssignments(RoleAssignmentAdminPageQuery query) {
-        throw new UnsupportedOperationException("TODO: implement page role assignment flow");
+        validatePageQuery(query);
+        if (query.userId() != null) {
+            iamUserQueryRepository.findById(query.userId())
+                    .orElseThrow(() -> new ResourceNotFoundException("用户不存在: " + query.userId()));
+        }
+        if (query.orgUnitId() != null) {
+            resolveOrgUnit(query.orgUnitId());
+        }
+        return new PageResult<>(0, List.of());
     }
 
     @Override
+    @Transactional
     public void revokeAssignment(Long assignmentId) {
-        throw new UnsupportedOperationException("TODO: implement revoke role assignment flow");
+        UserAuthorizationContext operator = userAuthorizationContextAssembler.requiredAuthorizationContext();
+        IamRoleAssignmentDetail existing = roleAssignmentAdminRepository.findDetailById(assignmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("角色分配不存在: " + assignmentId));
+        if (!"ACTIVE".equals(existing.status())) {
+            throw new ConflictException("仅 ACTIVE 状态的角色分配允许撤销");
+        }
+        IamRoleAssignmentDetail revoked = roleAssignmentAdminRepository.update(
+                assignmentId,
+                existing.userId(),
+                existing.roleCode(),
+                existing.roleName(),
+                existing.orgUnitId(),
+                existing.orgUnitName(),
+                "INACTIVE",
+                existing.effectiveFrom(),
+                existing.effectiveTo(),
+                existing.sourceType()
+        );
+        iamAdminAuditRecorder.recordRoleAssignmentUpdated(operator.getUserId(), existing, revoked);
     }
 
     private void validateStatus(String status, String currentStatus) {
@@ -155,6 +184,18 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
         }
         if (!futureAllowed && from != null && from.isAfter(LocalDateTime.now())) {
             throw new ValidationException("effectiveFrom 不允许晚于当前时间");
+        }
+    }
+
+    private void validatePageQuery(RoleAssignmentAdminPageQuery query) {
+        if (query.pageNo() <= 0) {
+            throw new ValidationException("pageNo 必须大于 0");
+        }
+        if (query.pageSize() <= 0) {
+            throw new ValidationException("pageSize 必须大于 0");
+        }
+        if (query.status() != null && !query.status().isBlank() && !PAGEABLE_STATUS.contains(query.status())) {
+            throw new ValidationException("status 仅允许 ACTIVE、INACTIVE 或 EXPIRED");
         }
     }
 

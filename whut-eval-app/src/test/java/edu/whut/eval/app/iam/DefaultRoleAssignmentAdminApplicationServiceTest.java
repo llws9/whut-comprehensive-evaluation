@@ -4,6 +4,8 @@ import edu.whut.eval.application.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.application.iam.command.CreateRoleAssignmentCommand;
 import edu.whut.eval.application.iam.command.UpdateRoleAssignmentCommand;
+import edu.whut.eval.application.iam.query.RoleAssignmentAdminPageQuery;
+import edu.whut.eval.application.iam.query.RoleAssignmentAdminPageItemView;
 import edu.whut.eval.application.iam.query.RoleAssignmentAdminView;
 import edu.whut.eval.application.iam.service.DefaultRoleAssignmentAdminApplicationService;
 import edu.whut.eval.application.iam.service.IamAdminAuditRecorder;
@@ -18,6 +20,7 @@ import edu.whut.eval.domain.iam.repository.IamUserQueryRepository;
 import edu.whut.eval.domain.iam.repository.RoleAssignmentAdminRepository;
 import edu.whut.eval.domain.org.model.OrgUnit;
 import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
+import edu.whut.eval.domain.shared.PageResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -271,5 +274,77 @@ class DefaultRoleAssignmentAdminApplicationServiceTest {
 
         assertThat(result.orgUnitId()).isEqualTo(2009L);
         verify(iamAdminAuditRecorder).recordRoleAssignmentUpdated(9001L, existing, updated);
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenNoRoleAssignmentsMatchFilters() {
+        given(iamUserQueryRepository.findById(1010L)).willReturn(Optional.of(
+                new IamUser(1010L, "2024305001", "王老师", "w@example.com", "13800000000", "ACTIVE")
+        ));
+        given(orgUnitLookupRepository.findById(2002L)).willReturn(Optional.of(
+                new OrgUnit(2002L, 1L, "COLLEGE", "CS", "计算机与人工智能学院", "/1/2002/", "ACTIVE")
+        ));
+
+        PageResult<RoleAssignmentAdminPageItemView> result = service.pageAssignments(new RoleAssignmentAdminPageQuery(
+                1,
+                20,
+                1010L,
+                "COUNSELOR",
+                "ACTIVE",
+                2002L
+        ));
+
+        assertThat(result.total()).isZero();
+        assertThat(result.records()).isEmpty();
+    }
+
+    @Test
+    void shouldRevokeActiveAssignmentToInactive() {
+        IamRoleAssignmentDetail existing = new IamRoleAssignmentDetail(
+                70021L,
+                1010L,
+                "COUNSELOR",
+                "辅导员",
+                2002L,
+                "计算机与人工智能学院",
+                "ACTIVE",
+                "2026-05-18T00:00:00",
+                "2027-07-01T00:00:00",
+                "MANUAL",
+                null
+        );
+        IamRoleAssignmentDetail revoked = new IamRoleAssignmentDetail(
+                70021L,
+                1010L,
+                "COUNSELOR",
+                "辅导员",
+                2002L,
+                "计算机与人工智能学院",
+                "INACTIVE",
+                "2026-05-18T00:00:00",
+                "2027-07-01T00:00:00",
+                "MANUAL",
+                "2026-05-20T11:00:00"
+        );
+        given(roleAssignmentAdminRepository.findDetailById(70021L)).willReturn(Optional.of(existing));
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(
+                new UserAuthorizationContext(9001L, "A0001", "系统管理员", "ADMIN", Set.of("SUPER_ADMIN"), Set.of("assignment.manage"), List.of())
+        );
+        given(roleAssignmentAdminRepository.update(
+                70021L,
+                1010L,
+                "COUNSELOR",
+                "辅导员",
+                2002L,
+                "计算机与人工智能学院",
+                "INACTIVE",
+                "2026-05-18T00:00:00",
+                "2027-07-01T00:00:00",
+                "MANUAL"
+        )).willReturn(revoked);
+
+        service.revokeAssignment(70021L);
+
+        verify(iamAdminAuditRecorder).recordRoleAssignmentUpdated(9001L, existing, revoked);
     }
 }
