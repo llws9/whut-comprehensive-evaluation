@@ -95,7 +95,7 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
         UserAuthorizationContext operator = userAuthorizationContextAssembler.requiredAuthorizationContext();
         IamRoleAssignmentDetail existing = roleAssignmentAdminRepository.findDetailById(assignmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("角色分配不存在: " + assignmentId));
-        validateStatus(command.status(), existing.status());
+        validateStatus(command.status(), existing);
         validateTimeRange(command.effectiveFrom(), command.effectiveTo());
 
         Long targetOrgUnitId = command.orgUnitId() == null ? existing.orgUnitId() : command.orgUnitId();
@@ -166,16 +166,31 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
         iamAdminAuditRecorder.recordRoleAssignmentUpdated(operator.getUserId(), existing, revoked);
     }
 
-    private void validateStatus(String status, String currentStatus) {
+    private void validateStatus(String status, IamRoleAssignmentDetail existing) {
         if (status == null || status.isBlank()) {
+            validateCurrentAssignmentStatus(existing);
             return;
         }
         if (!UPDATABLE_STATUS.contains(status)) {
             throw new ValidationException("status 仅允许 ACTIVE 或 INACTIVE");
         }
-        if ("EXPIRED".equals(currentStatus)) {
+        validateCurrentAssignmentStatus(existing);
+    }
+
+    private void validateCurrentAssignmentStatus(IamRoleAssignmentDetail existing) {
+        if (isFutureEffective(existing)) {
+            throw new ConflictException("未生效分配不允许通过接口回写");
+        }
+        if ("EXPIRED".equals(resolveCurrentStatus(existing))) {
             throw new ConflictException("已过期分配不允许通过接口回写");
         }
+    }
+
+    private boolean isFutureEffective(IamRoleAssignmentDetail detail) {
+        LocalDateTime effectiveFrom = parseTime(detail.effectiveFrom(), "effectiveFrom");
+        return "ACTIVE".equals(detail.status())
+                && effectiveFrom != null
+                && effectiveFrom.isAfter(LocalDateTime.now());
     }
 
     private void validateTimeRange(String effectiveFrom, String effectiveTo) {

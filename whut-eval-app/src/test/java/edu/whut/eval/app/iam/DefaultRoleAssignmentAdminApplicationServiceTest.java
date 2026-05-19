@@ -267,6 +267,68 @@ class DefaultRoleAssignmentAdminApplicationServiceTest {
     }
 
     @Test
+    void shouldRejectUpdateWhenAssignmentIsSemanticallyExpired() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(
+                new UserAuthorizationContext(9001L, "A0001", "系统管理员", "ADMIN", Set.of("SUPER_ADMIN"), Set.of("assignment.manage"), List.of())
+        );
+        given(roleAssignmentAdminRepository.findDetailById(70021L)).willReturn(Optional.of(
+                new IamRoleAssignmentDetail(
+                        70021L,
+                        1010L,
+                        "COUNSELOR",
+                        "辅导员",
+                        2002L,
+                        "计算机与人工智能学院",
+                        "ACTIVE",
+                        "2024-05-18T00:00:00",
+                        "2024-07-01T00:00:00",
+                        "MANUAL",
+                        null
+                )
+        ));
+
+        assertThatThrownBy(() -> service.updateAssignment(70021L, new UpdateRoleAssignmentCommand(
+                "INACTIVE",
+                2002L,
+                "2024-05-18T00:00:00",
+                "2024-07-01T00:00:00"
+        )))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("已过期分配不允许通过接口回写");
+    }
+
+    @Test
+    void shouldRejectUpdateWhenAssignmentIsFutureEffective() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(
+                new UserAuthorizationContext(9001L, "A0001", "系统管理员", "ADMIN", Set.of("SUPER_ADMIN"), Set.of("assignment.manage"), List.of())
+        );
+        given(roleAssignmentAdminRepository.findDetailById(70021L)).willReturn(Optional.of(
+                new IamRoleAssignmentDetail(
+                        70021L,
+                        1010L,
+                        "COUNSELOR",
+                        "辅导员",
+                        2002L,
+                        "计算机与人工智能学院",
+                        "ACTIVE",
+                        "2099-05-18T00:00:00",
+                        null,
+                        "MANUAL",
+                        null
+                )
+        ));
+
+        assertThatThrownBy(() -> service.updateAssignment(70021L, new UpdateRoleAssignmentCommand(
+                "INACTIVE",
+                2002L,
+                "2026-05-18T00:00:00",
+                "2027-07-01T00:00:00"
+        )))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("未生效分配不允许通过接口回写");
+    }
+
+    @Test
     void shouldAuditUpdateRoleAssignmentWithCurrentOperator() {
         IamRoleAssignmentDetail existing = new IamRoleAssignmentDetail(
                 70021L,
