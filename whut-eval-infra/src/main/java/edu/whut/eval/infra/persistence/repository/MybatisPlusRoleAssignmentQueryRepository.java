@@ -9,6 +9,7 @@ import edu.whut.eval.infra.persistence.mapper.IamRoleMapper;
 import edu.whut.eval.infra.persistence.mapper.IamUserRoleAssignmentMapper;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -30,10 +31,15 @@ public class MybatisPlusRoleAssignmentQueryRepository implements RoleAssignmentQ
 
     @Override
     public List<IamRoleAssignment> findActiveAssignmentsByUserId(Long userId) {
+        LocalDateTime now = LocalDateTime.now();
         List<IamUserRoleAssignmentDO> assignments = assignmentMapper.selectList(
                 new LambdaQueryWrapper<IamUserRoleAssignmentDO>()
                         .eq(IamUserRoleAssignmentDO::getUserId, userId)
                         .eq(IamUserRoleAssignmentDO::getStatus, "ACTIVE")
+                        .le(IamUserRoleAssignmentDO::getEffectiveFrom, now)
+                        .and(w -> w.isNull(IamUserRoleAssignmentDO::getEffectiveTo)
+                                .or()
+                                .gt(IamUserRoleAssignmentDO::getEffectiveTo, now))
         );
         if (assignments.isEmpty()) {
             return List.of();

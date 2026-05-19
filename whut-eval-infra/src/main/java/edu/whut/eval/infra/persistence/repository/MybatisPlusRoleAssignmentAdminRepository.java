@@ -2,7 +2,9 @@ package edu.whut.eval.infra.persistence.repository;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentDetail;
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentPageItem;
 import edu.whut.eval.domain.iam.model.RoleAssignmentCurrentStatusResolver;
@@ -157,25 +159,23 @@ public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentA
                                           String sourceType) {
         IamUserRoleAssignmentDO assignmentDO = assignmentMapper.selectById(assignmentId);
         if (assignmentDO == null) {
-            return new IamRoleAssignmentDetail(
-                    assignmentId,
-                    userId,
-                    roleCode,
-                    roleName,
-                    orgUnitId,
-                    orgUnitName,
-                    status,
-                    effectiveFrom,
-                    effectiveTo,
-                    sourceType,
-                    LocalDateTime.now().toString()
-            );
+            throw new ConflictException("角色分配已变更，请刷新后重试");
+        }
+        LocalDateTime nextEffectiveFrom = parseTime(effectiveFrom);
+        LocalDateTime nextEffectiveTo = parseTime(effectiveTo);
+        IamUserRoleAssignmentDO updatedDO = new IamUserRoleAssignmentDO();
+        updatedDO.setOrgUnitId(orgUnitId);
+        updatedDO.setStatus(status);
+        updatedDO.setEffectiveFrom(nextEffectiveFrom);
+        updatedDO.setEffectiveTo(nextEffectiveTo);
+        int updated = assignmentMapper.update(updatedDO, buildCurrentRowGuard(assignmentDO));
+        if (updated == 0) {
+            throw new ConflictException("角色分配已变更，请刷新后重试");
         }
         assignmentDO.setOrgUnitId(orgUnitId);
         assignmentDO.setStatus(status);
-        assignmentDO.setEffectiveFrom(parseTime(effectiveFrom));
-        assignmentDO.setEffectiveTo(parseTime(effectiveTo));
-        assignmentMapper.updateById(assignmentDO);
+        assignmentDO.setEffectiveFrom(nextEffectiveFrom);
+        assignmentDO.setEffectiveTo(nextEffectiveTo);
         return new IamRoleAssignmentDetail(
                 assignmentId,
                 userId,
@@ -195,22 +195,15 @@ public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentA
     public IamRoleAssignmentDetail revoke(Long assignmentId) {
         IamUserRoleAssignmentDO assignmentDO = assignmentMapper.selectById(assignmentId);
         if (assignmentDO == null) {
-            return new IamRoleAssignmentDetail(
-                    assignmentId,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    "INACTIVE",
-                    null,
-                    null,
-                    null,
-                    LocalDateTime.now().toString()
-            );
+            throw new ConflictException("角色分配已变更，请刷新后重试");
+        }
+        IamUserRoleAssignmentDO revokedDO = new IamUserRoleAssignmentDO();
+        revokedDO.setStatus("INACTIVE");
+        int updated = assignmentMapper.update(revokedDO, buildCurrentRowGuard(assignmentDO));
+        if (updated == 0) {
+            throw new ConflictException("角色分配已变更，请刷新后重试");
         }
         assignmentDO.setStatus("INACTIVE");
-        assignmentMapper.updateById(assignmentDO);
         return toDetail(assignmentDO, LocalDateTime.now().toString());
     }
 
@@ -303,6 +296,19 @@ public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentA
         return role == null ? null : role.getId();
     }
 
+    private LambdaUpdateWrapper<IamUserRoleAssignmentDO> buildCurrentRowGuard(IamUserRoleAssignmentDO assignmentDO) {
+        LambdaUpdateWrapper<IamUserRoleAssignmentDO> wrapper = new LambdaUpdateWrapper<IamUserRoleAssignmentDO>()
+                .eq(IamUserRoleAssignmentDO::getId, assignmentDO.getId())
+                .eq(IamUserRoleAssignmentDO::getUserId, assignmentDO.getUserId())
+                .eq(IamUserRoleAssignmentDO::getRoleId, assignmentDO.getRoleId())
+                .eq(IamUserRoleAssignmentDO::getOrgUnitId, assignmentDO.getOrgUnitId())
+                .eq(IamUserRoleAssignmentDO::getStatus, assignmentDO.getStatus())
+                .eq(IamUserRoleAssignmentDO::getSourceType, assignmentDO.getSourceType());
+        eqNullable(wrapper, IamUserRoleAssignmentDO::getEffectiveFrom, assignmentDO.getEffectiveFrom());
+        eqNullable(wrapper, IamUserRoleAssignmentDO::getEffectiveTo, assignmentDO.getEffectiveTo());
+        return wrapper;
+    }
+
     private <T> Map<Long, T> mapById(List<T> items, Function<T, Long> idGetter) {
         return items.stream().collect(Collectors.toMap(idGetter, Function.identity()));
     }
@@ -317,6 +323,16 @@ public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentA
 
     private LocalDateTime parseTime(String time) {
         return time == null || time.isBlank() ? null : LocalDateTime.parse(time);
+    }
+
+    private <T> void eqNullable(LambdaUpdateWrapper<IamUserRoleAssignmentDO> wrapper,
+                                com.baomidou.mybatisplus.core.toolkit.support.SFunction<IamUserRoleAssignmentDO, T> column,
+                                T value) {
+        if (value == null) {
+            wrapper.isNull(column);
+            return;
+        }
+        wrapper.eq(column, value);
     }
 
     private String formatTime(LocalDateTime time) {

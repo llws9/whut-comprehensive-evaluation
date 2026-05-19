@@ -1,5 +1,6 @@
 package edu.whut.eval.app.infra;
 
+import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentDetail;
 import edu.whut.eval.infra.persistence.entity.IamRoleDO;
 import edu.whut.eval.infra.persistence.entity.IamUserDO;
@@ -21,8 +22,10 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -167,11 +170,95 @@ class MybatisPlusRoleAssignmentAdminRepositoryTest {
         orgUnitDO.setId(2002L);
         orgUnitDO.setUnitName("计算机与人工智能学院");
         given(orgUnitMapper.selectById(2002L)).willReturn(orgUnitDO);
+        given(assignmentMapper.update(any(IamUserRoleAssignmentDO.class), any())).willReturn(1);
 
         IamRoleAssignmentDetail result = repository.revoke(70021L);
 
         assertThat(assignmentDO.getStatus()).isEqualTo("INACTIVE");
         assertThat(result.status()).isEqualTo("INACTIVE");
-        verify(assignmentMapper).updateById(assignmentDO);
+        verify(assignmentMapper).update(any(IamUserRoleAssignmentDO.class), any());
+        verify(assignmentMapper, never()).updateById(any(IamUserRoleAssignmentDO.class));
+    }
+
+    @Test
+    void shouldUpdateAssignmentWithConditionalGuard() {
+        IamUserRoleAssignmentDO assignmentDO = new IamUserRoleAssignmentDO();
+        assignmentDO.setId(70021L);
+        assignmentDO.setUserId(1010L);
+        assignmentDO.setRoleId(21L);
+        assignmentDO.setOrgUnitId(2002L);
+        assignmentDO.setStatus("ACTIVE");
+        assignmentDO.setSourceType("MANUAL");
+        assignmentDO.setEffectiveFrom(LocalDateTime.parse("2026-05-18T00:00:00"));
+        assignmentDO.setEffectiveTo(LocalDateTime.parse("2027-07-01T00:00:00"));
+        given(assignmentMapper.selectById(70021L)).willReturn(assignmentDO);
+        given(assignmentMapper.update(any(IamUserRoleAssignmentDO.class), any())).willReturn(1);
+
+        IamRoleAssignmentDetail result = repository.update(
+                70021L,
+                1010L,
+                "COUNSELOR",
+                "辅导员",
+                2009L,
+                "计科 2201",
+                "INACTIVE",
+                "2026-05-18T00:00:00",
+                "2027-07-01T00:00:00",
+                "MANUAL"
+        );
+
+        assertThat(result.status()).isEqualTo("INACTIVE");
+        assertThat(result.orgUnitId()).isEqualTo(2009L);
+        verify(assignmentMapper).update(any(IamUserRoleAssignmentDO.class), any());
+        verify(assignmentMapper, never()).updateById(any(IamUserRoleAssignmentDO.class));
+    }
+
+    @Test
+    void shouldThrowConflictWhenConditionalUpdateAffectsNoRows() {
+        IamUserRoleAssignmentDO assignmentDO = new IamUserRoleAssignmentDO();
+        assignmentDO.setId(70021L);
+        assignmentDO.setUserId(1010L);
+        assignmentDO.setRoleId(21L);
+        assignmentDO.setOrgUnitId(2002L);
+        assignmentDO.setStatus("ACTIVE");
+        assignmentDO.setSourceType("MANUAL");
+        assignmentDO.setEffectiveFrom(LocalDateTime.parse("2026-05-18T00:00:00"));
+        assignmentDO.setEffectiveTo(LocalDateTime.parse("2027-07-01T00:00:00"));
+        given(assignmentMapper.selectById(70021L)).willReturn(assignmentDO);
+        given(assignmentMapper.update(any(IamUserRoleAssignmentDO.class), any())).willReturn(0);
+
+        assertThatThrownBy(() -> repository.update(
+                70021L,
+                1010L,
+                "COUNSELOR",
+                "辅导员",
+                2009L,
+                "计科 2201",
+                "INACTIVE",
+                "2026-05-18T00:00:00",
+                "2027-07-01T00:00:00",
+                "MANUAL"
+        ))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("角色分配已变更，请刷新后重试");
+    }
+
+    @Test
+    void shouldThrowConflictWhenConditionalRevokeAffectsNoRows() {
+        IamUserRoleAssignmentDO assignmentDO = new IamUserRoleAssignmentDO();
+        assignmentDO.setId(70021L);
+        assignmentDO.setUserId(1010L);
+        assignmentDO.setRoleId(21L);
+        assignmentDO.setOrgUnitId(2002L);
+        assignmentDO.setStatus("ACTIVE");
+        assignmentDO.setSourceType("MANUAL");
+        assignmentDO.setEffectiveFrom(LocalDateTime.parse("2026-05-18T00:00:00"));
+        assignmentDO.setEffectiveTo(LocalDateTime.parse("2027-07-01T00:00:00"));
+        given(assignmentMapper.selectById(70021L)).willReturn(assignmentDO);
+        given(assignmentMapper.update(any(IamUserRoleAssignmentDO.class), any())).willReturn(0);
+
+        assertThatThrownBy(() -> repository.revoke(70021L))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("角色分配已变更，请刷新后重试");
     }
 }
