@@ -61,7 +61,7 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
     @Override
     @Transactional
     public RoleAssignmentAdminView createAssignment(CreateRoleAssignmentCommand command) {
-        validateTimeRange(command.effectiveFrom(), command.effectiveTo(), false);
+        validateTimeRange(command.effectiveFrom(), command.effectiveTo());
         IamUser user = iamUserQueryRepository.findById(command.userId())
                 .orElseThrow(() -> new ResourceNotFoundException("用户不存在: " + command.userId()));
         IamRoleDefinition role = iamRoleQueryRepository.findByRoleCode(command.roleCode())
@@ -95,7 +95,7 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
         IamRoleAssignmentDetail existing = roleAssignmentAdminRepository.findDetailById(assignmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("角色分配不存在: " + assignmentId));
         validateStatus(command.status(), existing.status());
-        validateTimeRange(command.effectiveFrom(), command.effectiveTo(), true);
+        validateTimeRange(command.effectiveFrom(), command.effectiveTo());
 
         Long targetOrgUnitId = command.orgUnitId() == null ? existing.orgUnitId() : command.orgUnitId();
         OrgUnit orgUnit = resolveOrgUnit(targetOrgUnitId);
@@ -177,13 +177,13 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
         }
     }
 
-    private void validateTimeRange(String effectiveFrom, String effectiveTo, boolean futureAllowed) {
+    private void validateTimeRange(String effectiveFrom, String effectiveTo) {
         LocalDateTime from = parseTime(effectiveFrom, "effectiveFrom");
         LocalDateTime to = parseTime(effectiveTo, "effectiveTo");
         if (from != null && to != null && from.isAfter(to)) {
             throw new ValidationException("effectiveFrom 不能晚于 effectiveTo");
         }
-        if (!futureAllowed && from != null && from.isAfter(LocalDateTime.now())) {
+        if (from != null && from.isAfter(LocalDateTime.now())) {
             throw new ValidationException("effectiveFrom 不允许晚于当前时间");
         }
     }
