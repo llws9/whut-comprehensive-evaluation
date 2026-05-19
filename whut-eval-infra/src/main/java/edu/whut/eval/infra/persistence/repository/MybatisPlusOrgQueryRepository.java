@@ -25,6 +25,11 @@ public class MybatisPlusOrgQueryRepository implements OrgQueryRepository {
     }
 
     @Override
+    public Optional<OrgUnit> findById(Long id) {
+        return Optional.ofNullable(orgUnitMapper.selectById(id)).map(this::toDomain);
+    }
+
+    @Override
     public Optional<OrgUnit> findByCode(String unitCode) {
         OrgUnitDO orgUnitDO = orgUnitMapper.selectOne(new LambdaQueryWrapper<OrgUnitDO>()
                 .eq(OrgUnitDO::getUnitCode, unitCode)
@@ -40,6 +45,29 @@ public class MybatisPlusOrgQueryRepository implements OrgQueryRepository {
                 .stream()
                 .map(this::toDomain)
                 .toList();
+    }
+
+    @Override
+    public List<OrgUnit> findRootTree(boolean includeDisabled) {
+        LambdaQueryWrapper<OrgUnitDO> wrapper = new LambdaQueryWrapper<OrgUnitDO>()
+                .orderByAsc(OrgUnitDO::getPath)
+                .orderByAsc(OrgUnitDO::getId);
+        if (!includeDisabled) {
+            wrapper.eq(OrgUnitDO::getStatus, "ACTIVE");
+        }
+        return orgUnitMapper.selectList(wrapper).stream().map(this::toDomain).toList();
+    }
+
+    @Override
+    public List<OrgUnit> findDescendants(Long rootId, boolean includeDisabled) {
+        LambdaQueryWrapper<OrgUnitDO> wrapper = new LambdaQueryWrapper<OrgUnitDO>()
+                .apply("id = {0} OR path LIKE CONCAT((SELECT path FROM org_unit WHERE id = {0}), '%')", rootId)
+                .orderByAsc(OrgUnitDO::getPath)
+                .orderByAsc(OrgUnitDO::getId);
+        if (!includeDisabled) {
+            wrapper.eq(OrgUnitDO::getStatus, "ACTIVE");
+        }
+        return orgUnitMapper.selectList(wrapper).stream().map(this::toDomain).toList();
     }
 
     @Override

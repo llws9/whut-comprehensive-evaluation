@@ -8,9 +8,15 @@ import java.util.Optional;
 
 public interface OrgQueryRepository {
 
+    Optional<OrgUnit> findById(Long id);
+
     Optional<OrgUnit> findByCode(String unitCode);
 
     List<OrgUnit> findChildren(Long parentId);
+
+    List<OrgUnit> findRootTree(boolean includeDisabled);
+
+    List<OrgUnit> findDescendants(Long rootId, boolean includeDisabled);
 
     List<OrgMembership> findMembershipsByUserId(Long userId);
 }

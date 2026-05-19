@@ -55,4 +55,40 @@ class AdminQueryControllerSecurityAnnotationTest {
         );
         assertThat(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED).isEqualTo("score.view.assigned");
     }
+
+    @Test
+    void shouldDeclarePermissionManageOnPermissionsEndpoint() throws NoSuchMethodException {
+        Method method = AdminQueryController.class.getMethod(
+                "listPermissions",
+                String.class,
+                String.class,
+                String.class
+        );
+
+        PreAuthorize preAuthorize = method.getAnnotation(PreAuthorize.class);
+
+        assertThat(preAuthorize).isNotNull();
+        assertThat(preAuthorize.value()).isEqualTo(
+                "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).PERMISSION_MANAGE)"
+        );
+        assertThat(AuthorizationPermissionCodes.PERMISSION_MANAGE).isEqualTo("permission.manage");
+    }
+
+    @Test
+    void shouldDeclareOrgManageOnOrgTreeEndpoint() throws NoSuchMethodException {
+        Method method = AdminQueryController.class.getMethod(
+                "listOrgUnitTree",
+                Long.class,
+                String.class,
+                boolean.class
+        );
+
+        PreAuthorize preAuthorize = method.getAnnotation(PreAuthorize.class);
+
+        assertThat(preAuthorize).isNotNull();
+        assertThat(preAuthorize.value()).isEqualTo(
+                "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).ORG_MANAGE)"
+        );
+        assertThat(AuthorizationPermissionCodes.ORG_MANAGE).isEqualTo("org.manage");
+    }
 }
