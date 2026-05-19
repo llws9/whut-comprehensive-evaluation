@@ -220,7 +220,8 @@ INSERT INTO `iam_permission` (`id`, `permission_code`, `permission_name`, `permi
 (5007, 'manage.review.view', '查看审核页', 'manage', 'ACTIVE', '2026-05-01 09:30:06'),
 (5008, 'manage.students.view', '查看学生管理', 'manage', 'ACTIVE', '2026-05-01 09:30:07'),
 (5009, 'manage.scholarship.view', '查看奖学金资格', 'manage', 'ACTIVE', '2026-05-01 09:30:08'),
-(5010, 'manage.permissions.view', '查看权限管理', 'manage', 'ACTIVE', '2026-05-01 09:30:09');
+(5010, 'permission.manage', '权限管理', 'manage', 'ACTIVE', '2026-05-01 09:30:09'),
+(5011, 'org.manage', '组织管理', 'manage', 'ACTIVE', '2026-05-01 09:30:10');
 
 INSERT INTO `iam_role_permission` (`id`, `role_id`, `permission_id`, `created_at`) VALUES
 (6001, 4001, 5001, '2026-05-01 09:40:00'),
@@ -236,7 +237,8 @@ INSERT INTO `iam_role_permission` (`id`, `role_id`, `permission_id`, `created_at
 (6011, 4005, 5008, '2026-05-01 09:40:10'),
 (6012, 4005, 5009, '2026-05-01 09:40:11'),
 (6013, 4006, 5009, '2026-05-01 09:40:12'),
-(6014, 4006, 5010, '2026-05-01 09:40:13');
+(6014, 4006, 5010, '2026-05-01 09:40:13'),
+(6015, 4006, 5011, '2026-05-01 09:40:14');
 
 INSERT INTO `iam_user_role_assignment` (`id`, `user_id`, `role_id`, `org_unit_id`, `source_type`, `effective_from`, `effective_to`, `status`, `assigned_by`, `created_at`) VALUES
 (7001, 1001, 4001, 2010, 'SYSTEM', '2026-05-01 10:00:00', NULL, 'ACTIVE', 1012, '2026-05-01 10:00:00'),
@@ -264,7 +266,8 @@ INSERT INTO `iam_scope_rule` (`id`, `assignment_id`, `permission_code`, `scope_t
 (8009, 7009, 'manage.review.view', 'ORG_UNIT', 2010, NULL, NULL, JSON_OBJECT('reviewRole', 'class_monitor'), 90, 'ACTIVE', '2026-05-01 10:20:08'),
 (8010, 7010, 'manage.review.view', 'ORG_SUBTREE', 2002, NULL, NULL, JSON_OBJECT('reviewRole', 'counselor'), 80, 'ACTIVE', '2026-05-01 10:20:09'),
 (8011, 7011, 'manage.students.view', 'ORG_SUBTREE', 2002, NULL, NULL, JSON_OBJECT('reviewRole', 'college_reviewer'), 70, 'ACTIVE', '2026-05-01 10:20:10'),
-(8012, 7012, 'manage.permissions.view', 'ALL', NULL, NULL, NULL, JSON_OBJECT('superAdmin', true), 1000, 'ACTIVE', '2026-05-01 10:20:11');
+(8012, 7012, 'permission.manage', 'ALL', NULL, NULL, NULL, JSON_OBJECT('superAdmin', true), 1000, 'ACTIVE', '2026-05-01 10:20:11'),
+(8013, 7012, 'org.manage', 'ALL', NULL, NULL, NULL, JSON_OBJECT('superAdmin', true), 1000, 'ACTIVE', '2026-05-01 10:20:12');
 
 INSERT INTO `iam_session` (`id`, `user_id`, `token_id`, `login_ip`, `user_agent`, `expired_at`, `revoked_at`, `status`, `created_at`) VALUES
 (9001, 1001, 'token-1001-a', '10.20.1.1', 'Chrome/136 macOS', '2026-05-19 08:00:00', NULL, 'ACTIVE', '2026-05-18 08:00:00'),

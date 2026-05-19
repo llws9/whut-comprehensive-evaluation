@@ -27,6 +27,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -98,10 +99,10 @@ class AdminQueryControllerWebMvcTest {
     @Test
     void shouldReturnPermissionDictionary() throws Exception {
         adminDictionaryQueryApplicationService.willReturnPermissions(List.of(new PermissionDictionaryView(
-                "manage.review.view",
-                "查看评审",
+                "permission.manage",
+                "权限管理",
                 "manage",
-                "评审查看",
+                null,
                 "ACTIVE"
         )));
 
@@ -110,7 +111,8 @@ class AdminQueryControllerWebMvcTest {
                         .param("module", "manage"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.data[0].permissionCode").value("manage.review.view"))
+                .andExpect(jsonPath("$.data[0].permissionCode").value("permission.manage"))
+                .andExpect(jsonPath("$.data[0].description").value(nullValue()))
                 .andExpect(jsonPath("$.data[0].status").value("ACTIVE"));
     }
 

@@ -845,7 +845,7 @@ A 组应优先依赖并落地以下表：
 | `permissionCode` | `string` | 权限码 |
 | `permissionName` | `string` | 权限名称 |
 | `module` | `string` | 所属模块 |
-| `description` | `string` | 说明 |
+| `description` | `string \| null` | 说明；当前字典源未维护说明时返回 `null` |
 | `status` | `string` | 状态 |
 
 异常返回：

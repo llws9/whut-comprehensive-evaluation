@@ -28,8 +28,8 @@ class MybatisPermissionDictionaryQueryRepositoryTest {
     void shouldPassKeywordModuleAndStatusToMapper() {
         given(adminPermissionDictionaryMapper.selectPermissions("review", "manage", "ACTIVE"))
                 .willReturn(List.of(new PermissionDictionaryRow(
-                        "manage.review.view",
-                        "查看评审",
+                        "permission.manage",
+                        "权限管理",
                         "manage",
                         null,
                         "ACTIVE"
@@ -38,7 +38,9 @@ class MybatisPermissionDictionaryQueryRepositoryTest {
         List<PermissionDictionaryEntry> result = repository.findPermissions("review", "manage", "ACTIVE");
 
         assertThat(result).singleElement().satisfies(item -> {
+            assertThat(item.permissionCode()).isEqualTo("permission.manage");
             assertThat(item.module()).isEqualTo("manage");
+            assertThat(item.description()).isNull();
             assertThat(item.status()).isEqualTo("ACTIVE");
         });
     }

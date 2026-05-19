@@ -31,9 +31,12 @@ class MybatisPlusOrgQueryRepositoryTest {
 
     @Test
     void shouldFindDescendantsExcludingDisabledByDefault() {
+        given(orgUnitMapper.selectById(2002L)).willReturn(
+                orgUnit(2002L, 1L, "COLLEGE", "CS", "计算机与人工智能学院", "/1/2002", "ACTIVE")
+        );
         given(orgUnitMapper.selectList(any())).willReturn(List.of(
-                orgUnit(2002L, 1L, "COLLEGE", "CS", "计算机与人工智能学院", "/1/2002/", "ACTIVE"),
-                orgUnit(2009L, 2002L, "CLASS", "CS2201", "计科2201", "/1/2002/2009/", "ACTIVE")
+                orgUnit(2002L, 1L, "COLLEGE", "CS", "计算机与人工智能学院", "/1/2002", "ACTIVE"),
+                orgUnit(2009L, 2002L, "CLASS", "CS2201", "计科2201", "/1/2002/2009", "ACTIVE")
         ));
 
         List<OrgUnit> result = repository.findDescendants(2002L, false);

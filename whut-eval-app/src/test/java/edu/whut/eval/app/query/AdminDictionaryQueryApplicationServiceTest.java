@@ -35,8 +35,8 @@ class AdminDictionaryQueryApplicationServiceTest {
     void shouldDefaultPermissionStatusToActive() {
         given(permissionDictionaryQueryRepository.findPermissions("review", "manage", "ACTIVE"))
                 .willReturn(List.of(new PermissionDictionaryEntry(
-                        "manage.review.view",
-                        "查看评审",
+                        "permission.manage",
+                        "权限管理",
                         "manage",
                         null,
                         "ACTIVE"
@@ -45,7 +45,8 @@ class AdminDictionaryQueryApplicationServiceTest {
         List<PermissionDictionaryView> result = service.listPermissions("review", "manage", null);
 
         assertThat(result).singleElement().satisfies(item -> {
-            assertThat(item.permissionCode()).isEqualTo("manage.review.view");
+            assertThat(item.permissionCode()).isEqualTo("permission.manage");
+            assertThat(item.description()).isNull();
             assertThat(item.status()).isEqualTo("ACTIVE");
         });
     }
