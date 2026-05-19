@@ -10,10 +10,11 @@ import edu.whut.eval.infra.persistence.mapper.OrgMembershipMapper;
 import edu.whut.eval.infra.persistence.mapper.OrgUnitMapper;
 import org.springframework.stereotype.Repository;
 
-import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 
 @Repository
 public class MybatisPlusOrgQueryRepository implements OrgQueryRepository {
@@ -79,7 +80,7 @@ public class MybatisPlusOrgQueryRepository implements OrgQueryRepository {
         if (includeDisabled) {
             return subtree;
         }
-        return retainVisibleSubtree(rootId, subtree);
+        return pruneDisabledSubtree(rootId, subtree);
     }
 
     @Override
@@ -115,27 +116,31 @@ public class MybatisPlusOrgQueryRepository implements OrgQueryRepository {
         );
     }
 
-    private List<OrgUnit> retainVisibleSubtree(Long rootId, List<OrgUnit> subtree) {
-        Set<String> retainedPaths = new HashSet<>();
+    private List<OrgUnit> pruneDisabledSubtree(Long rootId, List<OrgUnit> subtree) {
+        Map<Long, List<OrgUnit>> childrenByParentId = new LinkedHashMap<>();
+        Map<Long, OrgUnit> unitById = new LinkedHashMap<>();
         for (OrgUnit unit : subtree) {
-            if (unit.id().equals(rootId) || "ACTIVE".equals(unit.status())) {
-                retainAncestorPaths(unit.path(), retainedPaths);
-            }
+            unitById.put(unit.id(), unit);
+            childrenByParentId.computeIfAbsent(unit.parentId(), key -> new ArrayList<>()).add(unit);
         }
-        return subtree.stream()
-                .filter(unit -> retainedPaths.contains(unit.path()))
-                .toList();
+        OrgUnit root = unitById.get(rootId);
+        if (root == null) {
+            return List.of();
+        }
+        List<OrgUnit> retained = new ArrayList<>();
+        collectActiveBranch(root, childrenByParentId, retained);
+        return retained;
     }
 
-    private void retainAncestorPaths(String path, Set<String> retainedPaths) {
-        String current = path;
-        while (current != null && !current.isBlank()) {
-            retainedPaths.add(current);
-            int lastSlash = current.lastIndexOf('/');
-            if (lastSlash <= 0) {
-                break;
-            }
-            current = current.substring(0, lastSlash);
+    private void collectActiveBranch(OrgUnit unit,
+                                     Map<Long, List<OrgUnit>> childrenByParentId,
+                                     List<OrgUnit> retained) {
+        if (!"ACTIVE".equals(unit.status())) {
+            return;
+        }
+        retained.add(unit);
+        for (OrgUnit child : childrenByParentId.getOrDefault(unit.id(), List.of())) {
+            collectActiveBranch(child, childrenByParentId, retained);
         }
     }
 }

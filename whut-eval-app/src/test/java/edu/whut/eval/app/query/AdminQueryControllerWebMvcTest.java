@@ -27,7 +27,6 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 
-import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -102,7 +101,7 @@ class AdminQueryControllerWebMvcTest {
                 "permission.manage",
                 "权限管理",
                 "manage",
-                null,
+                "权限管理",
                 "ACTIVE"
         )));
 
@@ -112,7 +111,7 @@ class AdminQueryControllerWebMvcTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data[0].permissionCode").value("permission.manage"))
-                .andExpect(jsonPath("$.data[0].description").value(nullValue()))
+                .andExpect(jsonPath("$.data[0].description").value("权限管理"))
                 .andExpect(jsonPath("$.data[0].status").value("ACTIVE"));
     }
 

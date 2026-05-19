@@ -845,7 +845,7 @@ A 组应优先依赖并落地以下表：
 | `permissionCode` | `string` | 权限码 |
 | `permissionName` | `string` | 权限名称 |
 | `module` | `string` | 所属模块 |
-| `description` | `string \| null` | 说明；当前字典源未维护说明时返回 `null` |
+| `description` | `string` | 说明；当前由权限名称稳定填充 |
 | `status` | `string` | 状态 |
 
 异常返回：
@@ -866,7 +866,7 @@ A 组应优先依赖并落地以下表：
 |---|---|---|---|---|
 | `rootId` | `long` | 否 | - | 指定根组织 |
 | `unitType` | `string` | 否 | - | 组织类型过滤 |
-| `includeDisabled` | `boolean` | 否 | `false` | 是否返回禁用组织 |
+| `includeDisabled` | `boolean` | 否 | `false` | 是否返回禁用组织；为 `false` 时禁用节点及其后代整枝裁掉 |
 
 成功返回 `data`：树形节点列表
 

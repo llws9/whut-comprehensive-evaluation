@@ -16,7 +16,7 @@ public interface AdminPermissionDictionaryMapper {
             "  permission_code AS permissionCode,",
             "  permission_name AS permissionName,",
             "  permission_group AS module,",
-            "  NULL AS description,",
+            "  permission_name AS description,",
             "  status AS status",
             "FROM iam_permission",
             "WHERE 1 = 1",

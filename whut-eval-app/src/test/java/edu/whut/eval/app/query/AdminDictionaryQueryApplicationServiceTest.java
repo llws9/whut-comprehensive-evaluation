@@ -38,7 +38,7 @@ class AdminDictionaryQueryApplicationServiceTest {
                         "permission.manage",
                         "权限管理",
                         "manage",
-                        null,
+                        "权限管理",
                         "ACTIVE"
                 )));
 
@@ -46,7 +46,7 @@ class AdminDictionaryQueryApplicationServiceTest {
 
         assertThat(result).singleElement().satisfies(item -> {
             assertThat(item.permissionCode()).isEqualTo("permission.manage");
-            assertThat(item.description()).isNull();
+            assertThat(item.description()).isEqualTo("权限管理");
             assertThat(item.status()).isEqualTo("ACTIVE");
         });
     }

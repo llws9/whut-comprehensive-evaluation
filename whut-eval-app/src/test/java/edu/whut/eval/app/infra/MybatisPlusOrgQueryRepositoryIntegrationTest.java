@@ -59,7 +59,7 @@ class MybatisPlusOrgQueryRepositoryIntegrationTest {
     }
 
     @Test
-    void shouldKeepRequestedDisabledRootButExcludeDisabledDescendantsWhenIncludeDisabledFalse() {
+    void shouldDropRequestedDisabledRootWholeBranchWhenIncludeDisabledFalse() {
         jdbcTemplate.update(
                 "INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (?,?,?,?,?,?,?)",
                 2001L, null, "SCHOOL", "WHUT", "武汉理工大学", "/WHUT", "ACTIVE"
@@ -81,17 +81,11 @@ class MybatisPlusOrgQueryRepositoryIntegrationTest {
                 2006L, 2002L, "GRADE", "CS2023", "计算机 2023 级", "/WHUT/CS/CS2023", "DISABLED"
         );
 
-        assertThat(repository.findDescendants(2002L, false))
-                .extracting(unit -> unit.id() + ":" + unit.status())
-                .containsExactly(
-                        "2002:DISABLED",
-                        "2005:ACTIVE",
-                        "2010:ACTIVE"
-                );
+        assertThat(repository.findDescendants(2002L, false)).isEmpty();
     }
 
     @Test
-    void shouldKeepDisabledAncestorsNeededToConnectActiveDescendants() {
+    void shouldPruneDisabledNodeAndAllDescendantsWhenIncludeDisabledFalse() {
         jdbcTemplate.update(
                 "INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (?,?,?,?,?,?,?)",
                 2001L, null, "SCHOOL", "WHUT", "武汉理工大学", "/WHUT", "ACTIVE"
@@ -111,11 +105,7 @@ class MybatisPlusOrgQueryRepositoryIntegrationTest {
 
         assertThat(repository.findDescendants(2002L, false))
                 .extracting(unit -> unit.id() + ":" + unit.status())
-                .containsExactly(
-                        "2002:ACTIVE",
-                        "2005:DISABLED",
-                        "2010:ACTIVE"
-                );
+                .containsExactly("2002:ACTIVE");
     }
 
     @Test
