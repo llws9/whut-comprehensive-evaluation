@@ -4,10 +4,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.iam.command.CreateRoleAssignmentCommand;
 import edu.whut.eval.application.iam.command.CreateScopeRuleCommand;
 import edu.whut.eval.application.iam.command.UpdateRoleAssignmentCommand;
+import edu.whut.eval.application.iam.query.RoleAssignmentAdminPageItemView;
 import edu.whut.eval.application.iam.query.RoleAssignmentAdminView;
 import edu.whut.eval.application.iam.query.ScopeRuleAdminView;
 import edu.whut.eval.application.iam.service.RoleAssignmentAdminApplicationService;
 import edu.whut.eval.application.iam.service.ScopeRuleAdminApplicationService;
+import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
 import edu.whut.eval.interfaces.iam.IamRoleAssignmentAdminController;
 import org.junit.jupiter.api.Test;
@@ -28,6 +30,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -54,6 +57,39 @@ class IamRoleAssignmentAdminControllerWebMvcTest {
 
     @MockBean
     private ScopeRuleAdminApplicationService scopeRuleAdminApplicationService;
+
+    @Test
+    void shouldPageRoleAssignments() throws Exception {
+        given(roleAssignmentAdminApplicationService.pageAssignments(any()))
+                .willReturn(new PageResult<>(
+                        1,
+                        List.of(new RoleAssignmentAdminPageItemView(
+                                70021L,
+                                1010L,
+                                "2024305001",
+                                "王老师",
+                                "COUNSELOR",
+                                "辅导员",
+                                2002L,
+                                "计算机与人工智能学院",
+                                "ACTIVE",
+                                "2026-05-18T00:00:00",
+                                "2027-07-01T00:00:00"
+                        ))
+                ));
+
+        mockMvc.perform(get("/api/admin/role-assignments")
+                        .param("pageNo", "1")
+                        .param("pageSize", "20")
+                        .param("userId", "1010")
+                        .param("roleCode", "COUNSELOR")
+                        .param("status", "ACTIVE")
+                        .param("orgUnitId", "2002"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.records[0].userNo").value("2024305001"))
+                .andExpect(jsonPath("$.data.records[0].roleCode").value("COUNSELOR"));
+    }
 
     @Test
     void shouldCreateRoleAssignment() throws Exception {
@@ -119,6 +155,14 @@ class IamRoleAssignmentAdminControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.assignmentId").value(70021))
                 .andExpect(jsonPath("$.data.orgUnitId").value(2009))
                 .andExpect(jsonPath("$.data.updatedAt").value("2026-05-20T10:20:30"));
+    }
+
+    @Test
+    void shouldRevokeRoleAssignment() throws Exception {
+        mockMvc.perform(delete("/api/admin/role-assignments/70021"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").doesNotExist());
     }
 
     @Test

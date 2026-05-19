@@ -4,6 +4,8 @@ import edu.whut.eval.application.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.application.iam.command.CreateRoleAssignmentCommand;
 import edu.whut.eval.application.iam.command.UpdateRoleAssignmentCommand;
+import edu.whut.eval.application.iam.query.RoleAssignmentAdminPageItemView;
+import edu.whut.eval.application.iam.query.RoleAssignmentAdminPageQuery;
 import edu.whut.eval.application.iam.query.RoleAssignmentAdminView;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
@@ -16,6 +18,7 @@ import edu.whut.eval.domain.iam.repository.IamUserQueryRepository;
 import edu.whut.eval.domain.iam.repository.RoleAssignmentAdminRepository;
 import edu.whut.eval.domain.org.model.OrgUnit;
 import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
+import edu.whut.eval.domain.shared.PageResult;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -120,6 +123,16 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
         );
         iamAdminAuditRecorder.recordRoleAssignmentUpdated(operator.getUserId(), existing, detail);
         return toView(detail);
+    }
+
+    @Override
+    public PageResult<RoleAssignmentAdminPageItemView> pageAssignments(RoleAssignmentAdminPageQuery query) {
+        throw new UnsupportedOperationException("TODO: implement page role assignment flow");
+    }
+
+    @Override
+    public void revokeAssignment(Long assignmentId) {
+        throw new UnsupportedOperationException("TODO: implement revoke role assignment flow");
     }
 
     private void validateStatus(String status, String currentStatus) {
