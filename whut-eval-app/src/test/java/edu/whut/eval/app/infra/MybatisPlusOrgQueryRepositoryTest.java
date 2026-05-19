@@ -57,6 +57,19 @@ class MybatisPlusOrgQueryRepositoryTest {
         assertThat(result).extracting(OrgUnit::status).containsExactly("ACTIVE", "DISABLED");
     }
 
+    @Test
+    void shouldPruneActiveDescendantsUnderDisabledBranchFromRootTree() {
+        given(orgUnitMapper.selectList(any())).willReturn(List.of(
+                orgUnit(2001L, null, "SCHOOL", "WHUT", "武汉理工大学", "/WHUT", "ACTIVE"),
+                orgUnit(2002L, 2001L, "COLLEGE", "CS", "计算机与人工智能学院", "/WHUT/CS", "DISABLED"),
+                orgUnit(2005L, 2002L, "GRADE", "CS2022", "计算机 2022 级", "/WHUT/CS/CS2022", "ACTIVE")
+        ));
+
+        List<OrgUnit> result = repository.findRootTree(false);
+
+        assertThat(result).extracting(OrgUnit::id).containsExactly(2001L);
+    }
+
     private OrgUnitDO orgUnit(Long id,
                               Long parentId,
                               String unitType,

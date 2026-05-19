@@ -3,6 +3,7 @@ package edu.whut.eval.app.infra;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import edu.whut.eval.domain.org.model.OrgUnit;
 import edu.whut.eval.domain.org.repository.OrgQueryRepository;
 import edu.whut.eval.infra.config.MybatisPlusConfig;
 import edu.whut.eval.infra.persistence.mapper.OrgMembershipMapper;
@@ -133,6 +134,26 @@ class MybatisPlusOrgQueryRepositoryIntegrationTest {
 
         assertThat(repository.findDescendants(2002L, false))
                 .extracting(unit -> unit.id())
+                .containsExactly(2002L, 2005L);
+    }
+
+    @Test
+    void shouldFindDescendantsWhenRootPathEndsWithTrailingSlash() {
+        jdbcTemplate.update(
+                "INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (?,?,?,?,?,?,?)",
+                2001L, null, "SCHOOL", "WHUT", "武汉理工大学", "/WHUT", "ACTIVE"
+        );
+        jdbcTemplate.update(
+                "INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (?,?,?,?,?,?,?)",
+                2002L, 2001L, "COLLEGE", "CS", "计算机与人工智能学院", "/WHUT/CS/", "ACTIVE"
+        );
+        jdbcTemplate.update(
+                "INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (?,?,?,?,?,?,?)",
+                2005L, 2002L, "GRADE", "CS2022", "计算机 2022 级", "/WHUT/CS/CS2022", "ACTIVE"
+        );
+
+        assertThat(repository.findDescendants(2002L, false))
+                .extracting(OrgUnit::id)
                 .containsExactly(2002L, 2005L);
     }
 

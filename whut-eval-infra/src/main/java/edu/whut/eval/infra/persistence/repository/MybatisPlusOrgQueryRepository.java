@@ -52,13 +52,16 @@ public class MybatisPlusOrgQueryRepository implements OrgQueryRepository {
 
     @Override
     public List<OrgUnit> findRootTree(boolean includeDisabled) {
-        LambdaQueryWrapper<OrgUnitDO> wrapper = new LambdaQueryWrapper<OrgUnitDO>()
-                .orderByAsc(OrgUnitDO::getPath)
-                .orderByAsc(OrgUnitDO::getId);
-        if (!includeDisabled) {
-            wrapper.eq(OrgUnitDO::getStatus, "ACTIVE");
+        List<OrgUnit> units = orgUnitMapper.selectList(new LambdaQueryWrapper<OrgUnitDO>()
+                        .orderByAsc(OrgUnitDO::getPath)
+                        .orderByAsc(OrgUnitDO::getId))
+                .stream()
+                .map(this::toDomain)
+                .toList();
+        if (includeDisabled) {
+            return units;
         }
-        return orgUnitMapper.selectList(wrapper).stream().map(this::toDomain).toList();
+        return pruneDisabledForest(units);
     }
 
     @Override
@@ -67,11 +70,14 @@ public class MybatisPlusOrgQueryRepository implements OrgQueryRepository {
         if (root == null) {
             return List.of();
         }
+        String normalizedRootPath = normalizePath(root.getPath());
 
         List<OrgUnit> subtree = orgUnitMapper.selectList(new LambdaQueryWrapper<OrgUnitDO>()
                         .and(wrapper -> wrapper.eq(OrgUnitDO::getPath, root.getPath())
                                 .or()
-                                .likeRight(OrgUnitDO::getPath, root.getPath() + "/"))
+                                .eq(OrgUnitDO::getPath, normalizedRootPath)
+                                .or()
+                                .likeRight(OrgUnitDO::getPath, normalizedRootPath + "/"))
                 .orderByAsc(OrgUnitDO::getPath)
                 .orderByAsc(OrgUnitDO::getId))
                 .stream()
@@ -132,6 +138,20 @@ public class MybatisPlusOrgQueryRepository implements OrgQueryRepository {
         return retained;
     }
 
+    private List<OrgUnit> pruneDisabledForest(List<OrgUnit> units) {
+        Map<Long, List<OrgUnit>> childrenByParentId = new LinkedHashMap<>();
+        Map<Long, OrgUnit> unitById = new LinkedHashMap<>();
+        for (OrgUnit unit : units) {
+            unitById.put(unit.id(), unit);
+            childrenByParentId.computeIfAbsent(unit.parentId(), key -> new ArrayList<>()).add(unit);
+        }
+        List<OrgUnit> retained = new ArrayList<>();
+        units.stream()
+                .filter(unit -> unit.parentId() == null || !unitById.containsKey(unit.parentId()))
+                .forEach(root -> collectActiveBranch(root, childrenByParentId, retained));
+        return retained;
+    }
+
     private void collectActiveBranch(OrgUnit unit,
                                      Map<Long, List<OrgUnit>> childrenByParentId,
                                      List<OrgUnit> retained) {
@@ -142,5 +162,15 @@ public class MybatisPlusOrgQueryRepository implements OrgQueryRepository {
         for (OrgUnit child : childrenByParentId.getOrDefault(unit.id(), List.of())) {
             collectActiveBranch(child, childrenByParentId, retained);
         }
+    }
+
+    private String normalizePath(String path) {
+        if (path == null || path.isBlank()) {
+            return path;
+        }
+        if (path.length() > 1 && path.endsWith("/")) {
+            return path.substring(0, path.length() - 1);
+        }
+        return path;
     }
 }
