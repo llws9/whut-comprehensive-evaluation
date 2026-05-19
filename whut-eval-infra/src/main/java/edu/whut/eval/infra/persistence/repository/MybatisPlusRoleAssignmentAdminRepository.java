@@ -306,6 +306,7 @@ public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentA
                 .eq(IamUserRoleAssignmentDO::getSourceType, assignmentDO.getSourceType());
         eqNullable(wrapper, IamUserRoleAssignmentDO::getEffectiveFrom, assignmentDO.getEffectiveFrom());
         eqNullable(wrapper, IamUserRoleAssignmentDO::getEffectiveTo, assignmentDO.getEffectiveTo());
+        appendCurrentWindowGuard(wrapper, assignmentDO);
         return wrapper;
     }
 
@@ -333,6 +334,18 @@ public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentA
             return;
         }
         wrapper.eq(column, value);
+    }
+
+    private void appendCurrentWindowGuard(LambdaUpdateWrapper<IamUserRoleAssignmentDO> wrapper,
+                                          IamUserRoleAssignmentDO assignmentDO) {
+        if (!"ACTIVE".equals(assignmentDO.getStatus())) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        wrapper.le(IamUserRoleAssignmentDO::getEffectiveFrom, now)
+                .and(w -> w.isNull(IamUserRoleAssignmentDO::getEffectiveTo)
+                        .or()
+                        .gt(IamUserRoleAssignmentDO::getEffectiveTo, now));
     }
 
     private String formatTime(LocalDateTime time) {

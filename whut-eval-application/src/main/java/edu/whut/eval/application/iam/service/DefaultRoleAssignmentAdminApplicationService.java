@@ -96,14 +96,14 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
         IamRoleAssignmentDetail existing = roleAssignmentAdminRepository.findDetailById(assignmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("角色分配不存在: " + assignmentId));
         validateStatus(command.status(), existing);
-        validateTimeRange(command.effectiveFrom(), command.effectiveTo());
-
-        Long targetOrgUnitId = command.orgUnitId() == null ? existing.orgUnitId() : command.orgUnitId();
-        OrgUnit orgUnit = resolveOrgUnit(targetOrgUnitId);
         String nextStatus = command.status() == null ? existing.status() : command.status();
         String nextEffectiveFrom = command.effectiveFrom() == null ? existing.effectiveFrom() : command.effectiveFrom();
         String nextEffectiveTo = command.effectiveTo() == null ? existing.effectiveTo() : command.effectiveTo();
+        validateTimeRange(nextEffectiveFrom, nextEffectiveTo);
+        validateFinalState(nextStatus, nextEffectiveFrom, nextEffectiveTo);
 
+        Long targetOrgUnitId = command.orgUnitId() == null ? existing.orgUnitId() : command.orgUnitId();
+        OrgUnit orgUnit = resolveOrgUnit(targetOrgUnitId);
         if ("ACTIVE".equals(nextStatus) && roleAssignmentAdminRepository.existsActiveAssignment(
                 existing.userId(),
                 existing.roleCode(),
@@ -191,6 +191,14 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
         return "ACTIVE".equals(detail.status())
                 && effectiveFrom != null
                 && effectiveFrom.isAfter(LocalDateTime.now());
+    }
+
+    private void validateFinalState(String status, String effectiveFrom, String effectiveTo) {
+        LocalDateTime from = parseTime(effectiveFrom, "effectiveFrom");
+        LocalDateTime to = parseTime(effectiveTo, "effectiveTo");
+        if ("EXPIRED".equals(RoleAssignmentCurrentStatusResolver.resolve(status, from, to, LocalDateTime.now()))) {
+            throw new ConflictException("已过期分配不允许通过接口回写");
+        }
     }
 
     private void validateTimeRange(String effectiveFrom, String effectiveTo) {

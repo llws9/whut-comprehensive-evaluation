@@ -3,6 +3,7 @@ package edu.whut.eval.app.iam;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentDetail;
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentPageItem;
 import edu.whut.eval.domain.iam.query.RoleAssignmentPageQuery;
@@ -33,6 +34,7 @@ import org.springframework.test.context.junit.jupiter.SpringExtension;
 import javax.sql.DataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @ExtendWith(SpringExtension.class)
 @ContextConfiguration(classes = MybatisPlusRoleAssignmentAdminRepositoryIntegrationTest.TestConfig.class)
@@ -222,6 +224,43 @@ class MybatisPlusRoleAssignmentAdminRepositoryIntegrationTest {
                 String.class,
                 70021L
         )).isEqualTo("INACTIVE");
+    }
+
+    @Test
+    void shouldRejectUpdateWhenPersistedActiveAssignmentIsAlreadyExpired() {
+        jdbcTemplate.update(
+                "INSERT INTO iam_user_role_assignment (id, user_id, role_id, org_unit_id, source_type, effective_from, effective_to, status, assigned_by, created_at) " +
+                        "VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                70021L, 1010L, 21L, 2002L, "MANUAL", java.sql.Timestamp.valueOf("2024-01-01 00:00:00"), java.sql.Timestamp.valueOf("2024-02-01 00:00:00"), "ACTIVE", 9001L
+        );
+
+        assertThatThrownBy(() -> repository.update(
+                70021L,
+                1010L,
+                "COUNSELOR",
+                "辅导员",
+                2002L,
+                "计算机与人工智能学院",
+                "INACTIVE",
+                "2024-01-01T00:00:00",
+                "2024-02-01T00:00:00",
+                "MANUAL"
+        ))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("角色分配已变更，请刷新后重试");
+    }
+
+    @Test
+    void shouldRejectRevokeWhenPersistedActiveAssignmentIsFutureEffective() {
+        jdbcTemplate.update(
+                "INSERT INTO iam_user_role_assignment (id, user_id, role_id, org_unit_id, source_type, effective_from, effective_to, status, assigned_by, created_at) " +
+                        "VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                70021L, 1010L, 21L, 2002L, "MANUAL", java.sql.Timestamp.valueOf("2099-01-01 00:00:00"), null, "ACTIVE", 9001L
+        );
+
+        assertThatThrownBy(() -> repository.revoke(70021L))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("角色分配已变更，请刷新后重试");
     }
 
     @Configuration
