@@ -14,6 +14,7 @@ import edu.whut.eval.domain.iam.model.IamRoleAssignmentDetail;
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentPageItem;
 import edu.whut.eval.domain.iam.model.IamRoleDefinition;
 import edu.whut.eval.domain.iam.model.IamUser;
+import edu.whut.eval.domain.iam.model.RoleAssignmentCurrentStatusResolver;
 import edu.whut.eval.domain.iam.query.RoleAssignmentPageQuery;
 import edu.whut.eval.domain.iam.repository.IamRoleQueryRepository;
 import edu.whut.eval.domain.iam.repository.IamUserQueryRepository;
@@ -224,11 +225,14 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
     }
 
     private String resolveCurrentStatus(IamRoleAssignmentDetail detail) {
+        LocalDateTime effectiveFrom = parseTime(detail.effectiveFrom(), "effectiveFrom");
         LocalDateTime effectiveTo = parseTime(detail.effectiveTo(), "effectiveTo");
-        if ("ACTIVE".equals(detail.status()) && effectiveTo != null && !effectiveTo.isAfter(LocalDateTime.now())) {
-            return "EXPIRED";
-        }
-        return detail.status();
+        return RoleAssignmentCurrentStatusResolver.resolve(
+                detail.status(),
+                effectiveFrom,
+                effectiveTo,
+                LocalDateTime.now()
+        );
     }
 
     private RoleAssignmentAdminPageItemView toPageItemView(IamRoleAssignmentPageItem item) {

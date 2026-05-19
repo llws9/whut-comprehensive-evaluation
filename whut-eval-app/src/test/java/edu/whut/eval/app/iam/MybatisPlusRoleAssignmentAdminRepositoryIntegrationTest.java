@@ -182,6 +182,30 @@ class MybatisPlusRoleAssignmentAdminRepositoryIntegrationTest {
     }
 
     @Test
+    void shouldDisplayFutureEffectiveAssignmentAsInactive() {
+        jdbcTemplate.update(
+                "INSERT INTO iam_user_role_assignment (id, user_id, role_id, org_unit_id, source_type, effective_from, effective_to, status, assigned_by, created_at) " +
+                        "VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                70021L, 1010L, 21L, 2002L, "MANUAL", java.sql.Timestamp.valueOf("2099-01-01 00:00:00"), null, "ACTIVE", 9001L
+        );
+
+        PageResult<IamRoleAssignmentPageItem> result = repository.pageAssignments(new RoleAssignmentPageQuery(
+                1,
+                20,
+                1010L,
+                "COUNSELOR",
+                null,
+                2002L
+        ));
+
+        assertThat(result.total()).isEqualTo(1);
+        assertThat(result.records()).singleElement().satisfies(item -> {
+            assertThat(item.assignmentId()).isEqualTo(70021L);
+            assertThat(item.status()).isEqualTo("INACTIVE");
+        });
+    }
+
+    @Test
     void shouldRevokeAssignmentExplicitly() {
         jdbcTemplate.update(
                 "INSERT INTO iam_user_role_assignment (id, user_id, role_id, org_unit_id, source_type, effective_from, effective_to, status, assigned_by, created_at) " +

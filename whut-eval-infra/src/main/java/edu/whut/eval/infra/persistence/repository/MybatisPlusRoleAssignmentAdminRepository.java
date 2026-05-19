@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentDetail;
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentPageItem;
+import edu.whut.eval.domain.iam.model.RoleAssignmentCurrentStatusResolver;
 import edu.whut.eval.domain.iam.query.RoleAssignmentPageQuery;
 import edu.whut.eval.domain.iam.repository.RoleAssignmentAdminRepository;
 import edu.whut.eval.domain.shared.PageResult;
@@ -275,7 +276,8 @@ public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentA
             return;
         }
         if ("INACTIVE".equals(status)) {
-            wrapper.eq("status", "INACTIVE");
+            wrapper.and(w -> w.eq("status", "INACTIVE")
+                    .or(future -> future.eq("status", "ACTIVE").gt("effective_from", now)));
             return;
         }
         wrapper.and(w -> w.eq("status", "EXPIRED")
@@ -283,15 +285,12 @@ public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentA
     }
 
     private String resolveDisplayStatus(IamUserRoleAssignmentDO assignmentDO, LocalDateTime now) {
-        if ("EXPIRED".equals(assignmentDO.getStatus())) {
-            return "EXPIRED";
-        }
-        if ("ACTIVE".equals(assignmentDO.getStatus())
-                && assignmentDO.getEffectiveTo() != null
-                && !assignmentDO.getEffectiveTo().isAfter(now)) {
-            return "EXPIRED";
-        }
-        return assignmentDO.getStatus();
+        return RoleAssignmentCurrentStatusResolver.resolve(
+                assignmentDO.getStatus(),
+                assignmentDO.getEffectiveFrom(),
+                assignmentDO.getEffectiveTo(),
+                now
+        );
     }
 
     private Long resolveRoleId(String roleCode) {

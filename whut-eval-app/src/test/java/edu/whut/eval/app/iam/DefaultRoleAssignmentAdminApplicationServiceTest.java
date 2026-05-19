@@ -476,4 +476,30 @@ class DefaultRoleAssignmentAdminApplicationServiceTest {
                 .isInstanceOf(ConflictException.class)
                 .hasMessage("仅 ACTIVE 状态的角色分配允许撤销");
     }
+
+    @Test
+    void shouldRejectRevokeWhenAssignmentIsFutureEffective() {
+        given(roleAssignmentAdminRepository.findDetailById(70021L)).willReturn(Optional.of(
+                new IamRoleAssignmentDetail(
+                        70021L,
+                        1010L,
+                        "COUNSELOR",
+                        "辅导员",
+                        2002L,
+                        "计算机与人工智能学院",
+                        "ACTIVE",
+                        "2099-05-18T00:00:00",
+                        null,
+                        "MANUAL",
+                        null
+                )
+        ));
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(
+                new UserAuthorizationContext(9001L, "A0001", "系统管理员", "ADMIN", Set.of("SUPER_ADMIN"), Set.of("assignment.manage"), List.of())
+        );
+
+        assertThatThrownBy(() -> service.revokeAssignment(70021L))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("仅 ACTIVE 状态的角色分配允许撤销");
+    }
 }
