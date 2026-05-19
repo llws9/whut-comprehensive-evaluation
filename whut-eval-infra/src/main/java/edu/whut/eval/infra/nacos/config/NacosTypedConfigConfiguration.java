@@ -1,6 +1,10 @@
 package edu.whut.eval.infra.nacos.config;
 
 import edu.whut.eval.infra.nacos.*;
+import edu.whut.eval.domain.config.model.EligibilityRulesConfig;
+import edu.whut.eval.domain.config.model.EvaluationItemsConfig;
+import edu.whut.eval.domain.config.model.IndexOptionsConfig;
+import edu.whut.eval.domain.config.repository.TypedConfigRepository;
 import edu.whut.eval.infra.nacos.model.typed.OssStorageConfig;
 import edu.whut.eval.infra.nacos.model.typed.PlatformRuleConfig;
 import edu.whut.eval.infra.nacos.model.typed.SharedBaseConfig;
@@ -24,7 +28,10 @@ public class NacosTypedConfigConfiguration {
         return new StaticTypedConfigBindingRegistry(List.of(
                 new TypedConfigBinding<>("shared-base-config", SharedBaseConfig.class),
                 new TypedConfigBinding<>("platform-rule-config", PlatformRuleConfig.class),
-                new TypedConfigBinding<>("oss-storage-config", OssStorageConfig.class)
+                new TypedConfigBinding<>("oss-storage-config", OssStorageConfig.class),
+                new TypedConfigBinding<>("evaluation-items-config", EvaluationItemsConfig.class),
+                new TypedConfigBinding<>("index-options-config", IndexOptionsConfig.class),
+                new TypedConfigBinding<>("eligibility-rules-config", EligibilityRulesConfig.class)
         ));
     }
 

@@ -1,7 +1,7 @@
 package edu.whut.eval.infra.nacos.config;
 
 import edu.whut.eval.common.exception.ConfigLoadException;
-import edu.whut.eval.infra.nacos.TypedConfigRepository;
+import edu.whut.eval.domain.config.repository.TypedConfigRepository;
 import edu.whut.eval.infra.nacos.model.typed.OssStorageConfig;
 import org.springframework.stereotype.Component;
 

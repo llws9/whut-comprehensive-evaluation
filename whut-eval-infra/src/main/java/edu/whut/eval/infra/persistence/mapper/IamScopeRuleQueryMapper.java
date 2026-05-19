@@ -14,7 +14,7 @@ public interface IamScopeRuleQueryMapper {
             "sr.org_unit_id AS orgUnitId, " +
             "sr.category_code AS categoryCode, " +
             "sr.item_code AS itemCode, " +
-            "CAST(sr.expression_json AS CHAR) AS expressionJson, " +
+            "sr.expression_json AS expressionJson, " +
             "sr.priority AS priority, " +
             "sr.status AS status " +
             "FROM iam_scope_rule sr " +

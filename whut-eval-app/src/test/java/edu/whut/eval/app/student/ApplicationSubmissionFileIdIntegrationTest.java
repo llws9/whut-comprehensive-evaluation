@@ -13,6 +13,9 @@ import edu.whut.eval.domain.application.model.ApplicationSubmission;
 import edu.whut.eval.domain.application.repository.ApplicationSubmissionRepository;
 import edu.whut.eval.domain.application.service.ActiveSubmissionPolicy;
 import edu.whut.eval.domain.application.service.ApplicationSubmissionWindowPolicy;
+import edu.whut.eval.domain.config.RuleEngineService;
+import edu.whut.eval.domain.config.StudentContext;
+import edu.whut.eval.domain.config.StudentEvaluationSummary;
 import edu.whut.eval.infra.config.MybatisPlusConfig;
 import edu.whut.eval.infra.persistence.mapper.ApplicationAttachmentMapper;
 import edu.whut.eval.infra.persistence.mapper.ApplicationSubmissionMapper;
@@ -37,6 +40,7 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 
 import javax.sql.DataSource;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -279,6 +283,31 @@ class ApplicationSubmissionFileIdIntegrationTest {
         @Bean
         ActiveSubmissionPolicy activeSubmissionPolicy() {
             return (applicantUserId, itemCode, academicYear, term, excludedApplicationId) -> false;
+        }
+
+        @Bean
+        RuleEngineService ruleEngineService() {
+            return new RuleEngineService() {
+                @Override
+                public BigDecimal calculatePoints(String itemCode, String optionCode, StudentContext context) {
+                    return BigDecimal.ZERO;
+                }
+
+                @Override
+                public BigDecimal calculateMaxPoints(String itemCode, StudentContext context) {
+                    return null;
+                }
+
+                @Override
+                public boolean allowsCustomPoints(String itemCode, String optionCode) {
+                    return false;
+                }
+
+                @Override
+                public boolean evaluateEligibility(String categoryCode, StudentEvaluationSummary summary) {
+                    return true;
+                }
+            };
         }
     }
 }

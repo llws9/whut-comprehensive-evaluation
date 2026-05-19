@@ -521,6 +521,9 @@ A 组应优先依赖并落地以下表：
 
 - 路由：`POST /api/admin/role-assignments`
 - 鉴权：`assignment.manage`
+- 接口层 DTO：
+  - 请求：`edu.whut.eval.interfaces.iam.request.CreateRoleAssignmentRequest`
+  - 响应：`edu.whut.eval.interfaces.iam.response.RoleAssignmentResponse`
 
 请求体：
 
@@ -533,6 +536,19 @@ A 组应优先依赖并落地以下表：
 | `effectiveTo` | `string` | 否 | 失效时间 |
 | `sourceType` | `string` | 否 | `MANUAL` / `IMPORT` |
 
+请求示例：
+
+```json
+{
+  "userId": 1010,
+  "roleCode": "COUNSELOR",
+  "orgUnitId": 2002,
+  "effectiveFrom": "2026-05-20T00:00:00",
+  "effectiveTo": "2027-07-01T00:00:00",
+  "sourceType": "MANUAL"
+}
+```
+
 创建规则：
 
 - 新建分配默认写入 `ACTIVE`。
@@ -540,6 +556,28 @@ A 组应优先依赖并落地以下表：
 - `EXPIRED` 只能由系统依据 `effectiveTo` 自动判定，不能通过创建接口直接指定。
 
 成功返回 `data`：`assignmentId/userId/roleCode/status/effectiveFrom/effectiveTo`
+
+成功响应示例：
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": "success",
+  "data": {
+    "assignmentId": 70021,
+    "userId": 1010,
+    "roleCode": "COUNSELOR",
+    "roleName": "辅导员",
+    "orgUnitId": 2002,
+    "orgUnitName": "计算机与人工智能学院",
+    "status": "ACTIVE",
+    "effectiveFrom": "2026-05-20T00:00:00",
+    "effectiveTo": "2027-07-01T00:00:00",
+    "sourceType": "MANUAL"
+  }
+}
+```
 
 异常返回：
 
@@ -556,8 +594,54 @@ A 组应优先依赖并落地以下表：
 - 鉴权：`assignment.manage`
 - 可修改字段：`status/effectiveFrom/effectiveTo/orgUnitId`
 - 状态流转冻结：仅允许 `ACTIVE -> INACTIVE` 和 `INACTIVE -> ACTIVE`；`EXPIRED` 为终态，不允许通过接口回写
+- 接口层 DTO：
+  - 请求：`edu.whut.eval.interfaces.iam.request.UpdateRoleAssignmentRequest`
+  - 响应：`edu.whut.eval.interfaces.iam.response.RoleAssignmentResponse`
 
-成功返回：`data = null`
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `status` | `string` | 否 | `ACTIVE/INACTIVE` |
+| `orgUnitId` | `long` | 否 | 新挂载组织 |
+| `effectiveFrom` | `string` | 否 | 新的生效时间 |
+| `effectiveTo` | `string` | 否 | 新的失效时间 |
+
+请求示例：
+
+```json
+{
+  "status": "ACTIVE",
+  "orgUnitId": 2009,
+  "effectiveFrom": "2026-05-20T00:00:00",
+  "effectiveTo": "2027-07-01T00:00:00"
+}
+```
+
+成功返回：更新后的角色分配快照
+
+成功响应示例：
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": "success",
+  "data": {
+    "assignmentId": 70021,
+    "userId": 1010,
+    "roleCode": "COUNSELOR",
+    "roleName": "辅导员",
+    "orgUnitId": 2009,
+    "orgUnitName": "计算机学院研工办",
+    "status": "ACTIVE",
+    "effectiveFrom": "2026-05-20T00:00:00",
+    "effectiveTo": "2027-07-01T00:00:00",
+    "sourceType": "MANUAL",
+    "updatedAt": "2026-05-20T10:20:30"
+  }
+}
+```
 
 异常返回：
 
@@ -590,6 +674,56 @@ A 组应优先依赖并落地以下表：
 - 路由：`GET /api/admin/role-assignments/{assignmentId}/scope-rules`
 - 鉴权：`assignment.manage`
 - 返回字段：`scopeRuleId/permissionCode/scopeType/orgUnitId/categoryCode/itemCode/priority/status`
+- 接口层 DTO：
+  - 响应：`edu.whut.eval.interfaces.iam.response.ScopeRuleResponse`
+
+成功响应示例：
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": "success",
+  "data": [
+    {
+      "scopeRuleId": 81001,
+      "permissionCode": "manage.review.view",
+      "scopeType": "ORG_SUBTREE",
+      "orgUnitId": 2002,
+      "orgUnitName": "计算机与人工智能学院",
+      "categoryCode": null,
+      "itemCode": null,
+      "expressionJson": null,
+      "priority": 100,
+      "status": "ACTIVE"
+    },
+    {
+      "scopeRuleId": 81002,
+      "permissionCode": "manage.review.view",
+      "scopeType": "CATEGORY",
+      "orgUnitId": null,
+      "orgUnitName": null,
+      "categoryCode": "MORAL",
+      "itemCode": null,
+      "expressionJson": null,
+      "priority": 90,
+      "status": "ACTIVE"
+    },
+    {
+      "scopeRuleId": 81003,
+      "permissionCode": "manage.students.view",
+      "scopeType": "ORG_SUBTREE",
+      "orgUnitId": 2002,
+      "orgUnitName": "计算机与人工智能学院",
+      "categoryCode": null,
+      "itemCode": null,
+      "expressionJson": null,
+      "priority": 100,
+      "status": "ACTIVE"
+    }
+  ]
+}
+```
 
 异常返回：
 
@@ -602,6 +736,9 @@ A 组应优先依赖并落地以下表：
 
 - 路由：`POST /api/admin/role-assignments/{assignmentId}/scope-rules`
 - 鉴权：`assignment.manage`
+- 接口层 DTO：
+  - 请求：`edu.whut.eval.interfaces.iam.request.CreateScopeRuleRequest`
+  - 响应：`edu.whut.eval.interfaces.iam.response.ScopeRuleResponse`
 
 请求体：
 
@@ -614,6 +751,53 @@ A 组应优先依赖并落地以下表：
 | `itemCode` | `string` | 否 | 子项编码 |
 | `expressionJson` | `object` | 否 | 受控 JSON DSL |
 | `priority` | `int` | 否 | 优先级，默认 `100` |
+
+请求示例 1：本部门及下级
+
+```json
+{
+  "permissionCode": "manage.review.view",
+  "scopeType": "ORG_SUBTREE",
+  "orgUnitId": 2002,
+  "priority": 100
+}
+```
+
+请求示例 2：指定类别
+
+```json
+{
+  "permissionCode": "manage.review.view",
+  "scopeType": "CATEGORY",
+  "categoryCode": "MORAL",
+  "priority": 90
+}
+```
+
+成功返回：新增后的范围规则快照
+
+成功响应示例：
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": "success",
+  "data": {
+    "scopeRuleId": 81004,
+    "assignmentId": 70021,
+    "permissionCode": "manage.review.view",
+    "scopeType": "CATEGORY",
+    "orgUnitId": null,
+    "categoryCode": "MORAL",
+    "itemCode": null,
+    "expressionJson": null,
+    "priority": 90,
+    "status": "ACTIVE",
+    "createdAt": "2026-05-20T10:40:00"
+  }
+}
+```
 
 异常返回：
 

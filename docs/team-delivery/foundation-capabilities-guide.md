@@ -506,7 +506,158 @@ if (activeSubmissionPolicy.hasActiveSubmission(
 - C/D 组冻结 `APPROVED/RETURNED/REJECTED` 与最终汇总关系
 - D/E 组不得私自恢复导入批次表或运行时配置表；若二期需要异步任务或配置落库，必须单独评审
 
-## 14. 一句话规则
+## 14. 动态指标配置能力
+
+### 14.1 概述
+
+动态指标配置是评估系统的核心底座能力，支持通过 Nacos 配置中心动态管理四大类（德育、智育、体育与美育、劳育）的测评指标、评分标准、最高分值和资格规则。
+
+### 14.2 配置文件结构
+
+系统包含三个核心配置文件：
+
+| 配置文件 | Data ID | 说明 |
+|---------|---------|------|
+| 测评指标 | `whut-eval-evaluation-items.yaml` | 定义指标基本信息、最高分值、申请方式 |
+| 指标选项 | `whut-eval-index-options.yaml` | 定义各指标的评分标准选项 |
+| 资格规则 | `whut-eval-eligibility-rules.yaml` | 定义参评学业奖学金的基本要求 |
+
+### 14.3 测评指标配置
+
+```yaml
+evaluation-items:
+  MORAL:
+    - itemCode: "MORAL_REWARD_PUNISHMENT"
+      itemName: "奖惩"
+      maxPoints: 6                              # 固定最高分值
+      maxPointsExpression: "isPartyMember ? 8 : 6"  # SpEL动态计算
+      applyMode: "STUDENT_APPLY"                # STUDENT_APPLY/SYSTEM_CALCULATED/TEACHER_IMPORT
+      optionsKey: "moral-reward-punishment"     # 关联选项key
+```
+
+### 14.4 指标选项配置
+
+```yaml
+index-options:
+  # 普通选项（固定分值）
+  moral-reward-punishment:
+    - optionCode: "REWARD_PROVINCIAL"
+      optionName: "省级及以上荣誉称号"
+      points: 3
+      allowCustomPoints: false
+  
+  # "其他"类别（无固定评分标准，允许自定义分值）
+  sports-other:
+    - optionCode: "OTHER_CUSTOM"
+      optionName: "其他活动"
+      points: null                    # 无固定分值
+      allowCustomPoints: true         # 允许学生自定义
+```
+
+### 14.5 资格规则配置
+
+```yaml
+eligibility-rules:
+  LABOR:
+    - ruleId: "LABOR_RULE_1"
+      ruleType: "EXPRESSION"
+      description: "党员1.5分及以上，其他学生1分及以上"
+      expression: "isPartyMember ? (laborScore >= 1.5) : (laborScore >= 1.0)"
+      enabled: true
+```
+
+### 14.6 SpEL表达式支持
+
+#### 支持的上下文变量
+
+| 变量名 | 类型 | 说明 |
+|--------|------|------|
+| `isPartyMember` | boolean | 是否党员 |
+| `academicYear` | int | 入学年份 |
+| `grade` | string | 年级 |
+| `moralScore` | BigDecimal | 德育总分 |
+| `intellectualScore` | BigDecimal | 智育总分 |
+| `sportsScore` | BigDecimal | 体育与美育总分 |
+| `laborScore` | BigDecimal | 劳育总分 |
+
+#### 表达式示例
+
+| 表达式 | 说明 |
+|--------|------|
+| `"isPartyMember ? 8 : 6"` | 党员最高8分，非党员最高6分 |
+| `"academicYear >= 2023 ? 10 : 8"` | 2023级及以后最高10分 |
+| `"isPartyMember ? (laborScore >= 1.5) : (laborScore >= 1.0)"` | 党员需1.5分，非党员需1分 |
+
+### 14.7 业务代码调用方式
+
+```java
+@Service
+public class EvaluationConfigApplicationService {
+    
+    private final TypedConfigRepository configRepository;
+    private final RuleEngineService ruleEngineService;
+    
+    public EvaluationConfigApplicationService(TypedConfigRepository configRepository,
+                                              RuleEngineService ruleEngineService) {
+        this.configRepository = configRepository;
+        this.ruleEngineService = ruleEngineService;
+    }
+    
+    // 获取指标配置
+    public EvaluationItem getEvaluationItem(String itemCode) {
+        EvaluationItemsConfig config = configRepository
+                .find("evaluation-items-config", EvaluationItemsConfig.class)
+                .orElseThrow(() -> new ConfigLoadException("evaluation-items config not found"));
+        return findItemByCode(config, itemCode);
+    }
+    
+    // 获取指标选项
+    public List<OptionItem> getOptions(String itemCode) {
+        EvaluationItem item = getEvaluationItem(itemCode);
+        String optionsKey = item.getOptionsKey();
+        IndexOptionsConfig config = configRepository
+                .find("index-options-config", IndexOptionsConfig.class)
+                .orElseThrow(() -> new ConfigLoadException("index-options config not found"));
+        return config.getIndexOptions().getOrDefault(optionsKey, List.of());
+    }
+    
+    // 计算最高分值（支持SpEL）
+    public BigDecimal calculateMaxPoints(String itemCode, StudentContext context) {
+        return ruleEngineService.calculateMaxPoints(itemCode, context);
+    }
+    
+    // 评估资格
+    public boolean evaluateEligibility(String categoryCode, StudentEvaluationSummary summary) {
+        return ruleEngineService.evaluateEligibility(categoryCode, summary);
+    }
+}
+```
+
+### 14.8 特殊情况处理
+
+#### "其他"类别处理
+
+当 `allowCustomPoints: true` 且 `points: null` 时：
+- 前端显示输入框让学生填写申请分值
+- 系统仍会检查是否超过该指标的 `maxPoints` 上限
+
+#### 评分档位自动计算
+
+普通评分标准不允许学生手填分值。提交时前端传入 `optionCode`，后端按 `itemCode -> optionsKey -> optionCode` 从 `index-options-config` 读取固定 `points`，并以配置分值作为本次申请分值。
+
+#### 超过最高分值处理
+
+超过最高分值不阻断申请。后端仍保存申请并返回 `exceedsMaxPoints: true`、`appliedPoints`、`maxPoints` 和 `warningMessage`，前端需要在申请成功后展示提示；审核或最终计分阶段按最高分值上限处理。
+
+#### SpEL 解析口径
+
+规则引擎会把学生上下文作为 SpEL root object，同时注入同名变量，配置中既可以写 `isPartyMember ? 8 : 6`，也可以使用 `#isPartyMember` 形式。推荐统一使用变量名直写，保持配置简洁。
+
+#### 无资格要求的指标
+
+不在 `eligibility-rules` 中配置该类别的规则，或配置空规则列表。
+
+## 15. 一句话规则
 
 - 认证从 A 组底座读。
 - 仓储经 domain repo 调。
@@ -514,4 +665,5 @@ if (activeSubmissionPolicy.hasActiveSubmission(
 - 配置通过 typed config 读。
 - 日志统一走 `AppLog`。
 - 异常统一走全局处理器。
+- 指标配置通过动态配置中心管理。
 - 不跨层，不重复造轮子。

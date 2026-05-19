@@ -15,6 +15,7 @@ import edu.whut.eval.domain.application.model.ApplicationSubmissionStatus;
 import edu.whut.eval.domain.application.repository.ApplicationSubmissionRepository;
 import edu.whut.eval.domain.application.service.ActiveSubmissionPolicy;
 import edu.whut.eval.domain.application.service.ApplicationSubmissionWindowPolicy;
+import edu.whut.eval.domain.config.RuleEngineService;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,6 +39,7 @@ class ApplicationSubmissionCommandApplicationServiceTest {
     private final ApplicationSubmissionWindowPolicy applicationSubmissionWindowPolicy = mock(ApplicationSubmissionWindowPolicy.class);
     private final ActiveSubmissionPolicy activeSubmissionPolicy = mock(ActiveSubmissionPolicy.class);
     private final ApplicationAttachmentResolver applicationAttachmentResolver = mock(ApplicationAttachmentResolver.class);
+    private final RuleEngineService ruleEngineService = mock(RuleEngineService.class);
 
     private final ApplicationSubmissionCommandApplicationService applicationService =
             new ApplicationSubmissionCommandApplicationService(
@@ -45,7 +47,8 @@ class ApplicationSubmissionCommandApplicationServiceTest {
                     applicationSubmissionRepository,
                     applicationSubmissionWindowPolicy,
                     activeSubmissionPolicy,
-                    applicationAttachmentResolver
+                    applicationAttachmentResolver,
+                    ruleEngineService
             );
 
     @Test

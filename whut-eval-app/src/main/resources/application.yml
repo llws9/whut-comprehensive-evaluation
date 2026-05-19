@@ -70,3 +70,24 @@ infra:
         format: YAML
         required: true
         auto-refresh: true
+      - name: evaluation-items-config
+        data-id: whut-eval-evaluation-items.yaml
+        group: WHUT_EVAL
+        timeout-ms: 3000
+        format: YAML
+        required: true
+        auto-refresh: true
+      - name: index-options-config
+        data-id: whut-eval-index-options.yaml
+        group: WHUT_EVAL
+        timeout-ms: 3000
+        format: YAML
+        required: true
+        auto-refresh: true
+      - name: eligibility-rules-config
+        data-id: whut-eval-eligibility-rules.yaml
+        group: WHUT_EVAL
+        timeout-ms: 3000
+        format: YAML
+        required: true
+        auto-refresh: true

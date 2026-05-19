@@ -1,5 +1,7 @@
 package edu.whut.eval.infra.nacos;
 
+import edu.whut.eval.domain.config.repository.TypedConfigRepository;
+
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 

@@ -15,6 +15,7 @@
 | `database-frozen-tables.md` | 全局数据库冻结清单 | 单独导出的 19 张核心表 Markdown 总表 |
 | `database-frozen-tables.csv` | 全局数据库冻结清单 | 可直接用 Excel 打开的 19 张核心表 CSV |
 | `database-table-ownership-matrix.md` | 全局数据库责任矩阵 | 按 A-E 组拆分表主责、读写权限、联调红线 |
+| `iam-scope-rule-ui-storage-query-design.md` | IAM 范围规则设计补充 | 管理端权限分配页面字段、`iam_scope_rule` 存储映射、查询 SQL 拼接方式 |
 | `delivery-master-checklist.md` | 全局总控清单 | 合并数据库责任矩阵、接口依赖矩阵、交付顺序与最小交付项 |
 | `foundation-capabilities-guide.md` | 全局底座说明 | 认证、仓储调用、文件上传、配置、日志、异常、开发规范 |
 

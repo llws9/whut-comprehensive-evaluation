@@ -70,12 +70,13 @@ public class StudentApplicationSubmissionController {
 
     /**
      * 提交指定申请。
+     * 当申请分值超过最大分值限制时，允许申请但触发警告提示。
      */
     @PostMapping("/{applicationId}/submit")
     public ApiResponse<ApplicationSubmissionView> submit(@PathVariable Long applicationId,
                                                          @Valid @RequestBody SubmitApplicationRequest request) {
         ApplicationSubmissionView view = applicationSubmissionCommandApplicationService.submit(
-                new SubmitApplicationCommand(applicationId, request.getExpectedVersion())
+                new SubmitApplicationCommand(applicationId, request.getExpectedVersion(), request.getAppliedPoints(), request.getOptionCode())
         );
         return ApiResponse.success(view);
     }

@@ -7,6 +7,7 @@ public final class AuthorizationPermissionCodes {
 
     public static final String APPLICATION_VIEW_SELF = "application.view.self";
     public static final String APPLICATION_REVIEW = "application.review";
+    public static final String ASSIGNMENT_MANAGE = "assignment.manage";
     public static final String SCORE_VIEW_SELF = "score.view.self";
     public static final String SCORE_VIEW_ASSIGNED = "score.view.assigned";
 

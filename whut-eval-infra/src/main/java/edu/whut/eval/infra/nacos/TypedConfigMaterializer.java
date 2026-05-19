@@ -2,6 +2,7 @@ package edu.whut.eval.infra.nacos;
 
 import edu.whut.eval.common.exception.ConfigLoadException;
 import edu.whut.eval.common.log.AppLog;
+import edu.whut.eval.domain.config.repository.TypedConfigRepository;
 import edu.whut.eval.infra.nacos.model.RawConfigPayload;
 import edu.whut.eval.infra.nacos.parser.ConfigPayloadParser;
 import org.slf4j.Logger;
