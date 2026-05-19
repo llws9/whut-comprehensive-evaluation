@@ -2,32 +2,45 @@ package edu.whut.eval.infra.persistence.repository;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentDetail;
+import edu.whut.eval.domain.iam.model.IamRoleAssignmentPageItem;
+import edu.whut.eval.domain.iam.query.RoleAssignmentPageQuery;
 import edu.whut.eval.domain.iam.repository.RoleAssignmentAdminRepository;
+import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.infra.persistence.entity.IamRoleDO;
+import edu.whut.eval.infra.persistence.entity.IamUserDO;
 import edu.whut.eval.infra.persistence.entity.IamUserRoleAssignmentDO;
 import edu.whut.eval.infra.persistence.entity.OrgUnitDO;
 import edu.whut.eval.infra.persistence.mapper.IamRoleMapper;
+import edu.whut.eval.infra.persistence.mapper.IamUserMapper;
 import edu.whut.eval.infra.persistence.mapper.IamUserRoleAssignmentMapper;
 import edu.whut.eval.infra.persistence.mapper.OrgUnitMapper;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Repository
 public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentAdminRepository {
 
     private final IamUserRoleAssignmentMapper assignmentMapper;
     private final IamRoleMapper roleMapper;
+    private final IamUserMapper userMapper;
     private final OrgUnitMapper orgUnitMapper;
 
     public MybatisPlusRoleAssignmentAdminRepository(IamUserRoleAssignmentMapper assignmentMapper,
                                                     IamRoleMapper roleMapper,
+                                                    IamUserMapper userMapper,
                                                     OrgUnitMapper orgUnitMapper) {
         this.assignmentMapper = assignmentMapper;
         this.roleMapper = roleMapper;
+        this.userMapper = userMapper;
         this.orgUnitMapper = orgUnitMapper;
     }
 
@@ -101,6 +114,36 @@ public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentA
     }
 
     @Override
+    public PageResult<IamRoleAssignmentPageItem> pageAssignments(RoleAssignmentPageQuery query) {
+        Long roleId = resolveRoleId(query.roleCode());
+        if (query.roleCode() != null && !query.roleCode().isBlank() && roleId == null) {
+            return new PageResult<>(0, List.of());
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        Page<IamUserRoleAssignmentDO> page = Page.of(query.pageNo(), query.pageSize());
+        QueryWrapper<IamUserRoleAssignmentDO> wrapper = new QueryWrapper<IamUserRoleAssignmentDO>()
+                .eq(query.userId() != null, "user_id", query.userId())
+                .eq(roleId != null, "role_id", roleId)
+                .eq(query.orgUnitId() != null, "org_unit_id", query.orgUnitId())
+                .orderByAsc("id");
+        appendStatusFilter(wrapper, query.status(), now);
+
+        Page<IamUserRoleAssignmentDO> result = assignmentMapper.selectPage(page, wrapper);
+        List<IamUserRoleAssignmentDO> assignments = result.getRecords();
+        Map<Long, IamUserDO> users = mapById(userMapper.selectBatchIds(idsOf(assignments, IamUserRoleAssignmentDO::getUserId)), IamUserDO::getId);
+        Map<Long, IamRoleDO> roles = mapById(roleMapper.selectBatchIds(idsOf(assignments, IamUserRoleAssignmentDO::getRoleId)), IamRoleDO::getId);
+        Map<Long, OrgUnitDO> orgUnits = mapById(orgUnitMapper.selectBatchIds(idsOf(assignments, IamUserRoleAssignmentDO::getOrgUnitId)), OrgUnitDO::getId);
+
+        return new PageResult<>(
+                result.getTotal(),
+                assignments.stream()
+                        .map(item -> toPageItem(item, users.get(item.getUserId()), roles.get(item.getRoleId()), orgUnits.get(item.getOrgUnitId()), now))
+                        .toList()
+        );
+    }
+
+    @Override
     public IamRoleAssignmentDetail update(Long assignmentId,
                                           Long userId,
                                           String roleCode,
@@ -147,9 +190,45 @@ public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentA
         );
     }
 
+    @Override
+    public IamRoleAssignmentDetail revoke(Long assignmentId) {
+        IamUserRoleAssignmentDO assignmentDO = assignmentMapper.selectById(assignmentId);
+        if (assignmentDO == null) {
+            return new IamRoleAssignmentDetail(
+                    assignmentId,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "INACTIVE",
+                    null,
+                    null,
+                    null,
+                    LocalDateTime.now().toString()
+            );
+        }
+        assignmentDO.setStatus("INACTIVE");
+        assignmentMapper.updateById(assignmentDO);
+        return toDetail(assignmentDO, LocalDateTime.now().toString());
+    }
+
     private IamRoleAssignmentDetail toDetail(IamUserRoleAssignmentDO assignmentDO) {
         IamRoleDO roleDO = assignmentDO.getRoleId() == null ? null : roleMapper.selectById(assignmentDO.getRoleId());
         OrgUnitDO orgUnitDO = assignmentDO.getOrgUnitId() == null ? null : orgUnitMapper.selectById(assignmentDO.getOrgUnitId());
+        return toDetail(assignmentDO, null, roleDO, orgUnitDO);
+    }
+
+    private IamRoleAssignmentDetail toDetail(IamUserRoleAssignmentDO assignmentDO, String updatedAt) {
+        IamRoleDO roleDO = assignmentDO.getRoleId() == null ? null : roleMapper.selectById(assignmentDO.getRoleId());
+        OrgUnitDO orgUnitDO = assignmentDO.getOrgUnitId() == null ? null : orgUnitMapper.selectById(assignmentDO.getOrgUnitId());
+        return toDetail(assignmentDO, updatedAt, roleDO, orgUnitDO);
+    }
+
+    private IamRoleAssignmentDetail toDetail(IamUserRoleAssignmentDO assignmentDO,
+                                             String updatedAt,
+                                             IamRoleDO roleDO,
+                                             OrgUnitDO orgUnitDO) {
         return new IamRoleAssignmentDetail(
                 assignmentDO.getId(),
                 assignmentDO.getUserId(),
@@ -161,8 +240,80 @@ public class MybatisPlusRoleAssignmentAdminRepository implements RoleAssignmentA
                 formatTime(assignmentDO.getEffectiveFrom()),
                 formatTime(assignmentDO.getEffectiveTo()),
                 assignmentDO.getSourceType(),
-                null
+                updatedAt
         );
+    }
+
+    private IamRoleAssignmentPageItem toPageItem(IamUserRoleAssignmentDO assignmentDO,
+                                                 IamUserDO userDO,
+                                                 IamRoleDO roleDO,
+                                                 OrgUnitDO orgUnitDO,
+                                                 LocalDateTime now) {
+        return new IamRoleAssignmentPageItem(
+                assignmentDO.getId(),
+                assignmentDO.getUserId(),
+                userDO == null ? null : userDO.getUserNo(),
+                userDO == null ? null : userDO.getUserName(),
+                roleDO == null ? null : roleDO.getRoleCode(),
+                roleDO == null ? null : roleDO.getRoleName(),
+                assignmentDO.getOrgUnitId(),
+                orgUnitDO == null ? null : orgUnitDO.getUnitName(),
+                resolveDisplayStatus(assignmentDO, now),
+                formatTime(assignmentDO.getEffectiveFrom()),
+                formatTime(assignmentDO.getEffectiveTo())
+        );
+    }
+
+    private void appendStatusFilter(QueryWrapper<IamUserRoleAssignmentDO> wrapper, String status, LocalDateTime now) {
+        if (status == null || status.isBlank()) {
+            return;
+        }
+        if ("ACTIVE".equals(status)) {
+            wrapper.eq("status", "ACTIVE")
+                    .le("effective_from", now)
+                    .and(w -> w.isNull("effective_to").or().gt("effective_to", now));
+            return;
+        }
+        if ("INACTIVE".equals(status)) {
+            wrapper.eq("status", "INACTIVE");
+            return;
+        }
+        wrapper.and(w -> w.eq("status", "EXPIRED")
+                .or(expired -> expired.eq("status", "ACTIVE").isNotNull("effective_to").le("effective_to", now)));
+    }
+
+    private String resolveDisplayStatus(IamUserRoleAssignmentDO assignmentDO, LocalDateTime now) {
+        if ("EXPIRED".equals(assignmentDO.getStatus())) {
+            return "EXPIRED";
+        }
+        if ("ACTIVE".equals(assignmentDO.getStatus())
+                && assignmentDO.getEffectiveTo() != null
+                && !assignmentDO.getEffectiveTo().isAfter(now)) {
+            return "EXPIRED";
+        }
+        return assignmentDO.getStatus();
+    }
+
+    private Long resolveRoleId(String roleCode) {
+        if (roleCode == null || roleCode.isBlank()) {
+            return null;
+        }
+        IamRoleDO role = roleMapper.selectOne(new LambdaQueryWrapper<IamRoleDO>()
+                .eq(IamRoleDO::getRoleCode, roleCode)
+                .last("limit 1"));
+        return role == null ? null : role.getId();
+    }
+
+    private <T> Map<Long, T> mapById(List<T> items, Function<T, Long> idGetter) {
+        return items.stream().collect(Collectors.toMap(idGetter, Function.identity()));
+    }
+
+    private <T> List<Long> idsOf(List<T> items, Function<T, Long> idGetter) {
+        return items.stream()
+                .map(idGetter)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
     }
 
     private LocalDateTime parseTime(String time) {

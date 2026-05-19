@@ -11,8 +11,10 @@ import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentDetail;
+import edu.whut.eval.domain.iam.model.IamRoleAssignmentPageItem;
 import edu.whut.eval.domain.iam.model.IamRoleDefinition;
 import edu.whut.eval.domain.iam.model.IamUser;
+import edu.whut.eval.domain.iam.query.RoleAssignmentPageQuery;
 import edu.whut.eval.domain.iam.repository.IamRoleQueryRepository;
 import edu.whut.eval.domain.iam.repository.IamUserQueryRepository;
 import edu.whut.eval.domain.iam.repository.RoleAssignmentAdminRepository;
@@ -24,7 +26,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
-import java.util.List;
 import java.util.Set;
 
 /**
@@ -137,7 +138,18 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
         if (query.orgUnitId() != null) {
             resolveOrgUnit(query.orgUnitId());
         }
-        return new PageResult<>(0, List.of());
+        PageResult<IamRoleAssignmentPageItem> page = roleAssignmentAdminRepository.pageAssignments(new RoleAssignmentPageQuery(
+                query.pageNo(),
+                query.pageSize(),
+                query.userId(),
+                query.roleCode(),
+                query.status(),
+                query.orgUnitId()
+        ));
+        return new PageResult<>(
+                page.total(),
+                page.records().stream().map(this::toPageItemView).toList()
+        );
     }
 
     @Override
@@ -146,21 +158,10 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
         UserAuthorizationContext operator = userAuthorizationContextAssembler.requiredAuthorizationContext();
         IamRoleAssignmentDetail existing = roleAssignmentAdminRepository.findDetailById(assignmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("角色分配不存在: " + assignmentId));
-        if (!"ACTIVE".equals(existing.status())) {
+        if (!"ACTIVE".equals(resolveCurrentStatus(existing))) {
             throw new ConflictException("仅 ACTIVE 状态的角色分配允许撤销");
         }
-        IamRoleAssignmentDetail revoked = roleAssignmentAdminRepository.update(
-                assignmentId,
-                existing.userId(),
-                existing.roleCode(),
-                existing.roleName(),
-                existing.orgUnitId(),
-                existing.orgUnitName(),
-                "INACTIVE",
-                existing.effectiveFrom(),
-                existing.effectiveTo(),
-                existing.sourceType()
-        );
+        IamRoleAssignmentDetail revoked = roleAssignmentAdminRepository.revoke(assignmentId);
         iamAdminAuditRecorder.recordRoleAssignmentUpdated(operator.getUserId(), existing, revoked);
     }
 
@@ -220,6 +221,30 @@ public class DefaultRoleAssignmentAdminApplicationService implements RoleAssignm
 
     private String defaultSourceType(String sourceType) {
         return (sourceType == null || sourceType.isBlank()) ? "MANUAL" : sourceType;
+    }
+
+    private String resolveCurrentStatus(IamRoleAssignmentDetail detail) {
+        LocalDateTime effectiveTo = parseTime(detail.effectiveTo(), "effectiveTo");
+        if ("ACTIVE".equals(detail.status()) && effectiveTo != null && !effectiveTo.isAfter(LocalDateTime.now())) {
+            return "EXPIRED";
+        }
+        return detail.status();
+    }
+
+    private RoleAssignmentAdminPageItemView toPageItemView(IamRoleAssignmentPageItem item) {
+        return new RoleAssignmentAdminPageItemView(
+                item.assignmentId(),
+                item.userId(),
+                item.userNo(),
+                item.userName(),
+                item.roleCode(),
+                item.roleName(),
+                item.orgUnitId(),
+                item.orgUnitName(),
+                item.status(),
+                item.effectiveFrom(),
+                item.effectiveTo()
+        );
     }
 
     private RoleAssignmentAdminView toView(IamRoleAssignmentDetail detail) {

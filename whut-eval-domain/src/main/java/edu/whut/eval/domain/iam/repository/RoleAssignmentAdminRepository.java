@@ -1,6 +1,9 @@
 package edu.whut.eval.domain.iam.repository;
 
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentDetail;
+import edu.whut.eval.domain.iam.model.IamRoleAssignmentPageItem;
+import edu.whut.eval.domain.iam.query.RoleAssignmentPageQuery;
+import edu.whut.eval.domain.shared.PageResult;
 
 import java.util.Optional;
 
@@ -21,6 +24,8 @@ public interface RoleAssignmentAdminRepository {
 
     Optional<IamRoleAssignmentDetail> findDetailById(Long assignmentId);
 
+    PageResult<IamRoleAssignmentPageItem> pageAssignments(RoleAssignmentPageQuery query);
+
     IamRoleAssignmentDetail update(Long assignmentId,
                                    Long userId,
                                    String roleCode,
@@ -31,4 +36,6 @@ public interface RoleAssignmentAdminRepository {
                                    String effectiveFrom,
                                    String effectiveTo,
                                    String sourceType);
+
+    IamRoleAssignmentDetail revoke(Long assignmentId);
 }
