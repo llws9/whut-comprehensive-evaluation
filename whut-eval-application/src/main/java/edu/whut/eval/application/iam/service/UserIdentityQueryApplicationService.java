@@ -1,8 +1,10 @@
 package edu.whut.eval.application.iam.service;
 
+import edu.whut.eval.application.iam.query.UserIdentityMembershipView;
 import edu.whut.eval.application.iam.query.UserIdentityView;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.domain.iam.model.IamUser;
+import edu.whut.eval.domain.org.model.OrgMembership;
 import edu.whut.eval.domain.iam.repository.IamUserQueryRepository;
 import edu.whut.eval.domain.iam.repository.RoleAssignmentQueryRepository;
 import edu.whut.eval.domain.org.repository.OrgQueryRepository;
@@ -29,7 +31,19 @@ public class UserIdentityQueryApplicationService {
         return new UserIdentityView(
                 user,
                 roleAssignmentQueryRepository.findActiveAssignmentsByUserId(user.id()),
-                orgQueryRepository.findMembershipsByUserId(user.id())
+                orgQueryRepository.findMembershipsByUserId(user.id()).stream()
+                        .map(this::toMembershipView)
+                        .toList()
+        );
+    }
+
+    private UserIdentityMembershipView toMembershipView(OrgMembership membership) {
+        return new UserIdentityMembershipView(
+                membership.id(),
+                membership.userId(),
+                membership.orgUnitId(),
+                membership.membershipType(),
+                membership.status()
         );
     }
 }

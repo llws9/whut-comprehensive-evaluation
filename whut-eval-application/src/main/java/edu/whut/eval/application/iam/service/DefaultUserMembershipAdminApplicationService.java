@@ -16,14 +16,19 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Service
 public class DefaultUserMembershipAdminApplicationService implements UserMembershipAdminApplicationService {
+
+    private final ConcurrentHashMap<Long, UserLockHolder> replaceLocksByUserId = new ConcurrentHashMap<>();
 
     private final IamUserQueryRepository iamUserQueryRepository;
     private final OrgUnitLookupRepository orgUnitLookupRepository;
@@ -48,6 +53,10 @@ public class DefaultUserMembershipAdminApplicationService implements UserMembers
     @Override
     @Transactional
     public void replaceMemberships(Long userId, ReplaceUserMembershipsCommand command) {
+        runWithUserLock(userId, () -> doReplaceMemberships(userId, command));
+    }
+
+    private void doReplaceMemberships(Long userId, ReplaceUserMembershipsCommand command) {
         ensureUserExists(userId);
         List<ReplaceUserMembershipItemCommand> requestedMemberships = command.memberships() == null ? List.of() : command.memberships();
         validateRequestedMemberships(requestedMemberships);
@@ -106,6 +115,25 @@ public class DefaultUserMembershipAdminApplicationService implements UserMembers
         userMembershipAdminRepository.replaceMemberships(userId, activeMemberships, inactiveMemberships);
     }
 
+    private void runWithUserLock(Long userId, Runnable action) {
+        UserLockHolder holder = replaceLocksByUserId.compute(userId, (ignored, existing) -> {
+            if (existing == null) {
+                existing = new UserLockHolder();
+            }
+            existing.retain();
+            return existing;
+        });
+        holder.lock();
+        try {
+            action.run();
+        } finally {
+            holder.unlock();
+            if (holder.release() == 0) {
+                replaceLocksByUserId.remove(userId, holder);
+            }
+        }
+    }
+
     private void validateRequestedMemberships(List<ReplaceUserMembershipItemCommand> memberships) {
         Set<Long> orgUnitIds = new HashSet<>();
         int primaryCount = 0;
@@ -146,5 +174,27 @@ public class DefaultUserMembershipAdminApplicationService implements UserMembers
                 membership.isPrimary(),
                 membership.status()
         );
+    }
+
+    private static final class UserLockHolder {
+
+        private final ReentrantLock lock = new ReentrantLock();
+        private final AtomicInteger refCount = new AtomicInteger();
+
+        private void retain() {
+            refCount.incrementAndGet();
+        }
+
+        private int release() {
+            return refCount.decrementAndGet();
+        }
+
+        private void lock() {
+            lock.lock();
+        }
+
+        private void unlock() {
+            lock.unlock();
+        }
     }
 }
