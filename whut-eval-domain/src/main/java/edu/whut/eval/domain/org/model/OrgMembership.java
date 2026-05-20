@@ -5,6 +5,9 @@ public record OrgMembership(
         Long userId,
         Long orgUnitId,
         String membershipType,
-        String status
+        boolean isPrimary,
+        String status,
+        String joinedAt,
+        String leftAt
 ) {
 }

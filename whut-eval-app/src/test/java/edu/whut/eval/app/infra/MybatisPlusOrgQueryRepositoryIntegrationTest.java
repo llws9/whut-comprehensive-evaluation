@@ -56,7 +56,11 @@ class MybatisPlusOrgQueryRepositoryIntegrationTest {
                 "user_id BIGINT NOT NULL, " +
                 "org_unit_id BIGINT NOT NULL, " +
                 "membership_type VARCHAR(32) NOT NULL, " +
-                "status VARCHAR(32) NOT NULL)");
+                "is_primary TINYINT(1) NOT NULL DEFAULT 0, " +
+                "status VARCHAR(32) NOT NULL, " +
+                "joined_at TIMESTAMP NOT NULL, " +
+                "left_at TIMESTAMP NULL, " +
+                "created_at TIMESTAMP NOT NULL)");
     }
 
     @Test

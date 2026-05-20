@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 @Repository
@@ -118,7 +119,10 @@ public class MybatisPlusOrgQueryRepository implements OrgQueryRepository {
                 membershipDO.getUserId(),
                 membershipDO.getOrgUnitId(),
                 membershipDO.getMembershipType(),
-                membershipDO.getStatus()
+                Boolean.TRUE.equals(membershipDO.getPrimary()),
+                membershipDO.getStatus(),
+                Objects.toString(membershipDO.getJoinedAt(), null),
+                Objects.toString(membershipDO.getLeftAt(), null)
         );
     }
 

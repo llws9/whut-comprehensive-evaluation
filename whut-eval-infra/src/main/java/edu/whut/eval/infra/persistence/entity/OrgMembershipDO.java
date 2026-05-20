@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 
+import java.time.LocalDateTime;
+
 @TableName("org_membership")
 public class OrgMembershipDO {
     @TableId
@@ -14,7 +16,15 @@ public class OrgMembershipDO {
     private Long orgUnitId;
     @TableField("membership_type")
     private String membershipType;
+    @TableField("is_primary")
+    private Boolean primary;
     private String status;
+    @TableField("joined_at")
+    private LocalDateTime joinedAt;
+    @TableField("left_at")
+    private LocalDateTime leftAt;
+    @TableField("created_at")
+    private LocalDateTime createdAt;
 
     public Long getId() {
         return id;
@@ -48,11 +58,43 @@ public class OrgMembershipDO {
         this.membershipType = membershipType;
     }
 
+    public Boolean getPrimary() {
+        return primary;
+    }
+
+    public void setPrimary(Boolean primary) {
+        this.primary = primary;
+    }
+
     public String getStatus() {
         return status;
     }
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public LocalDateTime getJoinedAt() {
+        return joinedAt;
+    }
+
+    public void setJoinedAt(LocalDateTime joinedAt) {
+        this.joinedAt = joinedAt;
+    }
+
+    public LocalDateTime getLeftAt() {
+        return leftAt;
+    }
+
+    public void setLeftAt(LocalDateTime leftAt) {
+        this.leftAt = leftAt;
+    }
+
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(LocalDateTime createdAt) {
+        this.createdAt = createdAt;
     }
 }
