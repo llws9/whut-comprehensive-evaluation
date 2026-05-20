@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import edu.whut.eval.domain.org.model.OrgMembership;
 import edu.whut.eval.domain.org.repository.UserMembershipAdminRepository;
 import edu.whut.eval.infra.persistence.entity.OrgMembershipDO;
+import edu.whut.eval.infra.persistence.mapper.IamUserMapper;
 import edu.whut.eval.infra.persistence.mapper.OrgMembershipMapper;
 import org.springframework.stereotype.Repository;
 
@@ -14,10 +15,18 @@ import java.util.Objects;
 @Repository
 public class MybatisPlusUserMembershipAdminRepository implements UserMembershipAdminRepository {
 
+    private final IamUserMapper iamUserMapper;
     private final OrgMembershipMapper orgMembershipMapper;
 
-    public MybatisPlusUserMembershipAdminRepository(OrgMembershipMapper orgMembershipMapper) {
+    public MybatisPlusUserMembershipAdminRepository(IamUserMapper iamUserMapper,
+                                                    OrgMembershipMapper orgMembershipMapper) {
+        this.iamUserMapper = iamUserMapper;
         this.orgMembershipMapper = orgMembershipMapper;
+    }
+
+    @Override
+    public void lockUserForMembershipReplace(Long userId) {
+        iamUserMapper.selectIdForUpdate(userId);
     }
 
     @Override

@@ -18,23 +18,18 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.InOrder;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -178,7 +173,7 @@ class DefaultUserMembershipAdminApplicationServiceTest {
     }
 
     @Test
-    void shouldSerializeConcurrentReplaceRequestsPerUser() throws Exception {
+    void shouldLockUserBeforeReadingMembershipSnapshot() {
         given(iamUserQueryRepository.findById(1010L)).willReturn(Optional.of(
                 new IamUser(1010L, "2024305001", "王老师", "w@example.com", "13800000000", "ACTIVE")
         ));
@@ -186,47 +181,13 @@ class DefaultUserMembershipAdminApplicationServiceTest {
                 new OrgUnit(2002L, 1L, "COLLEGE", "CS", "计算机与人工智能学院", "/1/2002/", "ACTIVE")
         ));
         given(userMembershipAdminRepository.findActiveMembershipsByUserId(1010L)).willReturn(new ArrayList<>());
+        service.replaceMemberships(1010L, new ReplaceUserMembershipsCommand(List.of(
+                new ReplaceUserMembershipItemCommand(2002L, true)
+        )));
 
-        CountDownLatch firstEnteredRepository = new CountDownLatch(1);
-        CountDownLatch allowFirstRequestToFinish = new CountDownLatch(1);
-        AtomicInteger repositoryInvocationCount = new AtomicInteger();
-        AtomicInteger concurrentRepositoryCalls = new AtomicInteger();
-        AtomicInteger maxConcurrentRepositoryCalls = new AtomicInteger();
-
-        doAnswer(invocation -> {
-            int current = concurrentRepositoryCalls.incrementAndGet();
-            maxConcurrentRepositoryCalls.accumulateAndGet(current, Math::max);
-            int callIndex = repositoryInvocationCount.incrementAndGet();
-            if (callIndex == 1) {
-                firstEnteredRepository.countDown();
-                assertThat(allowFirstRequestToFinish.await(2, TimeUnit.SECONDS)).isTrue();
-            }
-            concurrentRepositoryCalls.decrementAndGet();
-            return null;
-        }).when(userMembershipAdminRepository).replaceMemberships(eq(1010L), org.mockito.ArgumentMatchers.anyList(), org.mockito.ArgumentMatchers.anyList());
-
-        ExecutorService executor = Executors.newFixedThreadPool(2);
-        try {
-            Future<?> first = executor.submit(() -> service.replaceMemberships(1010L, new ReplaceUserMembershipsCommand(List.of(
-                    new ReplaceUserMembershipItemCommand(2002L, true)
-            ))));
-            assertThat(firstEnteredRepository.await(1, TimeUnit.SECONDS)).isTrue();
-
-            Future<?> second = executor.submit(() -> service.replaceMemberships(1010L, new ReplaceUserMembershipsCommand(List.of(
-                    new ReplaceUserMembershipItemCommand(2002L, true)
-            ))));
-
-            Thread.sleep(200);
-            assertThat(repositoryInvocationCount).hasValue(1);
-
-            allowFirstRequestToFinish.countDown();
-            first.get(2, TimeUnit.SECONDS);
-            second.get(2, TimeUnit.SECONDS);
-        } finally {
-            executor.shutdownNow();
-        }
-
-        assertThat(repositoryInvocationCount).hasValue(2);
-        assertThat(maxConcurrentRepositoryCalls).hasValue(1);
+        InOrder inOrder = inOrder(userMembershipAdminRepository);
+        inOrder.verify(userMembershipAdminRepository).lockUserForMembershipReplace(1010L);
+        inOrder.verify(userMembershipAdminRepository).findActiveMembershipsByUserId(1010L);
+        inOrder.verify(userMembershipAdminRepository).replaceMemberships(eq(1010L), org.mockito.ArgumentMatchers.anyList(), org.mockito.ArgumentMatchers.anyList());
     }
 }

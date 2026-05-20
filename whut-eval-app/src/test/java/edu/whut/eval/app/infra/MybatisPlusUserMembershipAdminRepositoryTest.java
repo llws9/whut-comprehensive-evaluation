@@ -2,6 +2,7 @@ package edu.whut.eval.app.infra;
 
 import edu.whut.eval.domain.org.model.OrgMembership;
 import edu.whut.eval.infra.persistence.entity.OrgMembershipDO;
+import edu.whut.eval.infra.persistence.mapper.IamUserMapper;
 import edu.whut.eval.infra.persistence.mapper.OrgMembershipMapper;
 import edu.whut.eval.infra.persistence.repository.MybatisPlusUserMembershipAdminRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,13 +24,23 @@ import static org.mockito.Mockito.verify;
 class MybatisPlusUserMembershipAdminRepositoryTest {
 
     @Mock
+    private IamUserMapper iamUserMapper;
+
+    @Mock
     private OrgMembershipMapper orgMembershipMapper;
 
     private MybatisPlusUserMembershipAdminRepository repository;
 
     @BeforeEach
     void setUp() {
-        repository = new MybatisPlusUserMembershipAdminRepository(orgMembershipMapper);
+        repository = new MybatisPlusUserMembershipAdminRepository(iamUserMapper, orgMembershipMapper);
+    }
+
+    @Test
+    void shouldLockUserRowBeforeReplacingMemberships() {
+        repository.lockUserForMembershipReplace(1010L);
+
+        verify(iamUserMapper).selectIdForUpdate(1010L);
     }
 
     @Test

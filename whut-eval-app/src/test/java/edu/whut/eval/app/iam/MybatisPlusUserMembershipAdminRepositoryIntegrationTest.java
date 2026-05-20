@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import edu.whut.eval.domain.org.model.OrgMembership;
 import edu.whut.eval.domain.org.repository.UserMembershipAdminRepository;
 import edu.whut.eval.infra.config.MybatisPlusConfig;
+import edu.whut.eval.infra.persistence.mapper.IamUserMapper;
 import edu.whut.eval.infra.persistence.mapper.OrgMembershipMapper;
 import edu.whut.eval.infra.persistence.repository.MybatisPlusUserMembershipAdminRepository;
 import org.apache.ibatis.session.SqlSessionFactory;
@@ -23,10 +24,19 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
+import java.sql.Timestamp;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -43,6 +53,19 @@ class MybatisPlusUserMembershipAdminRepositoryIntegrationTest {
     @BeforeEach
     void setUpSchemaAndData() {
         jdbcTemplate.execute("DROP TABLE IF EXISTS org_membership");
+        jdbcTemplate.execute("DROP TABLE IF EXISTS iam_user");
+        jdbcTemplate.execute(
+                "CREATE TABLE iam_user (" +
+                        "id BIGINT PRIMARY KEY, " +
+                        "user_no VARCHAR(64) NOT NULL, " +
+                        "user_name VARCHAR(64) NOT NULL, " +
+                        "email VARCHAR(128), " +
+                        "phone VARCHAR(32), " +
+                        "password_hash VARCHAR(255), " +
+                        "status VARCHAR(32) NOT NULL, " +
+                        "created_at TIMESTAMP NOT NULL, " +
+                        "updated_at TIMESTAMP NOT NULL)"
+        );
         jdbcTemplate.execute(
                 "CREATE TABLE org_membership (" +
                         "id BIGINT AUTO_INCREMENT PRIMARY KEY, " +
@@ -59,6 +82,11 @@ class MybatisPlusUserMembershipAdminRepositoryIntegrationTest {
                 "INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status, joined_at, left_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 70021L, 1010L, 2002L, "IMPORT", 1, "ACTIVE",
                 java.sql.Timestamp.valueOf("2024-01-01 00:00:00"), null, java.sql.Timestamp.valueOf("2024-01-01 00:00:00")
+        );
+        jdbcTemplate.update(
+                "INSERT INTO iam_user (id, user_no, user_name, email, phone, password_hash, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                1010L, "2024305001", "王老师", "w@example.com", "13800000000", "hash", "ACTIVE",
+                Timestamp.valueOf("2024-01-01 00:00:00"), Timestamp.valueOf("2024-01-01 00:00:00")
         );
         jdbcTemplate.update(
                 "INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status, joined_at, left_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -109,8 +137,53 @@ class MybatisPlusUserMembershipAdminRepositoryIntegrationTest {
         assertThat(inserted.get("left_at")).isNull();
     }
 
+    @Test
+    void shouldBlockSecondTransactionWhenLockingSameUser() throws Exception {
+        TransactionTemplate transactionTemplate = new TransactionTemplate(testConfigTransactionManager);
+        transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
+        CountDownLatch firstLockAcquired = new CountDownLatch(1);
+        CountDownLatch releaseFirstTransaction = new CountDownLatch(1);
+        AtomicBoolean secondLockAcquired = new AtomicBoolean(false);
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> first = executor.submit(() -> transactionTemplate.executeWithoutResult(status -> {
+                repository.lockUserForMembershipReplace(1010L);
+                firstLockAcquired.countDown();
+                try {
+                    assertThat(releaseFirstTransaction.await(2, TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(ex);
+                }
+            }));
+
+            assertThat(firstLockAcquired.await(1, TimeUnit.SECONDS)).isTrue();
+
+            Future<?> second = executor.submit(() -> transactionTemplate.executeWithoutResult(status -> {
+                repository.lockUserForMembershipReplace(1010L);
+                secondLockAcquired.set(true);
+            }));
+
+            Thread.sleep(200);
+            assertThat(secondLockAcquired).isFalse();
+
+            releaseFirstTransaction.countDown();
+            first.get(2, TimeUnit.SECONDS);
+            second.get(2, TimeUnit.SECONDS);
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertThat(secondLockAcquired).isTrue();
+    }
+
+    @Autowired
+    private DataSourceTransactionManager testConfigTransactionManager;
+
     @Configuration
-    @MapperScan(basePackageClasses = OrgMembershipMapper.class)
+    @MapperScan(basePackageClasses = {OrgMembershipMapper.class, IamUserMapper.class})
     @Import({MybatisPlusConfig.class, MybatisPlusUserMembershipAdminRepository.class})
     static class TestConfig {
         @Bean
