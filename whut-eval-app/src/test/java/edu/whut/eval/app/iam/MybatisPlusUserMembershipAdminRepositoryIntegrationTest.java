@@ -68,7 +68,7 @@ class MybatisPlusUserMembershipAdminRepositoryIntegrationTest {
         );
         jdbcTemplate.execute(
                 "CREATE TABLE org_membership (" +
-                        "id BIGINT AUTO_INCREMENT PRIMARY KEY, " +
+                        "id BIGINT PRIMARY KEY, " +
                         "user_id BIGINT NOT NULL, " +
                         "org_unit_id BIGINT NOT NULL, " +
                         "membership_type VARCHAR(32) NOT NULL, " +

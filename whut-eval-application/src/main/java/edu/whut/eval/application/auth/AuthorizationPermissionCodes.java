@@ -12,6 +12,8 @@ public final class AuthorizationPermissionCodes {
     public static final String PERMISSION_MANAGE = "permission.manage";
     public static final String SCORE_VIEW_SELF = "score.view.self";
     public static final String SCORE_VIEW_ASSIGNED = "score.view.assigned";
+    public static final String USER_IMPORT = "user.import";
+    public static final String USER_MANAGE = "user.manage";
 
     private AuthorizationPermissionCodes() {
     }

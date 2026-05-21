@@ -1,5 +1,6 @@
 package edu.whut.eval.infra.persistence.repository;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import edu.whut.eval.domain.org.model.OrgUnit;
 import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
 import edu.whut.eval.infra.persistence.entity.OrgUnitDO;
@@ -20,6 +21,13 @@ public class MybatisPlusOrgUnitLookupRepository implements OrgUnitLookupReposito
     @Override
     public Optional<OrgUnit> findById(Long id) {
         return Optional.ofNullable(orgUnitMapper.selectById(id)).map(this::toDomain);
+    }
+
+    @Override
+    public Optional<OrgUnit> findByCode(String unitCode) {
+        return Optional.ofNullable(orgUnitMapper.selectOne(new LambdaQueryWrapper<OrgUnitDO>()
+                .eq(OrgUnitDO::getUnitCode, unitCode)
+                .last("limit 1"))).map(this::toDomain);
     }
 
     private OrgUnit toDomain(OrgUnitDO orgUnitDO) {

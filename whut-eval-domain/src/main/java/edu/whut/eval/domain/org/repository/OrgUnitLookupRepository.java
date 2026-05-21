@@ -7,4 +7,6 @@ import java.util.Optional;
 public interface OrgUnitLookupRepository {
 
     Optional<OrgUnit> findById(Long id);
+
+    Optional<OrgUnit> findByCode(String unitCode);
 }

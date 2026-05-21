@@ -1,5 +1,6 @@
 package edu.whut.eval.infra.persistence.entity;
 
+import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -8,7 +9,7 @@ import java.time.LocalDateTime;
 
 @TableName("org_membership")
 public class OrgMembershipDO {
-    @TableId
+    @TableId(type = IdType.ASSIGN_ID)
     private Long id;
     @TableField("user_id")
     private Long userId;

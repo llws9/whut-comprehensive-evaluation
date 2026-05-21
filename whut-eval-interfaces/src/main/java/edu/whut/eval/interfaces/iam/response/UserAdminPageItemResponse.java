@@ -1,0 +1,58 @@
+package edu.whut.eval.interfaces.iam.response;
+
+import java.util.List;
+
+public class UserAdminPageItemResponse {
+
+    private final Long userId;
+    private final String userNo;
+    private final String userName;
+    private final String status;
+    private final List<String> orgUnits;
+    private final List<String> roleCodes;
+    private final String createdAt;
+
+    public UserAdminPageItemResponse(Long userId,
+                                     String userNo,
+                                     String userName,
+                                     String status,
+                                     List<String> orgUnits,
+                                     List<String> roleCodes,
+                                     String createdAt) {
+        this.userId = userId;
+        this.userNo = userNo;
+        this.userName = userName;
+        this.status = status;
+        this.orgUnits = orgUnits;
+        this.roleCodes = roleCodes;
+        this.createdAt = createdAt;
+    }
+
+    public Long getUserId() {
+        return userId;
+    }
+
+    public String getUserNo() {
+        return userNo;
+    }
+
+    public String getUserName() {
+        return userName;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public List<String> getOrgUnits() {
+        return orgUnits;
+    }
+
+    public List<String> getRoleCodes() {
+        return roleCodes;
+    }
+
+    public String getCreatedAt() {
+        return createdAt;
+    }
+}

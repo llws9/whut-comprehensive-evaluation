@@ -6,6 +6,7 @@ import edu.whut.eval.common.exception.BaseAppException;
 import edu.whut.eval.common.exception.ValidationException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -33,5 +34,13 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleUnknownException(Exception exception) {
         return ResponseEntity.status(CommonErrorCode.SYSTEM_ERROR.httpStatus())
                 .body(ApiResponse.failure(CommonErrorCode.SYSTEM_ERROR, CommonErrorCode.SYSTEM_ERROR.defaultMessage()));
+    }
+
+    @ExceptionHandler(MissingServletRequestPartException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMissingServletRequestPartException(
+            MissingServletRequestPartException exception) {
+        ValidationException validationException = new ValidationException(exception.getRequestPartName() + " 不能为空");
+        return ResponseEntity.status(validationException.getErrorCode().httpStatus())
+                .body(ApiResponse.failure(validationException.getErrorCode(), validationException.getMessage()));
     }
 }
