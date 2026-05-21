@@ -399,7 +399,7 @@ A 组应优先依赖并落地以下表：
 
 - 路由：`GET /api/admin/roles`
 - 鉴权：`role.manage`
-- 返回字段：`roleId/roleCode/roleName/status/permissionCount/createdAt`
+- 返回字段：`roleId/roleCode/roleName/roleScope/status/permissionCount/createdAt`
 
 异常返回：
 
@@ -419,16 +419,16 @@ A 组应优先依赖并落地以下表：
 |---|---|---|---|
 | `roleCode` | `string` | 是 | 角色编码 |
 | `roleName` | `string` | 是 | 角色名称 |
-| `roleType` | `string` | 是 | `SYSTEM` / `CUSTOM` |
-| `description` | `string` | 否 | 说明 |
+| `roleScope` | `string` | 是 | `SELF` / `ORG_UNIT` / `ORG_SUBTREE` / `ALL` |
+| `status` | `string` | 是 | `ACTIVE` / `DISABLED` |
 
-成功返回 `data`：`roleId/roleCode/roleName/status`
+成功返回 `data`：`roleId/roleCode/roleName/roleScope/status`
 
 异常返回：
 
 | 场景 | HTTP | 错误码 | 说明 |
 |---|---:|---|---|
-| 请求字段非法 | `400` | `VAL-4001` | 编码、名称或类型字段不合法 |
+| 请求字段非法 | `400` | `VAL-4001` | 编码、名称、范围或状态字段不合法 |
 | 角色编码重复 | `409` | `BIZ-4090` | `roleCode` 已存在 |
 | 无权限访问 | `403` | `AUTH-4030` | 当前用户无角色创建权限 |
 
@@ -436,7 +436,8 @@ A 组应优先依赖并落地以下表：
 
 - 路由：`PATCH /api/admin/roles/{roleId}`
 - 鉴权：`role.manage`
-- 允许修改：`roleName/description/status`
+- 允许修改：`roleName/roleScope/status`
+- 编辑链路约束：当前版本直接复用 A-9 列表返回的 `roleScope` 回填编辑表单，不新增角色详情接口
 
 成功返回：`data = null`
 
@@ -445,9 +446,9 @@ A 组应优先依赖并落地以下表：
 | 场景 | HTTP | 错误码 | 说明 |
 |---|---:|---|---|
 | 角色不存在 | `404` | `RES-4040` | `roleId` 无效 |
-| 请求字段非法 | `400` | `VAL-4001` | 状态或名称字段不合法 |
+| 请求字段非法 | `400` | `VAL-4001` | 名称、范围或状态字段不合法 |
 | 无权限访问 | `403` | `AUTH-4030` | 当前用户无角色修改权限 |
-| 状态冲突 | `409` | `BIZ-4090` | 角色状态已变化或不允许修改 |
+| 并发冲突 | `409` | `BIZ-4090` | 角色已被其他人更新，需刷新后重试 |
 
 ### A-12 绑定角色权限
 

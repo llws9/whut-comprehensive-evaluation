@@ -17,6 +17,8 @@
 - 学生侧查询接口
 - 学生侧写接口
 - 管理侧查询接口
+- 管理侧用户后台接口
+- 管理侧角色模板接口
 
 ### 1.1 快速导航
 
@@ -29,11 +31,14 @@
 - [8. Student Query 接口](#8-student-query-接口)
 - [9. Student Write 接口](#9-student-write-接口)
 - [10. Admin Query 接口](#10-admin-query-接口)
-- [11. 当前边界与后续建议](#11-当前边界与后续建议)
+- [11. Admin User 接口](#11-admin-user-接口)
+- [12. Admin Role 接口](#12-admin-role-接口)
+- [13. 当前边界与后续建议](#13-当前边界与后续建议)
+- [14. 响应模型附录](#14-响应模型附录)
 
 ## 2. 当前接口分组
 
-当前项目中的 HTTP 入口分散在 `whut-eval-app` 和 `whut-eval-interfaces` 两个模块中，按职责可分为七组：
+当前项目中的 HTTP 入口分散在 `whut-eval-app` 和 `whut-eval-interfaces` 两个模块中，按职责可分为九组：
 
 | 分组 | 路由前缀 | Controller | 所在模块 | 说明 |
 |---|---|---|---|---|
@@ -44,19 +49,22 @@
 | 学生侧查询接口 | `/api/student/query/*` | `StudentQueryController` | `whut-eval-interfaces` | 面向学生侧的授权查询接口分组 |
 | 学生侧写接口 | `/api/student/applications/*`、`/api/student/preferences/*` | `StudentApplicationSubmissionController`、`StudentPreferenceController` | `whut-eval-interfaces` | 包含正式申请写接口和 `P0-2` 最小写入参考实现 |
 | 管理侧查询接口 | `/api/admin/query/*` | `AdminQueryController` | `whut-eval-interfaces` | 面向教师 / 管理侧的授权查询接口分组 |
+| 管理侧用户后台接口 | `/api/admin/users/*` | `UserAdminController` | `whut-eval-interfaces` | 面向管理员的用户列表、创建、状态修改与导入接口 |
+| 管理侧角色模板接口 | `/api/admin/roles/*` | `RoleAdminController` | `whut-eval-interfaces` | 面向管理员的角色模板分页、创建、修改与权限绑定接口 |
 
 补充说明：
 
 - `student` 和 `admin` 当前已经完成接口面拆分。
 - `FileUploadController` 是当前上传底座的最小 HTTP 入口，上传结果通过标准化 view 对外返回。
 - 两侧当前都先承接既有“申请查询 / 成绩查询”能力。
+- 管理侧后台接口进一步拆分为“查询总线”“用户后台”“角色模板后台”三组，便于按权限口径独立演进。
 - 学生侧当前按“查看自己的数据”建模，管理侧继续沿用“审核 / 分配查询”权限口径。
 - `StudentPreferenceController` 不是正式业务能力，而是 `P0-2` 阶段用于验证写入侧 Repo / Command / 事务 / 409 映射 / 缓存失效的最小参考实现。
 - 认证与安全探针接口当前仍放在 `whut-eval-app` 模块中。
 
 阅读顺序说明：
 
-- 本文后续详细接口按 `Auth -> Security Probe -> IAM -> File Upload -> Student Query -> Student Write -> Admin Query` 展开。
+- 本文后续详细接口按 `Auth -> Security Probe -> IAM -> File Upload -> Student Query -> Student Write -> Admin Query -> Admin User -> Admin Role` 展开。
 - 若只想快速定位接口归属，先看“完整接口总表”；若要落实现或联调，再下钻到对应章节。
 
 ## 3. 完整接口总表
@@ -77,6 +85,14 @@
 | Student Write | `POST` | `/api/student/preferences` | `StudentPreferenceController#createPreference(...)` | 依赖当前登录态 | `P0-2` 最小写入参考实现，创建当前用户偏好设置 |
 | Admin Query | `GET` | `/api/admin/query/applications` | `AdminQueryController#pageApplications(...)` | `application.review` | 查询当前用户可见申请列表 |
 | Admin Query | `GET` | `/api/admin/query/scores` | `AdminQueryController#pageScores(...)` | `score.view.assigned` | 查询当前用户可见成绩列表 |
+| Admin User | `GET` | `/api/admin/users` | `UserAdminController#pageUsers(...)` | `user.manage` | 分页查询用户列表，返回组织归属与角色编码摘要 |
+| Admin User | `POST` | `/api/admin/users` | `UserAdminController#createUser(...)` | `user.manage` | 创建单个用户账号并返回最小用户快照 |
+| Admin User | `PATCH` | `/api/admin/users/{userId}/status` | `UserAdminController#updateUserStatus(...)` | `user.manage` | 修改用户状态，处理 no-op / 冲突语义 |
+| Admin User | `POST` | `/api/admin/users/import` | `UserAdminController#importUsers(...)` | `user.import` | 以 `multipart/form-data` 导入用户并返回摘要结果 |
+| Admin Role | `GET` | `/api/admin/roles` | `RoleAdminController#pageRoles(...)` | `role.manage` | 分页查询角色模板列表 |
+| Admin Role | `POST` | `/api/admin/roles` | `RoleAdminController#createRole(...)` | `role.manage` | 创建角色模板 |
+| Admin Role | `PATCH` | `/api/admin/roles/{roleId}` | `RoleAdminController#updateRole(...)` | `role.manage` | 修改角色模板名称、范围与状态 |
+| Admin Role | `POST` | `/api/admin/roles/{roleId}/permissions` | `RoleAdminController#replaceRolePermissions(...)` | `permission.manage` | 按整集合替换角色权限 |
 
 ## 4. Auth 接口
 
@@ -642,7 +658,275 @@
 | 响应类型 | `ApiResponse<PageResult<ScoreRecordView>>` |
 | 列表元素 | `ScoreRecordView` |
 
-## 11. 当前边界与后续建议
+## 11. Admin User 接口
+
+### 11.1 分组信息
+
+| 项 | 说明 |
+|---|---|
+| Controller | `edu.whut.eval.interfaces.iam.UserAdminController` |
+| 路由前缀 | `/api/admin/users` |
+| 所在模块 | `whut-eval-interfaces` |
+
+### 11.2 分页查询用户
+
+基本信息：
+
+| 项 | 说明 |
+|---|---|
+| HTTP Method | `GET` |
+| Path | `/api/admin/users` |
+| Controller 方法 | `pageUsers(...)` |
+| 权限注解 | `@PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).USER_MANAGE)")` |
+| 权限码 | `user.manage` |
+| 应用服务 | `UserAdminQueryApplicationService#pageUsers(...)` |
+
+查询参数：
+
+| 参数名 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `pageNo` | `long` | 否 | `1` | 页码 |
+| `pageSize` | `long` | 否 | `20` | 每页数量 |
+| `keyword` | `String` | 否 | - | 按用户编号或姓名模糊搜索 |
+| `status` | `String` | 否 | - | 用户状态过滤 |
+| `orgUnitId` | `Long` | 否 | - | 按组织单元过滤 |
+
+成功响应：
+
+| 项 | 说明 |
+|---|---|
+| 响应类型 | `ApiResponse<PageResult<UserAdminPageItemResponse>>` |
+| 列表元素 | `UserAdminPageItemResponse` |
+
+### 11.3 创建用户
+
+基本信息：
+
+| 项 | 说明 |
+|---|---|
+| HTTP Method | `POST` |
+| Path | `/api/admin/users` |
+| Controller 方法 | `createUser(...)` |
+| 权限注解 | `@PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).USER_MANAGE)")` |
+| 权限码 | `user.manage` |
+| 请求体 DTO | `CreateUserRequest` |
+| Command | `CreateUserCommand` |
+| 应用服务 | `UserAdminCommandApplicationService#createUser(...)` |
+
+请求体字段：
+
+| 字段名 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `userNo` | `String` | 是 | 用户编号 |
+| `userName` | `String` | 是 | 用户姓名 |
+| `password` | `String` | 是 | 初始密码 |
+| `email` | `String` | 否 | 邮箱 |
+| `phone` | `String` | 否 | 手机号 |
+| `primaryOrgUnitId` | `Long` | 否 | 主组织单元 ID；传入时需为正数 |
+
+成功响应：
+
+| 字段名 | 类型 | 说明 |
+|---|---|---|
+| `userId` | `Long` | 用户 ID |
+| `userNo` | `String` | 用户编号 |
+| `userName` | `String` | 用户姓名 |
+| `status` | `String` | 用户状态 |
+
+响应类型：`ApiResponse<UserAdminResponse>`
+
+### 11.4 修改用户状态
+
+基本信息：
+
+| 项 | 说明 |
+|---|---|
+| HTTP Method | `PATCH` |
+| Path | `/api/admin/users/{userId}/status` |
+| Controller 方法 | `updateUserStatus(...)` |
+| 权限注解 | `@PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).USER_MANAGE)")` |
+| 权限码 | `user.manage` |
+| 路径参数 | `userId` |
+| 请求体 DTO | `UpdateUserStatusRequest` |
+| Command | `UpdateUserStatusCommand` |
+| 应用服务 | `UserAdminCommandApplicationService#updateUserStatus(...)` |
+
+请求体字段：
+
+| 字段名 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `status` | `String` | 是 | 目标状态 |
+| `reason` | `String` | 否 | 变更原因 |
+
+响应类型：`ApiResponse<Void>`
+
+### 11.5 批量导入用户
+
+基本信息：
+
+| 项 | 说明 |
+|---|---|
+| HTTP Method | `POST` |
+| Path | `/api/admin/users/import` |
+| Controller 方法 | `importUsers(...)` |
+| Content-Type | `multipart/form-data` |
+| 权限注解 | `@PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).USER_IMPORT)")` |
+| 权限码 | `user.import` |
+| 应用服务 | `UserAdminCommandApplicationService#importUsers(...)` |
+
+请求参数：
+
+| 参数名 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `file` | `MultipartFile` | 是 | 导入文件 |
+| `importMode` | `String` | 否 | `UPSERT` | 导入模式，当前实现支持 `UPSERT` 与 `INSERT_ONLY` |
+
+成功响应：
+
+| 字段名 | 类型 | 说明 |
+|---|---|---|
+| `totalCount` | `long` | 总处理行数 |
+| `successCount` | `long` | 成功行数 |
+| `failedCount` | `long` | 失败行数 |
+| `failedRows` | `List<UserImportFailedRowResponse>` | 失败行摘要 |
+
+响应类型：`ApiResponse<UserImportResponse>`
+
+失败路径：
+
+| 场景 | HTTP | 错误码 | 说明 |
+|---|---:|---|---|
+| 文件为空 | `400` | `VAL-4001` | 未上传文件或文件大小为 0 |
+| `importMode` 非法 | `400` | `VAL-4001` | 仅允许 `UPSERT/INSERT_ONLY` |
+| 文件读取或解析失败 | `503` | `EXT-5033` | 导入文件 IO 或解析异常 |
+
+## 12. Admin Role 接口
+
+### 12.1 分组信息
+
+| 项 | 说明 |
+|---|---|
+| Controller | `edu.whut.eval.interfaces.iam.RoleAdminController` |
+| 路由前缀 | `/api/admin/roles` |
+| 所在模块 | `whut-eval-interfaces` |
+
+### 12.2 分页查询角色模板
+
+基本信息：
+
+| 项 | 说明 |
+|---|---|
+| HTTP Method | `GET` |
+| Path | `/api/admin/roles` |
+| Controller 方法 | `pageRoles(...)` |
+| 权限注解 | `@PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).ROLE_MANAGE)")` |
+| 权限码 | `role.manage` |
+| 应用服务 | `RoleAdminQueryApplicationService#pageRoles(...)` |
+
+查询参数：
+
+| 参数名 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `pageNo` | `long` | 否 | `1` | 页码 |
+| `pageSize` | `long` | 否 | `20` | 每页数量 |
+| `keyword` | `String` | 否 | - | 按角色编码或名称模糊搜索 |
+| `status` | `String` | 否 | - | 角色状态过滤 |
+
+成功响应：
+
+| 项 | 说明 |
+|---|---|
+| 响应类型 | `ApiResponse<PageResult<RoleAdminPageItemResponse>>` |
+| 列表元素 | `RoleAdminPageItemResponse` |
+
+### 12.3 创建角色模板
+
+基本信息：
+
+| 项 | 说明 |
+|---|---|
+| HTTP Method | `POST` |
+| Path | `/api/admin/roles` |
+| Controller 方法 | `createRole(...)` |
+| 权限注解 | `@PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).ROLE_MANAGE)")` |
+| 权限码 | `role.manage` |
+| 请求体 DTO | `CreateRoleRequest` |
+| Command | `CreateRoleCommand` |
+| 应用服务 | `RoleAdminCommandApplicationService#createRole(...)` |
+
+请求体字段：
+
+| 字段名 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `roleCode` | `String` | 是 | 角色编码 |
+| `roleName` | `String` | 是 | 角色名称 |
+| `roleScope` | `String` | 是 | 角色范围 |
+| `status` | `String` | 是 | 角色状态 |
+
+成功响应：
+
+| 字段名 | 类型 | 说明 |
+|---|---|---|
+| `roleId` | `Long` | 角色 ID |
+| `roleCode` | `String` | 角色编码 |
+| `roleName` | `String` | 角色名称 |
+| `roleScope` | `String` | 角色范围 |
+| `status` | `String` | 角色状态 |
+
+响应类型：`ApiResponse<RoleAdminResponse>`
+
+### 12.4 修改角色模板
+
+基本信息：
+
+| 项 | 说明 |
+|---|---|
+| HTTP Method | `PATCH` |
+| Path | `/api/admin/roles/{roleId}` |
+| Controller 方法 | `updateRole(...)` |
+| 权限注解 | `@PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).ROLE_MANAGE)")` |
+| 权限码 | `role.manage` |
+| 路径参数 | `roleId` |
+| 请求体 DTO | `UpdateRoleRequest` |
+| Command | `UpdateRoleCommand` |
+| 应用服务 | `RoleAdminCommandApplicationService#updateRole(...)` |
+
+请求体字段：
+
+| 字段名 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `roleName` | `String` | 是 | 角色名称 |
+| `roleScope` | `String` | 是 | 角色范围 |
+| `status` | `String` | 是 | 角色状态 |
+
+响应类型：`ApiResponse<Void>`
+
+### 12.5 整集合替换角色权限
+
+基本信息：
+
+| 项 | 说明 |
+|---|---|
+| HTTP Method | `POST` |
+| Path | `/api/admin/roles/{roleId}/permissions` |
+| Controller 方法 | `replaceRolePermissions(...)` |
+| 权限注解 | `@PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).PERMISSION_MANAGE)")` |
+| 权限码 | `permission.manage` |
+| 路径参数 | `roleId` |
+| 请求体 DTO | `ReplaceRolePermissionsRequest` |
+| Command | `ReplaceRolePermissionsCommand` |
+| 应用服务 | `RoleAdminCommandApplicationService#replaceRolePermissions(...)` |
+
+请求体字段：
+
+| 字段名 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `permissionCodes` | `List<String>` | 是 | 需要整集合绑定的权限码列表；不能为空且元素不能为空白 |
+| `replaceAll` | `Boolean` | 否 | 是否整集合替换；未传时默认 `true` |
+
+响应类型：`ApiResponse<Void>`
+
+## 13. 当前边界与后续建议
 
 当前接口面已经完成“按 student / admin 分组”的正式拆分，但还有几个实现边界需要明确：
 
@@ -653,11 +937,11 @@
 5. `AuthController` 与 `SecurityProbeController` 当前仍位于 `whut-eval-app`，后续如果希望接口职责更集中，可以考虑评估是否迁移到 `whut-eval-interfaces`。
 6. `UserIdentityQueryController` 当前未显式声明 `@PreAuthorize`；如果后续要纳入正式权限模型，应先补齐权限码与接口文档，再调整实现。
 
-## 12. 响应模型附录
+## 14. 响应模型附录
 
 本节补充当前查询接口中被直接引用、但前文未展开字段清单的 3 个响应模型。
 
-### 12.1 `ApplicationRecordView`
+### 14.1 `ApplicationRecordView`
 
 来源：`edu.whut.eval.application.application.query.ApplicationRecordView`
 
@@ -670,7 +954,7 @@
 | `categoryCode` | `String` | 综测类别编码 |
 | `itemCode` | `String` | 综测项目编码 |
 
-### 12.2 `ScoreRecordView`
+### 14.2 `ScoreRecordView`
 
 来源：`edu.whut.eval.application.score.query.ScoreRecordView`
 
@@ -684,7 +968,7 @@
 | `itemCode` | `String` | 综测项目编码 |
 | `academicYear` | `String` | 学年 |
 
-### 12.3 `UserIdentityView`
+### 14.3 `UserIdentityView`
 
 来源：`edu.whut.eval.application.iam.query.UserIdentityView`
 
