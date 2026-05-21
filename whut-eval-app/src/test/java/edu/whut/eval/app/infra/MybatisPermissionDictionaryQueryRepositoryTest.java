@@ -11,6 +11,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
@@ -43,5 +44,20 @@ class MybatisPermissionDictionaryQueryRepositoryTest {
             assertThat(item.description()).isNull();
             assertThat(item.status()).isEqualTo("ACTIVE");
         });
+    }
+
+    @Test
+    void shouldQueryPermissionsByCodes() {
+        given(adminPermissionDictionaryMapper.selectPermissionsByCodes(Set.of("permission.manage", "role.manage"), "ACTIVE"))
+                .willReturn(List.of(
+                        new PermissionDictionaryRow("permission.manage", "权限管理", "manage", "权限管理", "ACTIVE"),
+                        new PermissionDictionaryRow("role.manage", "角色管理", "manage", "角色管理", "ACTIVE")
+                ));
+
+        List<PermissionDictionaryEntry> result =
+                repository.findByCodes(Set.of("permission.manage", "role.manage"), "ACTIVE");
+
+        assertThat(result).extracting(PermissionDictionaryEntry::permissionCode)
+                .containsExactly("permission.manage", "role.manage");
     }
 }

@@ -10,6 +10,7 @@ public final class AuthorizationPermissionCodes {
     public static final String ASSIGNMENT_MANAGE = "assignment.manage";
     public static final String ORG_MANAGE = "org.manage";
     public static final String PERMISSION_MANAGE = "permission.manage";
+    public static final String ROLE_MANAGE = "role.manage";
     public static final String SCORE_VIEW_SELF = "score.view.self";
     public static final String SCORE_VIEW_ASSIGNED = "score.view.assigned";
     public static final String USER_IMPORT = "user.import";

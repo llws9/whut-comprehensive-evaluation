@@ -62,6 +62,22 @@ class MybatisPermissionDictionaryQueryRepositoryIntegrationTest {
                 });
     }
 
+    @Test
+    void shouldFindPermissionsByCodesWithStatusFilter() {
+        jdbcTemplate.update(
+                "INSERT INTO iam_permission (id, permission_code, permission_name, permission_group, status) VALUES (?,?,?,?,?)",
+                5011L, "role.manage", "角色管理", "manage", "ACTIVE"
+        );
+        jdbcTemplate.update(
+                "INSERT INTO iam_permission (id, permission_code, permission_name, permission_group, status) VALUES (?,?,?,?,?)",
+                5012L, "user.manage", "用户管理", "manage", "DISABLED"
+        );
+
+        assertThat(repository.findByCodes(java.util.Set.of("permission.manage", "role.manage", "user.manage"), "ACTIVE"))
+                .extracting(edu.whut.eval.domain.iam.model.PermissionDictionaryEntry::permissionCode)
+                .containsExactly("permission.manage", "role.manage");
+    }
+
     @Configuration
     @MapperScan(basePackageClasses = AdminPermissionDictionaryMapper.class)
     @Import(MybatisPlusConfig.class)

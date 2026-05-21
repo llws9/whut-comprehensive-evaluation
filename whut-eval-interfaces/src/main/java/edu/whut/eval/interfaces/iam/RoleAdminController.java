@@ -1,0 +1,111 @@
+package edu.whut.eval.interfaces.iam;
+
+import edu.whut.eval.application.iam.command.CreateRoleCommand;
+import edu.whut.eval.application.iam.command.ReplaceRolePermissionsCommand;
+import edu.whut.eval.application.iam.command.UpdateRoleCommand;
+import edu.whut.eval.application.iam.query.RoleAdminPageItemView;
+import edu.whut.eval.application.iam.query.RoleAdminPageQuery;
+import edu.whut.eval.application.iam.query.RoleAdminView;
+import edu.whut.eval.application.iam.service.RoleAdminCommandApplicationService;
+import edu.whut.eval.application.iam.service.RoleAdminQueryApplicationService;
+import edu.whut.eval.common.api.ApiResponse;
+import edu.whut.eval.domain.shared.PageResult;
+import edu.whut.eval.interfaces.iam.request.CreateRoleRequest;
+import edu.whut.eval.interfaces.iam.request.ReplaceRolePermissionsRequest;
+import edu.whut.eval.interfaces.iam.request.UpdateRoleRequest;
+import edu.whut.eval.interfaces.iam.response.RoleAdminPageItemResponse;
+import edu.whut.eval.interfaces.iam.response.RoleAdminResponse;
+import jakarta.validation.Valid;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@Validated
+@RequestMapping("/api/admin/roles")
+public class RoleAdminController {
+
+    private final RoleAdminQueryApplicationService roleAdminQueryApplicationService;
+    private final RoleAdminCommandApplicationService roleAdminCommandApplicationService;
+
+    public RoleAdminController(RoleAdminQueryApplicationService roleAdminQueryApplicationService,
+                               RoleAdminCommandApplicationService roleAdminCommandApplicationService) {
+        this.roleAdminQueryApplicationService = roleAdminQueryApplicationService;
+        this.roleAdminCommandApplicationService = roleAdminCommandApplicationService;
+    }
+
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).ROLE_MANAGE)")
+    @GetMapping
+    public ApiResponse<PageResult<RoleAdminPageItemResponse>> pageRoles(@RequestParam(defaultValue = "1") long pageNo,
+                                                                        @RequestParam(defaultValue = "20") long pageSize,
+                                                                        @RequestParam(required = false) String keyword,
+                                                                        @RequestParam(required = false) String status) {
+        PageResult<RoleAdminPageItemView> page = roleAdminQueryApplicationService.pageRoles(
+                new RoleAdminPageQuery(pageNo, pageSize, keyword, status)
+        );
+        return ApiResponse.success(new PageResult<>(
+                page.total(),
+                page.records().stream().map(this::toResponse).toList()
+        ));
+    }
+
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).ROLE_MANAGE)")
+    @PostMapping
+    public ApiResponse<RoleAdminResponse> createRole(@Valid @RequestBody CreateRoleRequest request) {
+        RoleAdminView view = roleAdminCommandApplicationService.createRole(new CreateRoleCommand(
+                request.getRoleCode(),
+                request.getRoleName(),
+                request.getRoleScope(),
+                request.getStatus()
+        ));
+        return ApiResponse.success(new RoleAdminResponse(
+                view.roleId(),
+                view.roleCode(),
+                view.roleName(),
+                view.roleScope(),
+                view.status()
+        ));
+    }
+
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).ROLE_MANAGE)")
+    @PatchMapping("/{roleId}")
+    public ApiResponse<Void> updateRole(@PathVariable Long roleId,
+                                        @Valid @RequestBody UpdateRoleRequest request) {
+        roleAdminCommandApplicationService.updateRole(roleId, new UpdateRoleCommand(
+                request.getRoleName(),
+                request.getRoleScope(),
+                request.getStatus()
+        ));
+        return ApiResponse.success(null);
+    }
+
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).PERMISSION_MANAGE)")
+    @PostMapping("/{roleId}/permissions")
+    public ApiResponse<Void> replaceRolePermissions(@PathVariable Long roleId,
+                                                    @Valid @RequestBody ReplaceRolePermissionsRequest request) {
+        roleAdminCommandApplicationService.replaceRolePermissions(roleId, new ReplaceRolePermissionsCommand(
+                request.getPermissionCodes(),
+                request.getReplaceAll() == null || request.getReplaceAll()
+        ));
+        return ApiResponse.success(null);
+    }
+
+    private RoleAdminPageItemResponse toResponse(RoleAdminPageItemView view) {
+        return new RoleAdminPageItemResponse(
+                view.roleId(),
+                view.roleCode(),
+                view.roleName(),
+                view.roleScope(),
+                view.status(),
+                view.permissionCount(),
+                view.createdAt()
+        );
+    }
+}

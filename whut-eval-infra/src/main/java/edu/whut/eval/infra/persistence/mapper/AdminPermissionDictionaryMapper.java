@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
+import java.util.Set;
 
 @Mapper
 public interface AdminPermissionDictionaryMapper {
@@ -36,4 +37,26 @@ public interface AdminPermissionDictionaryMapper {
     List<PermissionDictionaryRow> selectPermissions(@Param("keyword") String keyword,
                                                     @Param("module") String module,
                                                     @Param("status") String status);
+
+    @Select({
+            "<script>",
+            "SELECT",
+            "  permission_code AS permissionCode,",
+            "  permission_name AS permissionName,",
+            "  permission_group AS module,",
+            "  permission_name AS description,",
+            "  status AS status",
+            "FROM iam_permission",
+            "WHERE permission_code IN",
+            "<foreach item='code' collection='permissionCodes' open='(' separator=',' close=')'>",
+            "  #{code}",
+            "</foreach>",
+            "<if test='status != null and status != \"\"'>",
+            "  AND status = #{status}",
+            "</if>",
+            "ORDER BY id ASC",
+            "</script>"
+    })
+    List<PermissionDictionaryRow> selectPermissionsByCodes(@Param("permissionCodes") Set<String> permissionCodes,
+                                                           @Param("status") String status);
 }
