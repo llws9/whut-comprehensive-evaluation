@@ -52,6 +52,7 @@ public class RepositoryUserAuthorizationContextLoader implements UserAuthorizati
                 request.getUserNo(),
                 request.getUserName(),
                 request.getIdentity(),
+                request.getSessionId(),
                 request.getRoles(),
                 authorities,
                 scopeRules

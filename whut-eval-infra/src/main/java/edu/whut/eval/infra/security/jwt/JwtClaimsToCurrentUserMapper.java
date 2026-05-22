@@ -17,6 +17,7 @@ import java.util.Set;
 @Component
 public class JwtClaimsToCurrentUserMapper {
 
+    private static final String SESSION_ID_CLAIM = "sid";
     private static final Logger log = LoggerFactory.getLogger(JwtClaimsToCurrentUserMapper.class);
 
     private final SecurityProperties securityProperties;
@@ -31,6 +32,7 @@ public class JwtClaimsToCurrentUserMapper {
         String userNo = readRequiredStringClaim(claims, jwtProperties.getUserNoClaim());
         String userName = readRequiredStringClaim(claims, jwtProperties.getUserNameClaim());
         String identity = readRequiredStringClaim(claims, jwtProperties.getIdentityClaim());
+        String sessionId = readRequiredStringClaim(claims, SESSION_ID_CLAIM);
         Set<String> roles = readStringSetClaim(claims, jwtProperties.getRolesClaim(), true);
         Set<String> authorities = readAuthorities(claims, jwtProperties.getAuthoritiesClaim());
 
@@ -39,9 +41,10 @@ public class JwtClaimsToCurrentUserMapper {
                 "userId", userId,
                 "userNo", userNo,
                 "identity", identity,
+                "sessionId", sessionId,
                 "roleCount", roles.size(),
                 "authorityCount", authorities.size());
-        return new CurrentUser(userId, userNo, userName, identity, roles, authorities, java.util.List.of());
+        return new CurrentUser(userId, userNo, userName, identity, sessionId, roles, authorities, java.util.List.of());
     }
 
     private Long readRequiredLongClaim(Claims claims, String claimName) {

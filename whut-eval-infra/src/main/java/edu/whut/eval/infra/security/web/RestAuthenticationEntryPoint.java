@@ -1,6 +1,7 @@
 package edu.whut.eval.infra.security.web;
 
 import edu.whut.eval.common.error.CommonErrorCode;
+import edu.whut.eval.infra.security.jwt.JwtAuthenticationException;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -17,10 +18,13 @@ public class RestAuthenticationEntryPoint implements AuthenticationEntryPoint {
     public void commence(HttpServletRequest request,
                          HttpServletResponse response,
                          AuthenticationException authException) throws IOException, ServletException {
+        CommonErrorCode errorCode = authException instanceof JwtAuthenticationException
+                ? CommonErrorCode.TOKEN_INVALID
+                : CommonErrorCode.AUTHENTICATION_FAILED;
         SecurityErrorResponseWriter.write(
                 response,
-                CommonErrorCode.AUTHENTICATION_FAILED,
-                CommonErrorCode.AUTHENTICATION_FAILED.defaultMessage()
+                errorCode,
+                errorCode.defaultMessage()
         );
     }
 }

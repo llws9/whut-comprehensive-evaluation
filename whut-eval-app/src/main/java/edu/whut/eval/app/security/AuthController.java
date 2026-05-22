@@ -1,8 +1,12 @@
 package edu.whut.eval.app.security;
 
 import edu.whut.eval.application.auth.model.AuthenticatedUserSnapshot;
+import edu.whut.eval.application.auth.model.LoginSessionCreateCommand;
 import edu.whut.eval.application.auth.model.RefreshTokenReloadContext;
+import edu.whut.eval.application.auth.service.IamSessionAccessService;
 import edu.whut.eval.application.auth.service.LoginAuthenticationService;
+import edu.whut.eval.application.auth.service.LoginSessionCommandService;
+import edu.whut.eval.application.auth.service.LogoutSessionCommandService;
 import edu.whut.eval.application.auth.service.RefreshTokenCurrentUserLoader;
 import edu.whut.eval.app.security.dto.AuthTokenResponse;
 import edu.whut.eval.app.security.dto.LoginRequest;
@@ -11,6 +15,7 @@ import edu.whut.eval.common.api.ApiResponse;
 import edu.whut.eval.common.error.CommonErrorCode;
 import edu.whut.eval.common.log.AppLog;
 import edu.whut.eval.infra.security.context.CurrentUser;
+import edu.whut.eval.infra.security.context.CurrentUserProvider;
 import edu.whut.eval.infra.security.jwt.JwtAuthenticationException;
 import edu.whut.eval.infra.security.jwt.JwtClaimsParser;
 import edu.whut.eval.infra.security.jwt.JwtTokenIssuer;
@@ -19,13 +24,19 @@ import edu.whut.eval.infra.security.jwt.RefreshTokenClaimsMapper;
 import edu.whut.eval.infra.security.jwt.RefreshTokenSubject;
 import io.jsonwebtoken.Claims;
 import jakarta.validation.Valid;
+import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.UUID;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -37,6 +48,10 @@ public class AuthController {
     private final JwtClaimsParser jwtClaimsParser;
     private final RefreshTokenClaimsMapper refreshTokenClaimsMapper;
     private final RefreshTokenCurrentUserLoader refreshTokenCurrentUserLoader;
+    private final LoginSessionCommandService loginSessionCommandService;
+    private final LogoutSessionCommandService logoutSessionCommandService;
+    private final CurrentUserProvider currentUserProvider;
+    private final IamSessionAccessService iamSessionAccessService;
     private final JwtTokenIssuer jwtTokenIssuer;
     private final AuthTokenResponseAssembler authTokenResponseAssembler;
 
@@ -44,18 +59,27 @@ public class AuthController {
                           JwtClaimsParser jwtClaimsParser,
                           RefreshTokenClaimsMapper refreshTokenClaimsMapper,
                           RefreshTokenCurrentUserLoader refreshTokenCurrentUserLoader,
+                          LoginSessionCommandService loginSessionCommandService,
+                          LogoutSessionCommandService logoutSessionCommandService,
+                          CurrentUserProvider currentUserProvider,
+                          IamSessionAccessService iamSessionAccessService,
                           JwtTokenIssuer jwtTokenIssuer,
                           AuthTokenResponseAssembler authTokenResponseAssembler) {
         this.loginAuthenticationService = loginAuthenticationService;
         this.jwtClaimsParser = jwtClaimsParser;
         this.refreshTokenClaimsMapper = refreshTokenClaimsMapper;
         this.refreshTokenCurrentUserLoader = refreshTokenCurrentUserLoader;
+        this.loginSessionCommandService = loginSessionCommandService;
+        this.logoutSessionCommandService = logoutSessionCommandService;
+        this.currentUserProvider = currentUserProvider;
+        this.iamSessionAccessService = iamSessionAccessService;
         this.jwtTokenIssuer = jwtTokenIssuer;
         this.authTokenResponseAssembler = authTokenResponseAssembler;
     }
 
     @PostMapping("/login")
-    public ResponseEntity<ApiResponse<?>> login(@Valid @RequestBody LoginRequest request) {
+    public ResponseEntity<ApiResponse<?>> login(@Valid @RequestBody LoginRequest request,
+                                                HttpServletRequest httpServletRequest) {
         AppLog.info(log, "security.auth.login.request.received",
                 "credential", request.getCredential(),
                 "passwordPresent", request.getPassword() != null && !request.getPassword().isBlank());
@@ -68,11 +92,19 @@ public class AuthController {
                 snapshot.userNo(),
                 snapshot.userName(),
                 snapshot.identity(),
+                UUID.randomUUID().toString(),
                 snapshot.roles(),
                 snapshot.authorities(),
                 snapshot.scopeRules()
         );
         JwtTokenPair tokenPair = jwtTokenIssuer.issueTokenPair(currentUser);
+        loginSessionCommandService.create(new LoginSessionCreateCommand(
+                currentUser.getUserId(),
+                currentUser.getSessionId(),
+                resolveLoginIp(httpServletRequest),
+                resolveUserAgent(httpServletRequest),
+                LocalDateTime.ofInstant(tokenPair.getRefreshTokenExpiresAt(), ZoneId.systemDefault())
+        ));
         AuthTokenResponse response = authTokenResponseAssembler.toResponse(tokenPair);
         AppLog.info(log, "security.auth.login.completed",
                 "userId", currentUser.getUserId(),
@@ -96,19 +128,30 @@ public class AuthController {
                     "userId", subject.getUserId(),
                     "userNo", subject.getUserNo(),
                     "identity", subject.getIdentity());
+            iamSessionAccessService.assertActive(subject.getSessionId());
             AuthenticatedUserSnapshot snapshot = refreshTokenCurrentUserLoader.load(
-                    new RefreshTokenReloadContext(subject.getUserId(), subject.getUserNo(), subject.getIdentity())
+                    new RefreshTokenReloadContext(
+                            subject.getUserId(),
+                            subject.getUserNo(),
+                            subject.getIdentity(),
+                            subject.getSessionId()
+                    )
             );
             CurrentUser currentUser = new CurrentUser(
                     snapshot.userId(),
                     snapshot.userNo(),
                     snapshot.userName(),
                     snapshot.identity(),
+                    subject.getSessionId(),
                     snapshot.roles(),
                     snapshot.authorities(),
                     snapshot.scopeRules()
             );
             JwtTokenPair tokenPair = jwtTokenIssuer.issueTokenPair(currentUser);
+            iamSessionAccessService.extendExpiration(
+                    subject.getSessionId(),
+                    LocalDateTime.ofInstant(tokenPair.getRefreshTokenExpiresAt(), ZoneId.systemDefault())
+            );
             AuthTokenResponse response = authTokenResponseAssembler.toResponse(tokenPair);
             AppLog.info(log, "security.auth.refresh.completed",
                     "userId", currentUser.getUserId(),
@@ -122,9 +165,33 @@ public class AuthController {
             AppLog.warn(log, "security.auth.refresh.token.invalid",
                     "tokenLength", tokenLength,
                     "reason", exception.getMessage());
-            return ResponseEntity.status(CommonErrorCode.AUTHENTICATION_FAILED.httpStatus())
-                    .body(ApiResponse.failure(CommonErrorCode.AUTHENTICATION_FAILED,
+            return ResponseEntity.status(CommonErrorCode.TOKEN_INVALID.httpStatus())
+                    .body(ApiResponse.failure(CommonErrorCode.TOKEN_INVALID,
                             "refresh token 校验失败: " + exception.getMessage()));
         }
+    }
+
+    @PostMapping("/logout")
+    public ApiResponse<Void> logout() {
+        CurrentUser currentUser = currentUserProvider.requiredCurrentUser();
+        logoutSessionCommandService.logout(currentUser.getSessionId());
+        return ApiResponse.success(null);
+    }
+
+    private String resolveLoginIp(HttpServletRequest request) {
+        String forwardedFor = request.getHeader("X-Forwarded-For");
+        if (StringUtils.hasText(forwardedFor)) {
+            String first = forwardedFor.split(",")[0].trim();
+            if (StringUtils.hasText(first)) {
+                return first;
+            }
+        }
+        String remoteAddr = request.getRemoteAddr();
+        return StringUtils.hasText(remoteAddr) ? remoteAddr.trim() : "unknown";
+    }
+
+    private String resolveUserAgent(HttpServletRequest request) {
+        String userAgent = request.getHeader("User-Agent");
+        return StringUtils.hasText(userAgent) ? userAgent.trim() : "";
     }
 }

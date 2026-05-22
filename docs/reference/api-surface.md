@@ -42,7 +42,7 @@
 
 | 分组 | 路由前缀 | Controller | 所在模块 | 说明 |
 |---|---|---|---|---|
-| 认证接口 | `/api/auth/*` | `AuthController` | `whut-eval-app` | 负责登录、刷新令牌等认证入口 |
+| 认证接口 | `/api/auth/*` | `AuthController` | `whut-eval-app` | 负责登录、刷新令牌与当前会话登出 |
 | 安全探针接口 | `/api/security/*` | `SecurityProbeController` | `whut-eval-app` | 用于查看当前请求上下文下的认证主体与授权信息 |
 | IAM 身份查询接口 | `/api/iam/users/*` | `UserIdentityQueryController` | `whut-eval-interfaces` | 用于按用户编号查询身份、岗位与组织归属 |
 | 文件上传接口 | `/api/files/*` | `FileUploadController` | `whut-eval-interfaces` | 对外提供最小文件上传入口，底层走 OSS 上传服务 |
@@ -71,9 +71,10 @@
 
 | 分组 | HTTP Method | Path | Controller 方法 | 鉴权方式 | 主要用途 |
 |---|---|---|---|---|---|
-| 认证 | `POST` | `/api/auth/login` | `AuthController#login(...)` | 匿名可访问 | 用户登录并签发 Access Token / Refresh Token |
-| 认证 | `POST` | `/api/auth/refresh` | `AuthController#refresh(...)` | 匿名可访问 | 使用 Refresh Token 换发新 Token 对 |
-| 安全探针 | `GET` | `/api/security/me` | `SecurityProbeController#currentUser()` | 依赖 Bearer Token | 查看当前请求上下文中的用户、角色、权限、范围 |
+| 认证 | `POST` | `/api/auth/login` | `AuthController#login(...)` | 匿名可访问 | 用户登录、签发带 `sid` 的 Token 对，并创建当前 `ACTIVE iam_session` |
+| 认证 | `POST` | `/api/auth/refresh` | `AuthController#refresh(...)` | 匿名可访问 | 使用 Refresh Token 换发同一 `sid` 的新 Token 对，并续期当前会话 |
+| 认证 | `POST` | `/api/auth/logout` | `AuthController#logout()` | 依赖 Bearer Token | 仅撤销当前 `sid` 对应会话，使当前 Access/Refresh Token 立即失效 |
+| 安全探针 | `GET` | `/api/security/me` | `SecurityProbeController#currentUser()` | 依赖 Bearer Token | 查看当前请求上下文中的用户、会话、角色、权限、范围 |
 | IAM | `GET` | `/api/iam/users/{userNo}/identity` | `UserIdentityQueryController#getUserIdentity(...)` | 当前代码未显式声明 `@PreAuthorize` | 按学号 / 工号查询身份信息 |
 | File Upload | `POST` | `/api/files/upload` | `FileUploadController#upload(...)` | 依赖当前登录态 | 上传单个文件到 OSS，登记 `file_asset`，并返回可供业务绑定的 `fileId` |
 | Student Query | `GET` | `/api/student/query/applications` | `StudentQueryController#pageApplications(...)` | `application.view.self` | 查询当前学生本人可见申请列表 |
@@ -137,6 +138,19 @@
 
 响应类型：`ApiResponse<AuthTokenResponse>`
 
+补充说明：
+
+- 登录成功后，服务端会生成唯一 `sessionId`，并以同一个 `sid` 签发 Access Token / Refresh Token。
+- 登录链路会创建一条 `ACTIVE iam_session`，持久化 `sessionId/loginIp/userAgent/expiredAt`。
+- 会话 `expiredAt` 与 Refresh Token 过期时间保持一致，后续 refresh 成功时会续期同一会话。
+
+失败路径：
+
+| 场景 | HTTP | 错误码 | 说明 |
+|---|---:|---|---|
+| 用户名或密码错误 | `401` | `AUTH-4010` | 凭证认证失败 |
+| 用户状态不是 `ACTIVE` | `401` | `AUTH-4010` | 登录态认证失败，当前实现统一走认证失败口径 |
+
 ### 4.3 刷新令牌
 
 基本信息：
@@ -148,7 +162,7 @@
 | Controller 方法 | `refresh(...)` |
 | 鉴权方式 | 匿名可访问 |
 | 请求体 DTO | `RefreshTokenRequest` |
-| 应用服务 | `RefreshTokenCurrentUserLoader#load(...)` + `JwtTokenIssuer#issueTokenPair(...)` |
+| 应用服务 | `RefreshTokenClaimsMapper#map(...)` + `IamSessionAccessService#assertActive(...)` + `RefreshTokenCurrentUserLoader#load(...)` + `JwtTokenIssuer#issueTokenPair(...)` |
 
 请求体字段：
 
@@ -168,6 +182,59 @@
 | `refreshTokenExpiresAt` | `String` | Refresh Token 过期时间 |
 
 响应类型：`ApiResponse<AuthTokenResponse>`
+
+补充说明：
+
+- Refresh Token 必须携带 `sid`，并且该 `sid` 对应的 `iam_session` 必须存在、未撤销且未过期。
+- refresh 成功后会沿用同一个 `sid` 重新签发 Token 对，不做 session 轮换。
+- refresh 成功后会把当前会话的 `expiredAt` 续期到新 Refresh Token 的过期时间。
+
+失败路径：
+
+| 场景 | HTTP | 错误码 | 说明 |
+|---|---:|---|---|
+| token 签名错误、格式非法、issuer/audience 不匹配 | `401` | `AUTH-4012` | JWT 校验失败 |
+| token 已过期 | `401` | `AUTH-4012` | 当前实现将 JWT 过期统一归入 token 非法 |
+| `token_type` 不是 `refresh` | `401` | `AUTH-4012` | Access Token 不能调用 refresh |
+| token 缺少 `sid` 或其他必填 claims | `401` | `AUTH-4012` | 旧 token 或不完整 token 被拒绝 |
+| 会话不存在、已撤销或已过期 | `401` | `AUTH-4012` | 会话无效统一走 `TOKEN_INVALID` |
+| token 主体与数据库用户不一致，或用户状态不是 `ACTIVE` | `401` | `AUTH-4010` | token 通过基础校验后，查库阶段认证失败 |
+
+补充说明：
+
+- `AUTH-4011` 虽然仍定义在 `CommonErrorCode` 中，但当前 `refresh` 链路未直接返回该错误码。
+
+### 4.4 当前会话登出
+
+基本信息：
+
+| 项 | 说明 |
+|---|---|
+| HTTP Method | `POST` |
+| Path | `/api/auth/logout` |
+| Controller 方法 | `logout()` |
+| 鉴权方式 | 依赖 Bearer Token |
+| 应用服务 | `CurrentUserProvider#requiredCurrentUser()` + `LogoutSessionCommandService#logout(...)` |
+
+成功响应：
+
+| 项 | 说明 |
+|---|---|
+| 响应类型 | `ApiResponse<Void>` |
+| 返回体 | `ApiResponse.success(null)` |
+
+失败路径：
+
+| 场景 | HTTP | 错误码 | 说明 |
+|---|---:|---|---|
+| 未登录或未携带 Bearer Token | `401` | `AUTH-4010` | 当前请求没有可用认证主体 |
+| token 非法、缺少 `sid` | `401` | `AUTH-4012` | JWT / claims 校验失败 |
+| 会话不存在、已撤销或已过期 | `401` | `AUTH-4012` | 会话无效统一走 `TOKEN_INVALID` |
+
+补充说明：
+
+- `logout` 只撤销当前 `sid` 对应的一条会话，不影响同一用户其他会话。
+- 撤销成功后，会写入 `revokedAt`；同一会话下后续 Access Token 与 Refresh Token 都会立即失效。
 
 ## 5. Security Probe 接口
 
@@ -201,9 +268,18 @@
 | `identity` | `String` | 当前身份标识 |
 | `roles` | `List<String>` | 角色集合 |
 | `authorities` | `List<String>` | 权限码集合 |
+| `sessionId` | `String` | 当前会话 ID，对应 JWT `sid` 与 `iam_session.token_id` |
 | `scopeRules` | `List<Object>` | 数据范围规则集合 |
 
 响应类型：`ApiResponse<Map<String, Object>>`
+
+失败路径：
+
+| 场景 | HTTP | 错误码 | 说明 |
+|---|---:|---|---|
+| 未登录或未携带 Bearer Token | `401` | `AUTH-4010` | 当前请求没有可用认证主体 |
+| token 非法、缺少 `sid` | `401` | `AUTH-4012` | JWT / claims 校验失败 |
+| 会话不存在、已撤销或已过期 | `401` | `AUTH-4012` | 会话无效统一走 `TOKEN_INVALID` |
 
 ## 6. IAM 接口
 

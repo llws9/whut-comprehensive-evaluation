@@ -148,7 +148,7 @@ CREATE TABLE `iam_scope_rule` (
 CREATE TABLE `iam_session` (
   `id` BIGINT NOT NULL,
   `user_id` BIGINT NOT NULL,
-  `token_id` VARCHAR(128) NOT NULL,
+  `token_id` VARCHAR(128) NOT NULL COMMENT 'sessionId（sid）',
   `login_ip` VARCHAR(64) NOT NULL,
   `user_agent` VARCHAR(255) NOT NULL,
   `expired_at` DATETIME NOT NULL,
@@ -158,7 +158,7 @@ CREATE TABLE `iam_session` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_iam_session_token_id` (`token_id`),
   KEY `idx_iam_session_user_id` (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='登录会话';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='登录会话（token_id 语义为 sessionId）';
 
 INSERT INTO `iam_user` (`id`, `user_no`, `user_name`, `email`, `phone`, `password_hash`, `status`, `created_at`, `updated_at`) VALUES
 (1001, '2022010101', '张晨', 'zhangchen@whut.edu.cn', '13800000001', 'hash_2022010101', 'ACTIVE', '2026-05-01 08:00:00', '2026-05-18 09:20:00'),

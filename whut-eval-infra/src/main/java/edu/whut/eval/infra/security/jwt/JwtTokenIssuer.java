@@ -23,6 +23,7 @@ import java.util.Date;
 @Component
 public class JwtTokenIssuer {
 
+    private static final String SESSION_ID_CLAIM = "sid";
     private static final Logger log = LoggerFactory.getLogger(JwtTokenIssuer.class);
 
     private final SecurityProperties securityProperties;
@@ -78,6 +79,7 @@ public class JwtTokenIssuer {
                     .claim(jwt.getUserNoClaim(), currentUser.getUserNo())
                     .claim(jwt.getUserNameClaim(), currentUser.getUserName())
                     .claim(jwt.getIdentityClaim(), currentUser.getIdentity())
+                    .claim(SESSION_ID_CLAIM, currentUser.getSessionId())
                     .claim(jwt.getRolesClaim(), currentUser.getRoles())
                     .claim(jwt.getAuthoritiesClaim(), currentUser.getAuthorities());
             String token = applySignature(builder, jwt).compact();
@@ -107,7 +109,8 @@ public class JwtTokenIssuer {
                     .claim(jwt.getTokenTypeClaim(), jwt.getRefreshTokenType())
                     .claim(jwt.getUserIdClaim(), currentUser.getUserId())
                     .claim(jwt.getUserNoClaim(), currentUser.getUserNo())
-                    .claim(jwt.getIdentityClaim(), currentUser.getIdentity());
+                    .claim(jwt.getIdentityClaim(), currentUser.getIdentity())
+                    .claim(SESSION_ID_CLAIM, currentUser.getSessionId());
             String token = applySignature(builder, jwt).compact();
             AppLog.info(log, "security.jwt.issue.refresh.succeeded",
                     "userId", currentUser.getUserId(),

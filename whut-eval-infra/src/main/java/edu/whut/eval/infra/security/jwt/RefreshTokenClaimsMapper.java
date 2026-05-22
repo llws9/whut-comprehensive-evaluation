@@ -12,6 +12,7 @@ import org.springframework.util.StringUtils;
 @Component
 public class RefreshTokenClaimsMapper {
 
+    private static final String SESSION_ID_CLAIM = "sid";
     private static final Logger log = LoggerFactory.getLogger(RefreshTokenClaimsMapper.class);
 
     private final SecurityProperties securityProperties;
@@ -34,13 +35,15 @@ public class RefreshTokenClaimsMapper {
         Long userId = readRequiredLongClaim(claims, jwt.getUserIdClaim());
         String userNo = readRequiredStringClaim(claims, jwt.getUserNoClaim());
         String identity = readRequiredStringClaim(claims, jwt.getIdentityClaim());
+        String sessionId = readRequiredStringClaim(claims, SESSION_ID_CLAIM);
 
         AppLog.info(log, "security.jwt.refresh.claims.mapped",
                 "subject", claims.getSubject(),
                 "userId", userId,
                 "userNo", userNo,
-                "identity", identity);
-        return new RefreshTokenSubject(userId, userNo, identity);
+                "identity", identity,
+                "sessionId", sessionId);
+        return new RefreshTokenSubject(userId, userNo, identity, sessionId);
     }
 
     private Long readRequiredLongClaim(Claims claims, String claimName) {

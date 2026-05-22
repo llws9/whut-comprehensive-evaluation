@@ -26,6 +26,7 @@ public class SecurityContextUserAuthorizationContextAssembler implements UserAut
                 currentUser.getUserNo(),
                 currentUser.getUserName(),
                 currentUser.getIdentity(),
+                currentUser.getSessionId(),
                 currentUser.getRoles(),
                 currentUser.getAuthorities(),
                 currentUser.getScopeRules()

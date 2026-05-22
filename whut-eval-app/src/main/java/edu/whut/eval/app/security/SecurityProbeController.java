@@ -28,6 +28,7 @@ public class SecurityProbeController {
         payload.put("userNo", authorizationContext.getUserNo());
         payload.put("userName", authorizationContext.getUserName());
         payload.put("identity", authorizationContext.getIdentity());
+        payload.put("sessionId", authorizationContext.getSessionId());
         payload.put("roles", authorizationContext.getRoles());
         payload.put("authorities", authorizationContext.getAuthorities());
         payload.put("scopeRules", authorizationContext.getScopeRules());

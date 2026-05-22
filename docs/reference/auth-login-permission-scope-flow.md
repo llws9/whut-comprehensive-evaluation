@@ -8,7 +8,7 @@
 
 本文档说明当前 `rewrite/whut-comprehensive-evaluation` 中已经落地的三条核心链路：
 
-1. 登录 / Refresh Token 链路
+1. 登录 / Refresh Token / Logout 链路
 2. 权限查询链路
 3. 用户可见范围链路
 
@@ -18,9 +18,10 @@
 
 截至当前实现，系统状态如下：
 
-- `POST /api/auth/login` 已接入真实账号密码认证服务，当前按 `user_no + SHA-256 password_hash` 完成认证，并在登录成功后查询角色、权限、范围再签发 Token。
-- `POST /api/auth/refresh` 已经打通，可以基于 Refresh Token 重载最新用户、角色、权限、范围，并重新签发 Token。
-- 普通受保护请求已经打通 Access Token 解析、运行时权限补齐、范围规则补齐、`SecurityContext` 装配。
+- `POST /api/auth/login` 已接入真实账号密码认证服务，当前按 `user_no + SHA-256 password_hash` 完成认证，并在登录成功后生成 `sid`、创建 `ACTIVE iam_session`、再签发 Token。
+- `POST /api/auth/refresh` 已经打通，可以基于携带 `sid` 的 Refresh Token 校验当前会话、重载最新用户、角色、权限、范围，并重新签发同一会话下的新 Token。
+- `POST /api/auth/logout` 已落地，当前语义是“仅撤销当前会话”，不会影响同一用户其他设备或其他会话。
+- 普通受保护请求已经打通 Access Token 解析、`sid` 会话校验、运行时权限补齐、范围规则补齐、`SecurityContext` 装配。
 - 业务侧已经可以从 `SecurityContext` 读取完整 `UserAuthorizationContext`。
 - 业务侧已经可以把“某权限下的范围规则”转换成 `AuthorizationScopeSet`，再转换成 `ApplicationScopePredicate` / `ScoreScopePredicate` 这样的查询条件对象。
 - 单条资源范围校验已经支持申请和成绩两类资源，并覆盖 `SELF`、`ORG_UNIT`、`ORG_SUBTREE`、`CATEGORY`、`ITEM`、`ORG_UNIT_ITEM`、`CUSTOM_EXPRESSION`、`ALL`。
@@ -28,12 +29,12 @@
 
 一句话总结：
 
-- 当前已经完成“真实登录 + 认证与授权底座 + 范围解释 + SQL translator”。
+- 当前已经完成“真实登录 + 可撤销会话 + 认证与授权底座 + 范围解释 + SQL translator”。
 - 当前尚未完成“真实业务查询仓储/接口对这些授权产物的正式接线”。
 
 ## 3. 核心对象
 
-当前链路里最重要的对象有 7 个：
+当前链路里最重要的对象有 8 个：
 
 ### 3.1 `CurrentUser`
 
@@ -43,6 +44,7 @@
 - `userNo`
 - `userName`
 - `identity`
+- `sessionId`
 - `roles`
 - `authorities`
 - `scopeRules`
@@ -51,6 +53,7 @@
 
 - `scopeRules` 不放入 JWT。
 - `scopeRules` 是请求期或 refresh 期从数据库动态补齐的。
+- `sessionId` 来自 JWT `sid` claim，并与 `iam_session.token_id` 共用同一业务语义。
 
 ### 3.2 `UserAuthorizationContext`
 
@@ -59,6 +62,7 @@
 它的职责不是做认证，而是给应用服务提供稳定、可直接使用的：
 
 - 当前用户身份
+- 当前会话 ID
 - 当前权限集合
 - 当前范围规则集合
 
@@ -108,6 +112,15 @@
 - `iam_permission`
 - `iam_role_permission`
 
+### 3.8 `IamSessionAccessService`
+
+用于按 `sessionId` 校验当前会话是否仍然可用，并在 refresh 成功后续期同一会话。
+
+当前职责是：
+
+- `assertActive(sessionId)`：拒绝不存在、已撤销、已过期或空白 `sid`
+- `extendExpiration(sessionId, expiredAt)`：把当前会话的 `expiredAt` 续到新 Refresh Token 的过期时间
+
 ## 4. Token 设计
 
 当前采用 Access Token / Refresh Token 分离设计。
@@ -121,6 +134,7 @@ Access Token 当前包含：
 - `uno`
 - `uname`
 - `identity`
+- `sid`
 - `roles`
 - `authorities`
 
@@ -128,6 +142,7 @@ Access Token 当前包含：
 
 - 用于普通请求快速完成基础身份解析。
 - 允许网关或过滤器先完成初步认证。
+- 让 Access Token 与服务端 `iam_session` 建立一一关联，从而支持“服务端立即失效”。
 
 但当前实现又增加了一步“运行时补齐”，所以：
 
@@ -147,6 +162,7 @@ Refresh Token 当前只包含：
 - `uid`
 - `uno`
 - `identity`
+- `sid`
 
 设计意图：
 
@@ -155,8 +171,14 @@ Refresh Token 当前只包含：
 - 不携带 `roles`
 - 不携带 `authorities`
 - 不携带 `scopeRules`
+- 但必须携带 `sid`，否则无法建立服务端会话校验闭环
 
-因此 refresh 时一定要重新查库。
+因此 refresh 时一定要重新查库，并先校验 `sid` 对应会话仍然有效。
+
+补充说明：
+
+- Access Token 与 Refresh Token 必须携带同一个 `sid`。
+- 不带 `sid` 的旧 token 当前统一视为非法 token，返回 `401 AUTH-4012`。
 
 ## 5. 登录链路
 
@@ -173,15 +195,18 @@ Refresh Token 当前只包含：
 7. 查询有效范围规则
 8. 组装 `AuthenticatedUserSnapshot`
 9. 转成完整 `CurrentUser`
-10. 调用 `JwtTokenIssuer.issueTokenPair(...)`
-11. 返回 Access Token + Refresh Token
+10. 生成唯一 `sessionId`
+11. 调用 `JwtTokenIssuer.issueTokenPair(...)`，在 Access Token / Refresh Token 中都写入同一个 `sid`
+12. 调用 `LoginSessionCommandService#create(...)` 创建 `ACTIVE iam_session`
+13. 返回 Access Token + Refresh Token
 
 ### 5.2 登录链路的当前实现边界
 
 当前登录已是可运行闭环，但仍有两个边界需要明确：
 
 1. 第一版密码方案按 `SHA-256` 摘要校验实现，后续如需升级为更强口令算法，需要单独做存量兼容迁移。
-2. 当前文档讨论的是认证与授权内核，尚未把登录成功后的用户能力进一步接到具体业务首页或聚合视图。
+2. 当前登录创建的 `iam_session` 是“单会话单行”模型，当前只支持撤销当前会话，不包含多设备管理界面。
+3. 当前文档讨论的是认证与授权内核，尚未把登录成功后的用户能力进一步接到具体业务首页或聚合视图。
 
 ## 6. Refresh Token 链路
 
@@ -194,8 +219,10 @@ POST /api/auth/refresh
   -> AuthController.refresh()
   -> JwtClaimsParser.parse()
   -> RefreshTokenClaimsMapper.map()
+  -> IamSessionAccessService.assertActive()
   -> RefreshTokenCurrentUserLoader.load()
   -> JwtTokenIssuer.issueTokenPair()
+  -> IamSessionAccessService.extendExpiration()
   -> 返回新 token pair
 ```
 
@@ -208,18 +235,21 @@ POST /api/auth/refresh
    - `userId`
    - `userNo`
    - `identity`
-5. `DefaultRefreshTokenCurrentUserLoader` 开始查库重载
-6. 通过 `IamUserQueryRepository` 查询用户
-7. 校验：
+   - `sessionId`
+5. `IamSessionAccessService.assertActive(sessionId)` 校验会话存在、未撤销且未过期
+6. `DefaultRefreshTokenCurrentUserLoader` 开始查库重载
+7. 通过 `IamUserQueryRepository` 查询用户
+8. 校验：
    - `userNo` 是否一致
    - 用户状态是否为 `ACTIVE`
-8. 通过 `RoleAssignmentQueryRepository` 查询有效角色分配
-9. 通过 `UserAuthorityQueryRepository` 查询有效权限
-10. 通过 `UserScopeRuleQueryRepository` 查询有效范围规则
-11. 组装 `AuthenticatedUserSnapshot`
-12. 转成新的 `CurrentUser`
-13. `JwtTokenIssuer` 签发新的 Access Token / Refresh Token
-14. 返回给客户端
+9. 通过 `RoleAssignmentQueryRepository` 查询有效角色分配
+10. 通过 `UserAuthorityQueryRepository` 查询有效权限
+11. 通过 `UserScopeRuleQueryRepository` 查询有效范围规则
+12. 组装 `AuthenticatedUserSnapshot`
+13. 转成新的 `CurrentUser`，沿用原来的 `sessionId`
+14. `JwtTokenIssuer` 签发新的 Access Token / Refresh Token
+15. `IamSessionAccessService.extendExpiration(...)` 续期当前会话
+16. 返回给客户端
 
 ### 6.3 这条链路的特点
 
@@ -233,6 +263,15 @@ Refresh 链路的核心特征是：
 - 用户被禁用后，refresh 会失败
 - 用户权限被撤销后，新签发 token 会立刻反映变化
 - 用户范围规则变更后，新签发 token 也会立刻反映变化
+- 当前会话被撤销或过期后，refresh 会直接失败
+
+### 6.4 `AUTH-4010/AUTH-4011/AUTH-4012` 当前口径
+
+当前 A-19 链路里的 3 个认证错误码，真实实现语义如下：
+
+- `AUTH-4010`：凭证认证失败，或 token 通过基础 JWT 校验后，在查库阶段发现用户主体不一致 / 用户状态不是 `ACTIVE`
+- `AUTH-4011`：错误码仍保留在 `CommonErrorCode` 中，但当前 login / refresh / filter / logout 链路没有直接返回它
+- `AUTH-4012`：所有 JWT / session 非法场景的统一口径，包括签名错误、issuer/audience 不匹配、`token_type` 错误、缺少 `sid`、旧 token 缺少必填 claim、JWT 过期、会话不存在、会话已撤销、会话已过期
 
 ## 7. 普通受保护请求链路
 
@@ -249,6 +288,7 @@ HTTP Request
   -> JwtTokenResolver
   -> JwtClaimsParser
   -> JwtClaimsToCurrentUserMapper
+  -> IamSessionAccessService.assertActive()
   -> UserAuthorizationContextLoader
   -> CurrentUser 写入 SecurityContext
   -> 业务层读取 UserAuthorizationContext
@@ -264,16 +304,18 @@ HTTP Request
    - `uno`
    - `uname`
    - `identity`
+   - `sid`
    - `roles`
    - `authorities`
 5. 得到一个“仅基于 token claims 的轻量 `CurrentUser`”
-6. `RepositoryUserAuthorizationContextLoader` 再根据 `userId` 查库补齐：
+6. `IamSessionAccessService.assertActive(sessionId)` 校验当前会话仍有效
+7. `RepositoryUserAuthorizationContextLoader` 再根据 `userId` 查库补齐：
    - 最新 `authorities`
    - 最新 `scopeRules`
-7. 把查库结果组装成 `UserAuthorizationContext`
-8. 再转成最终 `CurrentUser`
-9. 写入 `SecurityContext`
-10. 后续控制器 / 应用服务通过 `CurrentUserProvider` 或 `UserAuthorizationContextAssembler` 读取
+8. 把查库结果组装成 `UserAuthorizationContext`
+9. 再转成最终 `CurrentUser`
+10. 写入 `SecurityContext`
+11. 后续控制器 / 应用服务通过 `CurrentUserProvider` 或 `UserAuthorizationContextAssembler` 读取
 
 ### 7.3 这条链路的关键结论
 
@@ -282,9 +324,23 @@ HTTP Request
 它实际是：
 
 - 用 Access Token 完成基础身份识别
+- 先用 `iam_session` 完成服务端会话有效性校验
 - 再用数据库完成权限和范围的运行时补齐
 
-所以当前运行时真正生效的是数据库状态，而不是 token 中旧的 `authorities` 快照。
+所以当前运行时真正生效的是“数据库会话状态 + 数据库授权状态”，而不是 token 中旧的 `authorities` 快照。
+
+### 7.4 当前会话登出链路
+
+`POST /api/auth/logout` 的实现目标不是“让前端删 token”，而是让服务端立即拒绝当前会话。
+
+处理流程：
+
+1. `JwtAuthenticationFilter` 先完成 Access Token 解析与当前会话有效性校验
+2. `CurrentUserProvider.requiredCurrentUser()` 读取带 `sessionId` 的当前主体
+3. `LogoutSessionCommandService.logout(sessionId)` 调用 `IamSessionRepository.revoke(sessionId, now)`
+4. 数据库把当前会话状态改成 `REVOKED` 并写入 `revokedAt`
+5. 接口返回 `ApiResponse.success(null)`
+6. 同一 `sid` 下后续 Access Token 与 Refresh Token 都会在会话校验阶段返回 `401 AUTH-4012`
 
 ## 8. 权限查询链路
 
@@ -457,6 +513,7 @@ HTTP Request
 ```text
 客户端携带 Access Token 请求 /review/applications
   -> JwtAuthenticationFilter 完成认证
+  -> IamSessionAccessService.assertActive(sid)
   -> RepositoryUserAuthorizationContextLoader 补齐最新 authorities/scopeRules
   -> SecurityContext 中得到完整 CurrentUser
   -> 业务层通过 UserAuthorizationContextAssembler 读取 UserAuthorizationContext
@@ -509,9 +566,14 @@ HTTP Request
 ### 13.1 已完成
 
 - JWT 基础认证
+- 登录成功创建 `ACTIVE iam_session`
 - 真实登录认证服务
 - Access / Refresh Token 分离
+- Access / Refresh Token 都携带 `sid`
 - Refresh 时全量查库重载
+- 普通请求运行时会话校验
+- Refresh 前置会话校验与成功后续期
+- 当前会话登出与服务端撤销
 - 普通请求运行时权限补齐
 - 普通请求运行时范围补齐
 - 业务授权上下文装配
@@ -529,6 +591,7 @@ HTTP Request
 - 成绩查询接口本身尚未正式消费 `ScoreScopeSqlTranslator`
 - 组织树相关能力当前仍基于 `org_path` 前缀/子树语义，是否引入独立组织树仓储仍待后续业务落地决定
 - `CUSTOM_EXPRESSION` 当前只支持第一版受控 JSON DSL，若后续需要更丰富运算符，需扩展解释器与 SQL translator 的对齐语义
+- `AUTH-4011` 当前只在错误码枚举中保留，若后续需要把“JWT 过期”与“JWT 非法”拆成不同口径，需要单独调整 parser / entry point 映射
 
 ## 14. 推荐后续落地顺序
 
@@ -545,6 +608,7 @@ HTTP Request
 当前系统已经完成的是：
 
 - 一套可运行的真实登录认证链路
+- 一套可撤销、可校验、可续期的当前会话链路
 - 一套可运行的 JWT 认证底座
 - 一套可运行的权限加载链路
 - 一套可运行的范围规则加载与解释链路

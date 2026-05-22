@@ -29,6 +29,7 @@ class JwtTokenIssuerTest {
                 "2024305999",
                 "Test User",
                 "student",
+                "sid-1001",
                 Set.of("student", "class-monitor"),
                 Set.of("evaluation:apply:create", "evaluation:record:query"),
                 List.of()
@@ -47,6 +48,7 @@ class JwtTokenIssuerTest {
         assertThat(accessClaims.get("uno", String.class)).isEqualTo("2024305999");
         assertThat(accessClaims.get("uname", String.class)).isEqualTo("Test User");
         assertThat(accessClaims.get("identity", String.class)).isEqualTo("student");
+        assertThat(accessClaims.get("sid", String.class)).isEqualTo("sid-1001");
         assertThat(accessClaims.get("roles", java.util.List.class)).containsExactlyInAnyOrder("student", "class-monitor");
         assertThat(accessClaims.get("authorities", java.util.List.class)).containsExactlyInAnyOrder(
                 "evaluation:apply:create",
@@ -57,6 +59,7 @@ class JwtTokenIssuerTest {
         assertThat(refreshClaims.get("uid", Integer.class)).isEqualTo(1001);
         assertThat(refreshClaims.get("uno", String.class)).isEqualTo("2024305999");
         assertThat(refreshClaims.get("identity", String.class)).isEqualTo("student");
+        assertThat(refreshClaims.get("sid", String.class)).isEqualTo("sid-1001");
         assertThat(refreshClaims.get("uname")).isNull();
         assertThat(refreshClaims.get("roles")).isNull();
         assertThat(refreshClaims.get("authorities")).isNull();

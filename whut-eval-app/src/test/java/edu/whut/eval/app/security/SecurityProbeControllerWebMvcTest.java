@@ -2,6 +2,7 @@ package edu.whut.eval.app.security;
 
 import edu.whut.eval.application.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.model.UserAuthorizationContextLoadRequest;
+import edu.whut.eval.application.auth.service.IamSessionAccessService;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
 import edu.whut.eval.infra.security.config.JwtConfigurationValidator;
@@ -9,6 +10,7 @@ import edu.whut.eval.infra.security.config.SecurityConfiguration;
 import edu.whut.eval.infra.security.context.SecurityContextCurrentUserProvider;
 import edu.whut.eval.infra.security.context.SecurityContextUserAuthorizationContextAssembler;
 import edu.whut.eval.infra.security.jwt.JwtAuthenticationFilter;
+import edu.whut.eval.infra.security.jwt.JwtAuthenticationException;
 import edu.whut.eval.infra.security.jwt.JwtClaimsParser;
 import edu.whut.eval.infra.security.jwt.JwtClaimsToCurrentUserMapper;
 import edu.whut.eval.infra.security.jwt.JwtTokenResolver;
@@ -38,6 +40,8 @@ import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasSize;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -86,6 +90,9 @@ class SecurityProbeControllerWebMvcTest {
     @MockBean
     private UserAuthorizationContextLoader userAuthorizationContextLoader;
 
+    @MockBean
+    private IamSessionAccessService iamSessionAccessService;
+
     @Test
     void shouldReturn401WhenTokenIsMissing() throws Exception {
         mockMvc.perform(get("/api/security/me"))
@@ -98,7 +105,7 @@ class SecurityProbeControllerWebMvcTest {
         mockMvc.perform(get("/api/security/me")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer invalid-token"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.code").value("AUTH-4010"));
+                .andExpect(jsonPath("$.code").value("AUTH-4012"));
     }
 
     @Test
@@ -110,6 +117,7 @@ class SecurityProbeControllerWebMvcTest {
                         "2024305999",
                         "Test User",
                         "student",
+                        "sid-1001",
                         Set.of("student", "class-monitor"),
                         Set.of("system:security:probe", "application.view.self"),
                         List.of(new IamScopeRule(
@@ -134,11 +142,27 @@ class SecurityProbeControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.userNo").value("2024305999"))
                 .andExpect(jsonPath("$.data.userName").value("Test User"))
                 .andExpect(jsonPath("$.data.identity").value("student"))
+                .andExpect(jsonPath("$.data.sessionId").value("sid-1001"))
                 .andExpect(jsonPath("$.data.roles", containsInAnyOrder("student", "class-monitor")))
                 .andExpect(jsonPath("$.data.authorities", containsInAnyOrder("system:security:probe", "application.view.self")))
                 .andExpect(jsonPath("$.data.scopeRules", hasSize(1)))
                 .andExpect(jsonPath("$.data.scopeRules[0].permissionCode").value("application.view.self"))
                 .andExpect(jsonPath("$.data.scopeRules[0].scopeType").value("SELF"));
+    }
+
+    @Test
+    void shouldReturn4012WhenSessionIsRevoked() throws Exception {
+        String token = createValidToken();
+        org.mockito.BDDMockito.willThrow(new JwtAuthenticationException("session is invalid"))
+                .given(iamSessionAccessService)
+                .assertActive("sid-1001");
+
+        mockMvc.perform(get("/api/security/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4012"));
+
+        verify(userAuthorizationContextLoader, never()).load(any(UserAuthorizationContextLoadRequest.class));
     }
 
     private String createValidToken() {
@@ -153,6 +177,7 @@ class SecurityProbeControllerWebMvcTest {
                 .claim("uno", "2024305999")
                 .claim("uname", "Test User")
                 .claim("identity", "student")
+                .claim("sid", "sid-1001")
                 .claim("roles", List.of("student", "class-monitor"))
                 .claim("authorities", List.of("system:security:probe"))
                 .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))

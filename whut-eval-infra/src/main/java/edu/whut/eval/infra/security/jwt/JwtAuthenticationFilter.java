@@ -2,6 +2,7 @@ package edu.whut.eval.infra.security.jwt;
 
 import edu.whut.eval.application.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.model.UserAuthorizationContextLoadRequest;
+import edu.whut.eval.application.auth.service.IamSessionAccessService;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
 import edu.whut.eval.common.log.AppLog;
 import edu.whut.eval.infra.security.context.CurrentUser;
@@ -31,17 +32,20 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtTokenResolver jwtTokenResolver;
     private final JwtClaimsParser jwtClaimsParser;
     private final JwtClaimsToCurrentUserMapper jwtClaimsToCurrentUserMapper;
+    private final IamSessionAccessService iamSessionAccessService;
     private final UserAuthorizationContextLoader userAuthorizationContextLoader;
     private final RestAuthenticationEntryPoint authenticationEntryPoint;
 
     public JwtAuthenticationFilter(JwtTokenResolver jwtTokenResolver,
                                    JwtClaimsParser jwtClaimsParser,
                                    JwtClaimsToCurrentUserMapper jwtClaimsToCurrentUserMapper,
+                                   IamSessionAccessService iamSessionAccessService,
                                    UserAuthorizationContextLoader userAuthorizationContextLoader,
                                    RestAuthenticationEntryPoint authenticationEntryPoint) {
         this.jwtTokenResolver = jwtTokenResolver;
         this.jwtClaimsParser = jwtClaimsParser;
         this.jwtClaimsToCurrentUserMapper = jwtClaimsToCurrentUserMapper;
+        this.iamSessionAccessService = iamSessionAccessService;
         this.userAuthorizationContextLoader = userAuthorizationContextLoader;
         this.authenticationEntryPoint = authenticationEntryPoint;
     }
@@ -71,12 +75,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
             Claims claims = jwtClaimsParser.parse(resolvedToken.getToken(), resolvedToken.getSource());
             CurrentUser tokenUser = jwtClaimsToCurrentUserMapper.map(claims);
+            iamSessionAccessService.assertActive(tokenUser.getSessionId());
             UserAuthorizationContext authorizationContext = userAuthorizationContextLoader.load(
                     new UserAuthorizationContextLoadRequest(
                             tokenUser.getUserId(),
                             tokenUser.getUserNo(),
                             tokenUser.getUserName(),
                             tokenUser.getIdentity(),
+                            tokenUser.getSessionId(),
                             tokenUser.getRoles()
                     )
             );
@@ -122,6 +128,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 authorizationContext.getUserNo(),
                 authorizationContext.getUserName(),
                 authorizationContext.getIdentity(),
+                authorizationContext.getSessionId(),
                 authorizationContext.getRoles(),
                 authorizationContext.getAuthorities(),
                 authorizationContext.getScopeRules()

@@ -1,13 +1,21 @@
 package edu.whut.eval.app.security;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.auth.model.AuthenticatedUserSnapshot;
+import edu.whut.eval.application.auth.model.LoginSessionCreateCommand;
+import edu.whut.eval.application.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.LoginAuthenticationService;
+import edu.whut.eval.application.auth.service.IamSessionAccessService;
+import edu.whut.eval.application.auth.service.LoginSessionCommandService;
+import edu.whut.eval.application.auth.service.LogoutSessionCommandService;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
 import edu.whut.eval.common.exception.AuthenticationFailedException;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
 import edu.whut.eval.application.auth.service.RefreshTokenCurrentUserLoader;
 import edu.whut.eval.infra.security.config.JwtConfigurationValidator;
 import edu.whut.eval.infra.security.config.SecurityConfiguration;
+import edu.whut.eval.infra.security.context.CurrentUser;
+import edu.whut.eval.infra.security.context.CurrentUserProvider;
 import edu.whut.eval.infra.security.jwt.JwtAuthenticationFilter;
 import edu.whut.eval.infra.security.jwt.JwtClaimsParser;
 import edu.whut.eval.infra.security.jwt.JwtClaimsToCurrentUserMapper;
@@ -26,19 +34,26 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpHeaders;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.Date;
 import java.util.List;
 import java.util.Set;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.verify;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -87,6 +102,9 @@ class AuthControllerWebMvcTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @MockBean
     private RefreshTokenCurrentUserLoader refreshTokenCurrentUserLoader;
 
@@ -96,8 +114,20 @@ class AuthControllerWebMvcTest {
     @MockBean
     private UserAuthorizationContextLoader userAuthorizationContextLoader;
 
+    @MockBean
+    private LoginSessionCommandService loginSessionCommandService;
+
+    @MockBean
+    private IamSessionAccessService iamSessionAccessService;
+
+    @MockBean
+    private LogoutSessionCommandService logoutSessionCommandService;
+
+    @MockBean
+    private CurrentUserProvider currentUserProvider;
+
     @Test
-    void shouldIssueTokenPairWhenLoginSucceeds() throws Exception {
+    void shouldIssueTokenPairWhenLoginSucceedsAndCreateSession() throws Exception {
         given(loginAuthenticationService.authenticate(eq("2024305999"), eq("secret")))
                 .willReturn(new AuthenticatedUserSnapshot(
                         1001L,
@@ -119,15 +149,39 @@ class AuthControllerWebMvcTest {
                         ))
                 ));
 
-        mockMvc.perform(post("/api/auth/login")
+        MvcResult result = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Forwarded-For", "203.0.113.10, 10.0.0.1")
+                        .header("User-Agent", "JUnit-Agent")
                         .content("{\"credential\":\"2024305999\",\"password\":\"secret\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"))
                 .andExpect(jsonPath("$.data.accessToken").isString())
                 .andExpect(jsonPath("$.data.refreshToken").isString())
                 .andExpect(jsonPath("$.data.accessTokenType").value("access"))
-                .andExpect(jsonPath("$.data.refreshTokenType").value("refresh"));
+                .andExpect(jsonPath("$.data.refreshTokenType").value("refresh"))
+                .andReturn();
+
+        String responseJson = result.getResponse().getContentAsString();
+        String refreshTokenExpiresAt = objectMapper.readTree(responseJson)
+                .path("data")
+                .path("refreshTokenExpiresAt")
+                .asText();
+        LocalDateTime expectedExpiredAt = LocalDateTime.ofInstant(
+                Instant.parse(refreshTokenExpiresAt),
+                ZoneId.systemDefault()
+        );
+
+        org.mockito.ArgumentCaptor<LoginSessionCreateCommand> captor =
+                org.mockito.ArgumentCaptor.forClass(LoginSessionCreateCommand.class);
+        verify(loginSessionCommandService).create(captor.capture());
+        assertThat(captor.getValue()).satisfies(command -> {
+            assertThat(command.userId()).isEqualTo(1001L);
+            assertThat(command.sessionId()).isNotBlank();
+            assertThat(command.loginIp()).isEqualTo("203.0.113.10");
+            assertThat(command.userAgent()).isEqualTo("JUnit-Agent");
+            assertThat(command.expiredAt()).isEqualTo(expectedExpiredAt);
+        });
     }
 
     @Test
@@ -149,7 +203,7 @@ class AuthControllerWebMvcTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"refreshToken\":\"invalid-token\"}"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.code").value("AUTH-4010"));
+                .andExpect(jsonPath("$.code").value("AUTH-4012"));
     }
 
     @Test
@@ -160,14 +214,16 @@ class AuthControllerWebMvcTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"refreshToken\":\"" + accessToken + "\"}"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.code").value("AUTH-4010"))
+                .andExpect(jsonPath("$.code").value("AUTH-4012"))
                 .andExpect(jsonPath("$.message").value("refresh token 校验失败: JWT token type is not refresh"));
     }
 
     @Test
     void shouldIssueNewTokenPairWhenRefreshTokenIsValid() throws Exception {
         String refreshToken = createRefreshToken();
-        given(refreshTokenCurrentUserLoader.load(any())).willReturn(new AuthenticatedUserSnapshot(
+        given(refreshTokenCurrentUserLoader.load(argThat(context ->
+                context != null && "sid-1001".equals(context.sessionId())
+        ))).willReturn(new AuthenticatedUserSnapshot(
                 1001L,
                 "2024305999",
                 "Test User",
@@ -187,7 +243,7 @@ class AuthControllerWebMvcTest {
                 ))
         ));
 
-        mockMvc.perform(post("/api/auth/refresh")
+        MvcResult result = mockMvc.perform(post("/api/auth/refresh")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"refreshToken\":\"" + refreshToken + "\"}"))
                 .andExpect(status().isOk())
@@ -195,7 +251,76 @@ class AuthControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.accessToken").isString())
                 .andExpect(jsonPath("$.data.accessTokenType").value("access"))
                 .andExpect(jsonPath("$.data.refreshToken").isString())
-                .andExpect(jsonPath("$.data.refreshTokenType").value("refresh"));
+                .andExpect(jsonPath("$.data.refreshTokenType").value("refresh"))
+                .andReturn();
+
+        String refreshTokenExpiresAt = objectMapper.readTree(result.getResponse().getContentAsString())
+                .path("data")
+                .path("refreshTokenExpiresAt")
+                .asText();
+        verify(iamSessionAccessService).extendExpiration(
+                eq("sid-1001"),
+                eq(LocalDateTime.ofInstant(Instant.parse(refreshTokenExpiresAt), ZoneId.systemDefault()))
+        );
+    }
+
+    @Test
+    void shouldReturn4012WhenRefreshTokenDoesNotContainSid() throws Exception {
+        String legacyRefreshToken = createLegacyRefreshTokenWithoutSid();
+
+        mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refreshToken\":\"" + legacyRefreshToken + "\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4012"));
+    }
+
+    @Test
+    void shouldReturn4012WhenRefreshSessionIsInvalid() throws Exception {
+        String refreshToken = createRefreshToken();
+        org.mockito.BDDMockito.willThrow(new edu.whut.eval.infra.security.jwt.JwtAuthenticationException("session is invalid"))
+                .given(iamSessionAccessService)
+                .assertActive("sid-1001");
+
+        mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refreshToken\":\"" + refreshToken + "\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4012"));
+    }
+
+    @Test
+    void shouldLogoutCurrentSession() throws Exception {
+        given(userAuthorizationContextLoader.load(argThat(request ->
+                request != null && "sid-logout".equals(request.getSessionId())
+        ))).willReturn(new UserAuthorizationContext(
+                1001L,
+                "2024305999",
+                "Test User",
+                "student",
+                "sid-logout",
+                Set.of("student"),
+                Set.of("system:security:probe"),
+                List.of()
+        ));
+        given(currentUserProvider.requiredCurrentUser()).willReturn(new CurrentUser(
+                1001L,
+                "2024305999",
+                "Test User",
+                "student",
+                "sid-logout",
+                Set.of("student"),
+                Set.of("system:security:probe"),
+                List.of()
+        ));
+
+        mockMvc.perform(post("/api/auth/logout")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + createLogoutAccessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("OK"))
+                .andExpect(jsonPath("$.data").doesNotExist());
+
+        verify(logoutSessionCommandService).logout("sid-logout");
     }
 
     private String createAccessToken() {
@@ -217,7 +342,44 @@ class AuthControllerWebMvcTest {
                 .compact();
     }
 
+    private String createLogoutAccessToken() {
+        Instant now = Instant.now();
+        return Jwts.builder()
+                .subject("1001")
+                .issuer("whut-eval")
+                .audience().add("whut-eval-api").and()
+                .issuedAt(Date.from(now))
+                .expiration(Date.from(now.plusSeconds(3600)))
+                .claim("token_type", "access")
+                .claim("uid", 1001L)
+                .claim("uno", "2024305999")
+                .claim("uname", "Test User")
+                .claim("identity", "student")
+                .claim("sid", "sid-logout")
+                .claim("roles", List.of("student"))
+                .claim("authorities", List.of("system:security:probe"))
+                .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
+                .compact();
+    }
+
     private String createRefreshToken() {
+        Instant now = Instant.now();
+        return Jwts.builder()
+                .subject("1001")
+                .issuer("whut-eval")
+                .audience().add("whut-eval-api").and()
+                .issuedAt(Date.from(now))
+                .expiration(Date.from(now.plusSeconds(3600)))
+                .claim("token_type", "refresh")
+                .claim("uid", 1001L)
+                .claim("uno", "2024305999")
+                .claim("identity", "student")
+                .claim("sid", "sid-1001")
+                .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
+                .compact();
+    }
+
+    private String createLegacyRefreshTokenWithoutSid() {
         Instant now = Instant.now();
         return Jwts.builder()
                 .subject("1001")

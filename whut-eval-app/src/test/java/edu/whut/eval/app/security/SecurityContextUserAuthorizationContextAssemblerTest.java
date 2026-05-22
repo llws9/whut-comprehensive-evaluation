@@ -34,6 +34,7 @@ class SecurityContextUserAuthorizationContextAssemblerTest {
                 "2024305999",
                 "Test User",
                 "student",
+                "sid-1001",
                 Set.of("student", "class-monitor"),
                 Set.of("application.view.self", "score.view.self"),
                 List.of(
@@ -51,6 +52,7 @@ class SecurityContextUserAuthorizationContextAssemblerTest {
         assertThat(context.getUserNo()).isEqualTo("2024305999");
         assertThat(context.getUserName()).isEqualTo("Test User");
         assertThat(context.getIdentity()).isEqualTo("student");
+        assertThat(context.getSessionId()).isEqualTo("sid-1001");
         assertThat(context.getRoles()).containsExactlyInAnyOrder("student", "class-monitor");
         assertThat(context.getAuthorities()).containsExactlyInAnyOrder("application.view.self", "score.view.self");
         assertThat(context.hasRole("student")).isTrue();
