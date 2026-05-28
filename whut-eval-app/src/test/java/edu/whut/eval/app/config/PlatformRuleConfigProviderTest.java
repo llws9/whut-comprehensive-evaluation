@@ -47,9 +47,11 @@ class PlatformRuleConfigProviderTest {
                 PlatformRuleConfigProvider.DEFINITION_NAME,
                 new RawConfigPayload(
                         ConfigResource.yaml("whut-eval-platform-rule.yaml"),
-                        "studentApplyEnabled: true\n"
-                                + "finalSubmitEnabled: false\n"
-                                + "maxReviewBatchSize: 100\n",
+                        """
+                        studentApplyEnabled: true
+                        finalSubmitEnabled: false
+                        maxReviewBatchSize: 100
+                        """,
                         "unit-test",
                         Instant.parse("2026-05-14T09:35:00Z")
                 )

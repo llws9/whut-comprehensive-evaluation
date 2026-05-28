@@ -47,13 +47,15 @@ class EligibilityRulesConfigProviderTest {
                 EligibilityRulesConfigProvider.DEFINITION_NAME,
                 new RawConfigPayload(
                         ConfigResource.yaml("whut-eval-eligibility-rules.yaml"),
-                        "eligibility-rules:\n"
-                                + "  rules-001:\n"
-                                + "    - ruleId: RULE001\n"
-                                + "      ruleType: GPA\n"
-                                + "      description: GPA要求规则\n"
-                                + "      expression: gpa >= 3.0\n"
-                                + "      enabled: true\n",
+                        """
+                        eligibility-rules:
+                          rules-001:
+                            - ruleId: RULE001
+                              ruleType: GPA
+                              description: GPA要求规则
+                              expression: gpa >= 3.0
+                              enabled: true
+                        """,
                         "unit-test",
                         Instant.parse("2026-05-14T09:35:00Z")
                 )

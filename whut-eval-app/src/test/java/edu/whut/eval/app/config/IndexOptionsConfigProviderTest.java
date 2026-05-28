@@ -48,14 +48,16 @@ class IndexOptionsConfigProviderTest {
                 IndexOptionsConfigProvider.DEFINITION_NAME,
                 new RawConfigPayload(
                         ConfigResource.yaml("whut-eval-index-options.yaml"),
-                        "index-options:\n"
-                                + "  options-001:\n"
-                                + "    - optionCode: OPT001\n"
-                                + "      optionName: 选项1\n"
-                                + "      points: 5.0\n"
-                                + "      description: 选项描述\n"
-                                + "      sortOrder: 1\n"
-                                + "      allowCustomPoints: false\n",
+                        """
+                        index-options:
+                          options-001:
+                            - optionCode: OPT001
+                              optionName: 选项1
+                              points: 5.0
+                              description: 选项描述
+                              sortOrder: 1
+                              allowCustomPoints: false
+                        """,
                         "unit-test",
                         Instant.parse("2026-05-14T09:35:00Z")
                 )

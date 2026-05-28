@@ -47,9 +47,11 @@ class SharedBaseConfigProviderTest {
                 SharedBaseConfigProvider.DEFINITION_NAME,
                 new RawConfigPayload(
                         ConfigResource.yaml("whut-eval-shared-base.yaml"),
-                        "enabled: true\n"
-                                + "version: 1.0.0\n"
-                                + "environment: dev\n",
+                        """
+                        enabled: true
+                        version: 1.0.0
+                        environment: dev
+                        """,
                         "unit-test",
                         Instant.parse("2026-05-14T09:35:00Z")
                 )

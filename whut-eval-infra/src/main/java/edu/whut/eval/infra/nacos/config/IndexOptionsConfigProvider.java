@@ -9,7 +9,7 @@ import java.util.Optional;
 
 /**
  * Index options typed config 读取门面。
- * 通过该类统一读取指标选项配置,避免业务层直接依赖 definition name 字符串。
+ * 通过该类统一读取指标选项配置，避免业务层直接依赖 definition name 字符串。
  */
 @Component
 public class IndexOptionsConfigProvider {
@@ -23,14 +23,14 @@ public class IndexOptionsConfigProvider {
     }
 
     /**
-     * 尝试读取当前已 materialize 的指标选项配置;若启动阶段未加载成功则返回空。
+     * 尝试读取当前已 materialize 的指标选项配置；若启动阶段未加载成功则返回空。
      */
     public Optional<IndexOptionsConfig> currentConfig() {
         return typedConfigRepository.find(DEFINITION_NAME, IndexOptionsConfig.class);
     }
 
     /**
-     * 强制要求当前已存在指标选项配置,否则抛出明确的配置加载异常。
+     * 强制要求当前已存在指标选项配置，否则抛出明确的配置加载异常。
      */
     public IndexOptionsConfig requiredConfig() {
         return currentConfig().orElseThrow(() -> new ConfigLoadException(

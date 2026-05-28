@@ -48,16 +48,18 @@ class EvaluationItemsConfigProviderTest {
                 EvaluationItemsConfigProvider.DEFINITION_NAME,
                 new RawConfigPayload(
                         ConfigResource.yaml("whut-eval-evaluation-items.yaml"),
-                        "evaluation-items:\n"
-                                + "  category-001:\n"
-                                + "    - itemCode: ITEM001\n"
-                                + "      itemName: 测评项目1\n"
-                                + "      categoryCode: category-001\n"
-                                + "      categoryName: 类别1\n"
-                                + "      description: 描述\n"
-                                + "      maxPoints: 10.0\n"
-                                + "      enabled: true\n"
-                                + "      sortOrder: 1\n",
+                        """
+                        evaluation-items:
+                          category-001:
+                            - itemCode: ITEM001
+                              itemName: 测评项目1
+                              categoryCode: category-001
+                              categoryName: 类别1
+                              description: 描述
+                              maxPoints: 10.0
+                              enabled: true
+                              sortOrder: 1
+                        """,
                         "unit-test",
                         Instant.parse("2026-05-14T09:35:00Z")
                 )
