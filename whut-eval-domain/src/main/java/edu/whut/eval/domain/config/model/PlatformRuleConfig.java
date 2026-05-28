@@ -1,5 +1,9 @@
-package edu.whut.eval.infra.nacos.model.typed;
+package edu.whut.eval.domain.config.model;
 
+/**
+ * 平台规则配置。
+ * 控制平台级别的功能开关和业务规则参数。
+ */
 public class PlatformRuleConfig {
 
     private boolean studentApplyEnabled;

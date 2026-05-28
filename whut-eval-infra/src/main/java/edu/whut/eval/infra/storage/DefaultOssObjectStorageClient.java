@@ -5,7 +5,7 @@ import com.aliyun.oss.OSSClientBuilder;
 import com.aliyun.oss.model.ObjectMetadata;
 import edu.whut.eval.common.exception.FileStorageException;
 import edu.whut.eval.common.log.AppLog;
-import edu.whut.eval.infra.nacos.model.typed.OssStorageConfig;
+import edu.whut.eval.domain.config.model.OssStorageConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;

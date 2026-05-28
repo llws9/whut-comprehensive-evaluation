@@ -2,7 +2,7 @@ package edu.whut.eval.infra.nacos.config;
 
 import edu.whut.eval.common.exception.ConfigLoadException;
 import edu.whut.eval.domain.config.repository.TypedConfigRepository;
-import edu.whut.eval.infra.nacos.model.typed.PlatformRuleConfig;
+import edu.whut.eval.domain.config.model.PlatformRuleConfig;
 import org.springframework.stereotype.Component;
 
 import java.util.Optional;

@@ -1,5 +1,9 @@
-package edu.whut.eval.infra.nacos.model.typed;
+package edu.whut.eval.domain.config.model;
 
+/**
+ * 共享基础配置。
+ * 包含应用版本、环境等基础信息。
+ */
 public class SharedBaseConfig {
 
     private boolean enabled;

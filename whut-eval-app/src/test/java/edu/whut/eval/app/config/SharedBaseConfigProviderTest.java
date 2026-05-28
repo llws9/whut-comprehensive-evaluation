@@ -8,7 +8,7 @@ import edu.whut.eval.infra.nacos.config.NacosTypedConfigConfiguration;
 import edu.whut.eval.infra.nacos.config.SharedBaseConfigProvider;
 import edu.whut.eval.infra.nacos.model.ConfigResource;
 import edu.whut.eval.infra.nacos.model.RawConfigPayload;
-import edu.whut.eval.infra.nacos.model.typed.SharedBaseConfig;
+import edu.whut.eval.domain.config.model.SharedBaseConfig;
 import edu.whut.eval.infra.nacos.parser.ConfigPayloadParser;
 import org.junit.jupiter.api.Test;
 
