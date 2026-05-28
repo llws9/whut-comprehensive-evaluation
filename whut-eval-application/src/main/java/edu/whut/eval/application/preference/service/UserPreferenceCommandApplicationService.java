@@ -1,6 +1,6 @@
 package edu.whut.eval.application.preference.service;
 
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.application.preference.command.CreateUserPreferenceCommand;
 import edu.whut.eval.application.preference.query.UserPreferenceView;

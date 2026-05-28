@@ -1,6 +1,6 @@
 package edu.whut.eval.application.file.service;
 
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.application.file.command.UploadFileCommand;
 import edu.whut.eval.application.file.query.StoredFileDescriptor;

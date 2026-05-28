@@ -1,6 +1,6 @@
 package edu.whut.eval.app.iam;
 
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.application.iam.command.CreateRoleAssignmentCommand;
 import edu.whut.eval.application.iam.command.UpdateRoleAssignmentCommand;

@@ -1,8 +1,8 @@
 package edu.whut.eval.application.auth.service;
 
-import edu.whut.eval.application.auth.model.AuthorizationScopeSet;
-import edu.whut.eval.application.auth.model.ScoreScopePredicate;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
+import edu.whut.eval.domain.auth.model.ScoreScopePredicate;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 
 /**
  * 把抽象范围集合转换成成绩查询可消费的谓词对象。

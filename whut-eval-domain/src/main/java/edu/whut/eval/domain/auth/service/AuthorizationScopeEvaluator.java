@@ -1,17 +1,16 @@
-package edu.whut.eval.application.auth.service;
+package edu.whut.eval.domain.auth.service;
 
 import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 
 /**
+ * 授权范围评估器。
  * 根据当前用户授权上下文计算某个权限码下最终可用的范围集合。
- * 此接口继承领域层接口，保持向后兼容。
  */
-public interface AuthorizationScopeEvaluator extends edu.whut.eval.domain.auth.service.AuthorizationScopeEvaluator {
+public interface AuthorizationScopeEvaluator {
 
     /**
      * 先校验用户是否具备目标权限，再把对应 scope rules 规整为统一的范围集合。
      */
-    @Override
     AuthorizationScopeSet evaluate(UserAuthorizationContext authorizationContext, String permissionCode);
 }

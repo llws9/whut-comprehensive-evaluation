@@ -1,8 +1,8 @@
 package edu.whut.eval.application.auth.service;
 
-import edu.whut.eval.application.auth.model.AuthorizationScope;
-import edu.whut.eval.application.auth.model.AuthorizationScopeSet;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.AuthorizationScope;
+import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
 import org.springframework.stereotype.Service;
 

@@ -1,12 +1,12 @@
 package edu.whut.eval.application.auth.service;
 
 import edu.whut.eval.application.auth.model.ApplicationResourceContext;
-import edu.whut.eval.application.auth.model.AuthorizationScope;
-import edu.whut.eval.application.auth.model.AuthorizationScopeSet;
+import edu.whut.eval.domain.auth.model.AuthorizationScope;
+import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
 import edu.whut.eval.application.auth.model.ScopeAccessDecision;
 import edu.whut.eval.application.auth.model.ScopeResourceContext;
 import edu.whut.eval.application.auth.model.ScoreResourceContext;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import org.springframework.stereotype.Service;
 
 import java.util.Locale;

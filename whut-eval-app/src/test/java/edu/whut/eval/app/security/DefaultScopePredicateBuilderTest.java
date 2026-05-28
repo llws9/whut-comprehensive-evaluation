@@ -1,9 +1,9 @@
 package edu.whut.eval.app.security;
 
-import edu.whut.eval.application.auth.model.ApplicationScopePredicate;
-import edu.whut.eval.application.auth.model.AuthorizationScope;
-import edu.whut.eval.application.auth.model.AuthorizationScopeSet;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.ApplicationScopePredicate;
+import edu.whut.eval.domain.auth.model.AuthorizationScope;
+import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.DefaultScopePredicateBuilder;
 import org.junit.jupiter.api.Test;
 

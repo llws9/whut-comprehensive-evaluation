@@ -1,11 +1,11 @@
 package edu.whut.eval.app.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import edu.whut.eval.application.auth.model.ApplicationScopePredicate;
-import edu.whut.eval.application.auth.model.AuthorizationScope;
-import edu.whut.eval.application.auth.model.AuthorizationScopeSet;
-import edu.whut.eval.application.auth.model.ScoreScopePredicate;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.ApplicationScopePredicate;
+import edu.whut.eval.domain.auth.model.AuthorizationScope;
+import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
+import edu.whut.eval.domain.auth.model.ScoreScopePredicate;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.DefaultScoreScopePredicateBuilder;
 import edu.whut.eval.application.auth.service.DefaultScopePredicateBuilder;
 import edu.whut.eval.application.auth.service.JsonScopeRuleExpressionInterpreter;

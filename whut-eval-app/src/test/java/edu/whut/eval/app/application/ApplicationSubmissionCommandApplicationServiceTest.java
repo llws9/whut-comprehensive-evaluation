@@ -5,7 +5,7 @@ import edu.whut.eval.application.application.command.SubmitApplicationCommand;
 import edu.whut.eval.application.application.query.ApplicationSubmissionView;
 import edu.whut.eval.application.application.service.ApplicationAttachmentResolver;
 import edu.whut.eval.application.application.service.ApplicationSubmissionCommandApplicationService;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ValidationException;

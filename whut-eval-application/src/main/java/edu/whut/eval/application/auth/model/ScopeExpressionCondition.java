@@ -1,45 +1,19 @@
 package edu.whut.eval.application.auth.model;
 
-import java.util.Collections;
 import java.util.List;
 
-public class ScopeExpressionCondition {
-
-    private final String field;
-    private final String operator;
-    private final Object value;
-    private final List<Object> values;
-    private final String valueFrom;
+/**
+ * @deprecated 使用 {@link edu.whut.eval.domain.auth.model.ScopeExpressionCondition} 代替。
+ *             此类仅为向后兼容保留，将在未来版本中删除。
+ */
+@Deprecated
+public class ScopeExpressionCondition extends edu.whut.eval.domain.auth.model.ScopeExpressionCondition {
 
     public ScopeExpressionCondition(String field,
                                     String operator,
                                     Object value,
                                     List<Object> values,
                                     String valueFrom) {
-        this.field = field;
-        this.operator = operator;
-        this.value = value;
-        this.values = values == null ? Collections.emptyList() : List.copyOf(values);
-        this.valueFrom = valueFrom;
-    }
-
-    public String getField() {
-        return field;
-    }
-
-    public String getOperator() {
-        return operator;
-    }
-
-    public Object getValue() {
-        return value;
-    }
-
-    public List<Object> getValues() {
-        return values;
-    }
-
-    public String getValueFrom() {
-        return valueFrom;
+        super(field, operator, value, values, valueFrom);
     }
 }

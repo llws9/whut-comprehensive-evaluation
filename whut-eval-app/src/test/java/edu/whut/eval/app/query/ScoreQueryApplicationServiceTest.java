@@ -1,7 +1,7 @@
 package edu.whut.eval.app.query;
 
 import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.application.score.query.ScoreRecordView;
 import edu.whut.eval.application.score.service.ScoreQueryApplicationService;

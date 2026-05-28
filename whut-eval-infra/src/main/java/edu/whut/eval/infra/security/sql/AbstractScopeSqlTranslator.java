@@ -1,8 +1,8 @@
 package edu.whut.eval.infra.security.sql;
 
-import edu.whut.eval.application.auth.model.ScopeExpression;
-import edu.whut.eval.application.auth.model.ScopeExpressionCondition;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.ScopeExpression;
+import edu.whut.eval.domain.auth.model.ScopeExpressionCondition;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.ScopeRuleExpressionInterpreter;
 import edu.whut.eval.common.exception.BizRuleViolationException;
 

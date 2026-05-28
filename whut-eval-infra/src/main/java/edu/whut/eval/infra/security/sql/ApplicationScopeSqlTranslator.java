@@ -1,8 +1,8 @@
 package edu.whut.eval.infra.security.sql;
 
-import edu.whut.eval.application.auth.model.ApplicationScopeClause;
-import edu.whut.eval.application.auth.model.ApplicationScopePredicate;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.ApplicationScopeClause;
+import edu.whut.eval.domain.auth.model.ApplicationScopePredicate;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.ScopeRuleExpressionInterpreter;
 import org.springframework.stereotype.Component;
 
