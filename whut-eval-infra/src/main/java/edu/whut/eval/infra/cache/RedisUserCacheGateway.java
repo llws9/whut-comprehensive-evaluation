@@ -3,11 +3,13 @@ package edu.whut.eval.infra.cache;
 import edu.whut.eval.domain.iam.model.IamUser;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.context.annotation.Profile;
 
 import java.time.Duration;
 import java.util.Optional;
 
 @Component
+@Profile("!local")
 public class RedisUserCacheGateway implements UserCacheGateway {
 
     private static final Duration USER_CACHE_TTL = Duration.ofMinutes(10);

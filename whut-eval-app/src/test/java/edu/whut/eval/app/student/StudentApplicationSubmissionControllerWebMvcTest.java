@@ -9,50 +9,42 @@ import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.domain.application.model.ApplicationSubmissionStatus;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
 import edu.whut.eval.interfaces.student.StudentApplicationSubmissionController;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.SpringBootConfiguration;
-import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.ContextConfiguration;
-import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.mock;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup;
 
-@WebMvcTest(controllers = StudentApplicationSubmissionController.class)
-@AutoConfigureMockMvc(addFilters = false)
-@ContextConfiguration(classes = StudentApplicationSubmissionControllerWebMvcTest.TestApplication.class)
-@Import({
-        StudentApplicationSubmissionController.class,
-        GlobalExceptionHandler.class
-})
 class StudentApplicationSubmissionControllerWebMvcTest {
 
-    @Autowired
-    private MockMvc mockMvc;
-
-    @Autowired
-    private ObjectMapper objectMapper;
-
-    @MockBean
     private ApplicationSubmissionCommandApplicationService applicationSubmissionCommandApplicationService;
+    private ObjectMapper objectMapper;
+    private StudentApplicationSubmissionController controller;
+
+    @BeforeEach
+    void setUp() {
+        applicationSubmissionCommandApplicationService = mock(ApplicationSubmissionCommandApplicationService.class);
+        objectMapper = new ObjectMapper();
+        controller = new StudentApplicationSubmissionController(applicationSubmissionCommandApplicationService);
+    }
 
     @Test
     void shouldCreateDraftSuccessfully() throws Exception {
         given(applicationSubmissionCommandApplicationService.createDraft(any(CreateApplicationDraftCommand.class)))
                 .willReturn(new ApplicationSubmissionView(1L, ApplicationSubmissionStatus.DRAFT, "申请标题", "申请说明", 1, 0L));
 
-        mockMvc.perform(post("/api/student/applications/drafts")
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build()
+                .perform(post("/api/student/applications/drafts")
                         .contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(createDraftPayload())))
                 .andExpect(status().isOk())
@@ -67,7 +59,10 @@ class StudentApplicationSubmissionControllerWebMvcTest {
         given(applicationSubmissionCommandApplicationService.createDraft(any(CreateApplicationDraftCommand.class)))
                 .willThrow(new ConflictException("当前项目在该学年学期下已存在活跃申请"));
 
-        mockMvc.perform(post("/api/student/applications/drafts")
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build()
+                .perform(post("/api/student/applications/drafts")
                         .contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(createDraftPayload())))
                 .andExpect(status().isConflict())
@@ -77,7 +72,10 @@ class StudentApplicationSubmissionControllerWebMvcTest {
 
     @Test
     void shouldReturn400WhenCreateDraftRequestIsInvalid() throws Exception {
-        mockMvc.perform(post("/api/student/applications/drafts")
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build()
+                .perform(post("/api/student/applications/drafts")
                         .contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(invalidDraftPayload())))
                 .andExpect(status().isBadRequest())
@@ -90,7 +88,10 @@ class StudentApplicationSubmissionControllerWebMvcTest {
         given(applicationSubmissionCommandApplicationService.submit(any(SubmitApplicationCommand.class)))
                 .willReturn(new ApplicationSubmissionView(1L, ApplicationSubmissionStatus.SUBMITTED, "申请标题", "申请说明", 1, 1L));
 
-        mockMvc.perform(post("/api/student/applications/1/submit")
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build()
+                .perform(post("/api/student/applications/1/submit")
                         .contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(new SubmitPayload(0L))))
                 .andExpect(status().isOk())
@@ -122,11 +123,6 @@ class StudentApplicationSubmissionControllerWebMvcTest {
                 "申请说明",
                 List.of("")
         );
-    }
-
-    @SpringBootConfiguration
-    @EnableAutoConfiguration
-    static class TestApplication {
     }
 
     private record DraftPayload(Long orgUnitId,

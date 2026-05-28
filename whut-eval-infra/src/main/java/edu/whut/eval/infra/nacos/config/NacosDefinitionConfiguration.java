@@ -9,10 +9,12 @@ import edu.whut.eval.infra.nacos.model.ConfigResource;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 
 import java.util.List;
 
 @Configuration
+@Profile("!local")
 public class NacosDefinitionConfiguration {
 
     @Bean

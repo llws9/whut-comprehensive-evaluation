@@ -147,17 +147,25 @@ CREATE TABLE `iam_scope_rule` (
 
 CREATE TABLE `iam_session` (
   `id` BIGINT NOT NULL,
+  `session_no` VARCHAR(64) NOT NULL,
   `user_id` BIGINT NOT NULL,
-  `token_id` VARCHAR(128) NOT NULL,
-  `login_ip` VARCHAR(64) NOT NULL,
-  `user_agent` VARCHAR(255) NOT NULL,
+  `access_token_id` VARCHAR(128) NOT NULL,
+  `refresh_token_id` VARCHAR(128) NOT NULL,
+  `device_type` VARCHAR(32) DEFAULT NULL,
+  `client_ip` VARCHAR(64) NOT NULL,
+  `user_agent` VARCHAR(255) DEFAULT NULL,
   `expired_at` DATETIME NOT NULL,
   `revoked_at` DATETIME DEFAULT NULL,
   `status` VARCHAR(32) NOT NULL,
   `created_at` DATETIME NOT NULL,
+  `updated_at` DATETIME DEFAULT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_iam_session_token_id` (`token_id`),
-  KEY `idx_iam_session_user_id` (`user_id`)
+  UNIQUE KEY `uk_iam_session_session_no` (`session_no`),
+  UNIQUE KEY `uk_iam_session_access_token_id` (`access_token_id`),
+  UNIQUE KEY `uk_iam_session_refresh_token_id` (`refresh_token_id`),
+  KEY `idx_iam_session_user_id` (`user_id`),
+  KEY `idx_iam_session_status` (`status`),
+  CONSTRAINT `chk_iam_session_status` CHECK (`status` IN ('ACTIVE', 'REVOKED', 'EXPIRED'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='登录会话';
 
 INSERT INTO `iam_user` (`id`, `user_no`, `user_name`, `email`, `phone`, `password_hash`, `status`, `created_at`, `updated_at`) VALUES
@@ -221,7 +229,8 @@ INSERT INTO `iam_permission` (`id`, `permission_code`, `permission_name`, `permi
 (5008, 'manage.students.view', '查看学生管理', 'manage', 'ACTIVE', '2026-05-01 09:30:07'),
 (5009, 'manage.scholarship.view', '查看奖学金资格', 'manage', 'ACTIVE', '2026-05-01 09:30:08'),
 (5010, 'permission.manage', '权限管理', 'manage', 'ACTIVE', '2026-05-01 09:30:09'),
-(5011, 'org.manage', '组织管理', 'manage', 'ACTIVE', '2026-05-01 09:30:10');
+(5011, 'org.manage', '组织管理', 'manage', 'ACTIVE', '2026-05-01 09:30:10'),
+(5012, 'role.manage', '角色模板管理', 'manage', 'ACTIVE', '2026-05-01 09:30:11');
 
 INSERT INTO `iam_role_permission` (`id`, `role_id`, `permission_id`, `created_at`) VALUES
 (6001, 4001, 5001, '2026-05-01 09:40:00'),
@@ -238,7 +247,8 @@ INSERT INTO `iam_role_permission` (`id`, `role_id`, `permission_id`, `created_at
 (6012, 4005, 5009, '2026-05-01 09:40:11'),
 (6013, 4006, 5009, '2026-05-01 09:40:12'),
 (6014, 4006, 5010, '2026-05-01 09:40:13'),
-(6015, 4006, 5011, '2026-05-01 09:40:14');
+(6015, 4006, 5011, '2026-05-01 09:40:14'),
+(6016, 4006, 5012, '2026-05-01 09:40:15');
 
 INSERT INTO `iam_user_role_assignment` (`id`, `user_id`, `role_id`, `org_unit_id`, `source_type`, `effective_from`, `effective_to`, `status`, `assigned_by`, `created_at`) VALUES
 (7001, 1001, 4001, 2010, 'SYSTEM', '2026-05-01 10:00:00', NULL, 'ACTIVE', 1012, '2026-05-01 10:00:00'),
@@ -267,7 +277,8 @@ INSERT INTO `iam_scope_rule` (`id`, `assignment_id`, `permission_code`, `scope_t
 (8010, 7010, 'manage.review.view', 'ORG_SUBTREE', 2002, NULL, NULL, JSON_OBJECT('reviewRole', 'counselor'), 80, 'ACTIVE', '2026-05-01 10:20:09'),
 (8011, 7011, 'manage.students.view', 'ORG_SUBTREE', 2002, NULL, NULL, JSON_OBJECT('reviewRole', 'college_reviewer'), 70, 'ACTIVE', '2026-05-01 10:20:10'),
 (8012, 7012, 'permission.manage', 'ALL', NULL, NULL, NULL, JSON_OBJECT('superAdmin', true), 1000, 'ACTIVE', '2026-05-01 10:20:11'),
-(8013, 7012, 'org.manage', 'ALL', NULL, NULL, NULL, JSON_OBJECT('superAdmin', true), 1000, 'ACTIVE', '2026-05-01 10:20:12');
+(8013, 7012, 'org.manage', 'ALL', NULL, NULL, NULL, JSON_OBJECT('superAdmin', true), 1000, 'ACTIVE', '2026-05-01 10:20:12'),
+(8014, 7012, 'role.manage', 'ALL', NULL, NULL, NULL, JSON_OBJECT('superAdmin', true), 1000, 'ACTIVE', '2026-05-01 10:20:13');
 
 INSERT INTO `iam_session` (`id`, `user_id`, `token_id`, `login_ip`, `user_agent`, `expired_at`, `revoked_at`, `status`, `created_at`) VALUES
 (9001, 1001, 'token-1001-a', '10.20.1.1', 'Chrome/136 macOS', '2026-05-19 08:00:00', NULL, 'ACTIVE', '2026-05-18 08:00:00'),

@@ -159,6 +159,11 @@ A 组应优先依赖并落地以下表：
 | A-22 | `GET` | `/api/admin/users/{userId}/memberships` | 查询用户组织归属 |
 | A-23 | `PUT` | `/api/admin/users/{userId}/memberships` | 整集合更新用户组织归属 |
 
+补充说明：
+
+- `A-9 ~ A-12` 当前已完成交付契约收口，字段口径以本文件详细定义为准。
+- 但在当前代码仓状态下，角色模板相关 HTTP 入口与 `role.manage` 权限常量尚未形成最终实现；因此这四项当前应视为“已冻结契约、待代码落地”，而不是“已经完成联调”。
+
 ## 6. 详细接口定义
 
 ### A-1 登录
@@ -399,7 +404,7 @@ A 组应优先依赖并落地以下表：
 
 - 路由：`GET /api/admin/roles`
 - 鉴权：`role.manage`
-- 返回字段：`roleId/roleCode/roleName/status/permissionCount/createdAt`
+- 返回字段：`roleId/roleCode/roleName/roleScope/status/permissionCount/createdAt`
 
 异常返回：
 
@@ -419,16 +424,15 @@ A 组应优先依赖并落地以下表：
 |---|---|---|---|
 | `roleCode` | `string` | 是 | 角色编码 |
 | `roleName` | `string` | 是 | 角色名称 |
-| `roleType` | `string` | 是 | `SYSTEM` / `CUSTOM` |
-| `description` | `string` | 否 | 说明 |
+| `roleScope` | `string` | 是 | 角色范围；按当前后端实现枚举取值 |
 
-成功返回 `data`：`roleId/roleCode/roleName/status`
+成功返回 `data`：`roleId/roleCode/roleName/roleScope/status`
 
 异常返回：
 
 | 场景 | HTTP | 错误码 | 说明 |
 |---|---:|---|---|
-| 请求字段非法 | `400` | `VAL-4001` | 编码、名称或类型字段不合法 |
+| 请求字段非法 | `400` | `VAL-4001` | 编码、名称或 `roleScope` 字段不合法 |
 | 角色编码重复 | `409` | `BIZ-4090` | `roleCode` 已存在 |
 | 无权限访问 | `403` | `AUTH-4030` | 当前用户无角色创建权限 |
 
@@ -436,7 +440,9 @@ A 组应优先依赖并落地以下表：
 
 - 路由：`PATCH /api/admin/roles/{roleId}`
 - 鉴权：`role.manage`
-- 允许修改：`roleName/description/status`
+- 允许修改：`roleName/roleScope/status`
+- 并发保护：基于页面加载时取得的字段快照进行冲突检测，不使用版本号
+- 请求语义：提交更新时，除目标值外，还需携带当前角色模板的 `roleName/roleScope/status` 快照；若快照已过期，后端返回 `409 BIZ-4090`
 
 成功返回：`data = null`
 
@@ -445,9 +451,9 @@ A 组应优先依赖并落地以下表：
 | 场景 | HTTP | 错误码 | 说明 |
 |---|---:|---|---|
 | 角色不存在 | `404` | `RES-4040` | `roleId` 无效 |
-| 请求字段非法 | `400` | `VAL-4001` | 状态或名称字段不合法 |
+| 请求字段非法 | `400` | `VAL-4001` | `roleName`、`roleScope` 或 `status` 字段不合法 |
 | 无权限访问 | `403` | `AUTH-4030` | 当前用户无角色修改权限 |
-| 状态冲突 | `409` | `BIZ-4090` | 角色状态已变化或不允许修改 |
+| 快照冲突 | `409` | `BIZ-4090` | 角色模板已被他人更新，前端需重新拉取最新快照 |
 
 ### A-12 绑定角色权限
 
@@ -467,6 +473,7 @@ A 组应优先依赖并落地以下表：
 
 - 前端权限选择器的数据源统一来自 A-20，不允许各组私自硬编码权限码。
 - 当前仅支持整集合替换，不提供增量绑定接口。
+- `permissionCodes` 允许为空数组，表示清空该角色模板已有权限集合。
 
 异常返回：
 
@@ -474,7 +481,7 @@ A 组应优先依赖并落地以下表：
 |---|---:|---|---|
 | 角色不存在 | `404` | `RES-4040` | `roleId` 无效 |
 | 权限码不存在 | `404` | `RES-4040` | 任一 `permissionCode` 无效 |
-| 请求字段非法 | `400` | `VAL-4001` | 权限集合为空或包含空值 |
+| 请求字段非法 | `400` | `VAL-4001` | 权限集合缺失，或包含空值 / 非法权限码 |
 | 无权限访问 | `403` | `AUTH-4030` | 当前用户无权限绑定权限 |
 
 ### A-13 分页查询角色分配

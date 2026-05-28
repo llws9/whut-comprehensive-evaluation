@@ -1,0 +1,9 @@
+- [x] `GET /api/admin/users` 支持 `pageNo/pageSize/keyword/status/orgUnitId`，并返回 `orgUnits/roleCodes`
+- [x] `POST /api/admin/users` 能创建用户，拒绝重复 `userNo` 与无效 `primaryOrgUnitId`
+- [x] `PATCH /api/admin/users/{userId}/status` 仅接受 `ACTIVE/DISABLED/LOCKED`，并正确处理 no-op/冲突
+- [x] `POST /api/admin/users/import` 校验文件、`importMode` 与模板列，并返回导入摘要
+- [x] `GET /api/admin/roles` 返回 `roleId/roleCode/roleName/status/permissionCount/createdAt`
+- [x] `POST /api/admin/roles` 与 `PATCH /api/admin/roles/{roleId}` 满足唯一性、字段约束与状态语义
+- [x] `POST /api/admin/roles/{roleId}/permissions` 实现整集合替换，并在角色或权限码不存在时返回 `404`
+- [x] `AuthorizationPermissionCodes` 与安全注解补齐 `user.manage`、`user.import`、`role.manage`
+- [x] 定向 WebMvc/application/repository 测试通过，且新增修改文件无明显诊断错误

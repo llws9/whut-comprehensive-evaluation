@@ -8,6 +8,7 @@ import edu.whut.eval.domain.iam.repository.ScopeRuleAdminRepository;
 import edu.whut.eval.infra.persistence.entity.IamScopeRuleDO;
 import edu.whut.eval.infra.persistence.mapper.IamScopeRuleMapper;
 import edu.whut.eval.infra.persistence.repository.row.IamScopeRuleAdminRow;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
@@ -25,6 +26,7 @@ public class MybatisPlusScopeRuleAdminRepository implements ScopeRuleAdminReposi
         this(iamScopeRuleMapper, new ObjectMapper());
     }
 
+    @Autowired
     public MybatisPlusScopeRuleAdminRepository(IamScopeRuleMapper iamScopeRuleMapper, ObjectMapper objectMapper) {
         this.iamScopeRuleMapper = iamScopeRuleMapper;
         this.objectMapper = objectMapper;

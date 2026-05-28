@@ -1,0 +1,6 @@
+spring:
+  datasource:
+    url: ${WHUT_EVAL_DB_URL:jdbc:mysql://127.0.0.1:3306/whut_eval_local?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${WHUT_EVAL_DB_USERNAME:root}
+    password: ${WHUT_EVAL_DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver

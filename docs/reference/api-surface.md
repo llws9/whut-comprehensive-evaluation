@@ -18,6 +18,13 @@
 - 学生侧写接口
 - 管理侧查询接口
 
+不在本文覆盖范围内、但已在交付文档中冻结契约的能力：
+
+- `A-9 ~ A-12` 角色模板管理接口
+- `A-13 ~ A-18` 角色分配与范围规则接口
+
+这些能力当前应以 `docs/team-delivery/group-a-identity-user-admin.md` 为准；只有在代码仓中形成实际 Controller / DTO / 安全注解后，才纳入本文的“当前接口面”总表。
+
 ### 1.1 快速导航
 
 - [2. 当前接口分组](#2-当前接口分组)
@@ -77,6 +84,8 @@
 | Student Write | `POST` | `/api/student/preferences` | `StudentPreferenceController#createPreference(...)` | 依赖当前登录态 | `P0-2` 最小写入参考实现，创建当前用户偏好设置 |
 | Admin Query | `GET` | `/api/admin/query/applications` | `AdminQueryController#pageApplications(...)` | `application.review` | 查询当前用户可见申请列表 |
 | Admin Query | `GET` | `/api/admin/query/scores` | `AdminQueryController#pageScores(...)` | `score.view.assigned` | 查询当前用户可见成绩列表 |
+| Admin Query | `GET` | `/api/admin/permissions` | `AdminQueryController#listPermissions(...)` | `permission.manage` | 查询权限字典，供角色模板权限选择器使用 |
+| Admin Query | `GET` | `/api/admin/org-units/tree` | `AdminQueryController#listOrgUnitTree(...)` | `org.manage` | 查询组织树字典 |
 
 ## 4. Auth 接口
 
@@ -574,7 +583,7 @@
 | 项 | 说明 |
 |---|---|
 | Controller | `edu.whut.eval.interfaces.admin.AdminQueryController` |
-| 路由前缀 | `/api/admin/query` |
+| 路由前缀 | `/api/admin` |
 | 所在模块 | `whut-eval-interfaces` |
 
 ### 10.2 查询可见申请列表
@@ -642,6 +651,62 @@
 | 响应类型 | `ApiResponse<PageResult<ScoreRecordView>>` |
 | 列表元素 | `ScoreRecordView` |
 
+### 10.4 查询权限字典
+
+基本信息：
+
+| 项 | 说明 |
+|---|---|
+| HTTP Method | `GET` |
+| Path | `/api/admin/permissions` |
+| Controller 方法 | `listPermissions(...)` |
+| 权限注解 | `@PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).PERMISSION_MANAGE)")` |
+| 权限码 | `permission.manage` |
+| 应用服务 | `AdminDictionaryQueryApplicationService#listPermissions(...)` |
+
+查询参数：
+
+| 参数名 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `keyword` | `String` | 否 | - | 按权限码或权限名称模糊过滤 |
+| `module` | `String` | 否 | - | 按模块过滤 |
+| `status` | `String` | 否 | `ACTIVE` | 按权限状态过滤 |
+
+成功响应：
+
+| 项 | 说明 |
+|---|---|
+| 响应类型 | `ApiResponse<List<PermissionDictionaryResponse>>` |
+| 列表元素 | `PermissionDictionaryResponse` |
+
+### 10.5 查询组织树
+
+基本信息：
+
+| 项 | 说明 |
+|---|---|
+| HTTP Method | `GET` |
+| Path | `/api/admin/org-units/tree` |
+| Controller 方法 | `listOrgUnitTree(...)` |
+| 权限注解 | `@PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).ORG_MANAGE)")` |
+| 权限码 | `org.manage` |
+| 应用服务 | `AdminDictionaryQueryApplicationService#listOrgUnitTree(...)` |
+
+查询参数：
+
+| 参数名 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `rootId` | `Long` | 否 | - | 指定树根组织单元 ID |
+| `unitType` | `String` | 否 | - | 按组织类型过滤 |
+| `includeDisabled` | `boolean` | 否 | `false` | 是否包含禁用节点 |
+
+成功响应：
+
+| 项 | 说明 |
+|---|---|
+| 响应类型 | `ApiResponse<List<OrgUnitTreeResponse>>` |
+| 列表元素 | `OrgUnitTreeResponse` |
+
 ## 11. 当前边界与后续建议
 
 当前接口面已经完成“按 student / admin 分组”的正式拆分，但还有几个实现边界需要明确：
@@ -652,6 +717,8 @@
 4. `FileUploadController` 现在会在上传成功后登记 `file_asset` 并返回 `fileId`；`ApplicationSubmission` 创建 / 更新链路已经改为消费 `attachmentFileIds`。
 5. `AuthController` 与 `SecurityProbeController` 当前仍位于 `whut-eval-app`，后续如果希望接口职责更集中，可以考虑评估是否迁移到 `whut-eval-interfaces`。
 6. `UserIdentityQueryController` 当前未显式声明 `@PreAuthorize`；如果后续要纳入正式权限模型，应先补齐权限码与接口文档，再调整实现。
+7. `A-9 ~ A-18` 在交付文档中已经冻结了角色模板与角色分配契约，但当前代码仓尚未形成对应的 `/api/admin/roles*`、`/api/admin/role-assignments*` HTTP 入口，因此本文暂不把它们当作“已落地接口”列入总表。
+8. 交付文档中的 `role.manage` 目前尚未在 `AuthorizationPermissionCodes` 中定义常量；在角色模板接口真正落地前，应先补齐该权限常量，再补安全注解与联调文档。
 
 ## 12. 响应模型附录
 

@@ -3,42 +3,36 @@ package edu.whut.eval.app.storage;
 import edu.whut.eval.application.file.command.UploadFileCommand;
 import edu.whut.eval.application.file.query.StoredFileDescriptor;
 import edu.whut.eval.common.exception.ValidationException;
-import edu.whut.eval.infra.nacos.config.OssStorageConfigProvider;
 import edu.whut.eval.infra.nacos.model.typed.OssStorageConfig;
 import edu.whut.eval.infra.storage.OssFileStorageService;
 import edu.whut.eval.infra.storage.OssObjectStorageClient;
 import edu.whut.eval.infra.storage.StoredOssObject;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
 
 class OssFileStorageServiceTest {
 
-    private final OssStorageConfigProvider ossStorageConfigProvider = mock(OssStorageConfigProvider.class);
-    private final OssObjectStorageClient ossObjectStorageClient = mock(OssObjectStorageClient.class);
+    private StubOssStorageConfigProvider ossStorageConfigProvider;
+    private StubOssObjectStorageClient ossObjectStorageClient;
+    private OssFileStorageService fileStorageService;
 
-    private final OssFileStorageService fileStorageService =
-            new OssFileStorageService(ossStorageConfigProvider, ossObjectStorageClient);
+    @BeforeEach
+    void setUp() {
+        ossStorageConfigProvider = new StubOssStorageConfigProvider();
+        ossObjectStorageClient = new StubOssObjectStorageClient();
+        fileStorageService = new OssFileStorageService(ossStorageConfigProvider, ossObjectStorageClient);
+        ossStorageConfigProvider.setConfig(enabledConfig());
+    }
 
     @Test
     void shouldStoreFileAndReturnDescriptor() {
-        OssStorageConfig config = enabledConfig();
-        given(ossStorageConfigProvider.requiredConfig()).willReturn(config);
-        given(ossObjectStorageClient.putObject(eq(config), any(String.class), any(), eq(5L), eq("image/png")))
-                .willAnswer(invocation -> new StoredOssObject(
-                        "whut-eval-dev",
-                        invocation.getArgument(1, String.class),
-                        "https://cdn.whut.example.com/" + invocation.getArgument(1, String.class)
-                ));
-
         StoredFileDescriptor result = fileStorageService.store(new UploadFileCommand(
                 new ByteArrayInputStream("hello".getBytes()),
                 5L,
@@ -59,7 +53,7 @@ class OssFileStorageServiceTest {
     void shouldRejectWhenOssStorageIsDisabled() {
         OssStorageConfig config = enabledConfig();
         config.setEnabled(false);
-        given(ossStorageConfigProvider.requiredConfig()).willReturn(config);
+        ossStorageConfigProvider.setConfig(config);
 
         assertThatThrownBy(() -> fileStorageService.store(new UploadFileCommand(
                 new ByteArrayInputStream("hello".getBytes()),
@@ -73,15 +67,6 @@ class OssFileStorageServiceTest {
 
     @Test
     void shouldNormalizeObjectKeySegmentsAndFilename() {
-        OssStorageConfig config = enabledConfig();
-        given(ossStorageConfigProvider.requiredConfig()).willReturn(config);
-        given(ossObjectStorageClient.putObject(eq(config), any(String.class), any(), eq(5L), eq("image/png")))
-                .willAnswer(invocation -> new StoredOssObject(
-                        "whut-eval-dev",
-                        invocation.getArgument(1, String.class),
-                        null
-                ));
-
         StoredFileDescriptor result = fileStorageService.store(new UploadFileCommand(
                 new ByteArrayInputStream("hello".getBytes()),
                 5L,
@@ -96,11 +81,6 @@ class OssFileStorageServiceTest {
 
     @Test
     void shouldPropagateContentTypeAndSizeToOssClient() {
-        OssStorageConfig config = enabledConfig();
-        given(ossStorageConfigProvider.requiredConfig()).willReturn(config);
-        given(ossObjectStorageClient.putObject(eq(config), any(String.class), any(), eq(5L), eq("image/png")))
-                .willReturn(new StoredOssObject("whut-eval-dev", "uploads/dev/profile/file.png", null));
-
         fileStorageService.store(new UploadFileCommand(
                 new ByteArrayInputStream("hello".getBytes()),
                 5L,
@@ -109,7 +89,8 @@ class OssFileStorageServiceTest {
                 "profile"
         ));
 
-        verify(ossObjectStorageClient).putObject(eq(config), any(String.class), any(), eq(5L), eq("image/png"));
+        assertThat(ossObjectStorageClient.lastContentType).isEqualTo("image/png");
+        assertThat(ossObjectStorageClient.lastSize).isEqualTo(5L);
     }
 
     private OssStorageConfig enabledConfig() {
@@ -123,5 +104,40 @@ class OssFileStorageServiceTest {
         config.setPublicBaseUrl("https://cdn.whut.example.com");
         config.setKeyPrefix("uploads/dev");
         return config;
+    }
+
+    private static class StubOssStorageConfigProvider extends edu.whut.eval.infra.nacos.config.OssStorageConfigProvider {
+        private OssStorageConfig config;
+
+        StubOssStorageConfigProvider() {
+            super(null);
+        }
+
+        void setConfig(OssStorageConfig config) {
+            this.config = config;
+        }
+
+        @Override
+        public Optional<OssStorageConfig> currentConfig() {
+            return Optional.ofNullable(config);
+        }
+
+        @Override
+        public OssStorageConfig requiredConfig() {
+            return currentConfig().orElseThrow(() -> new ValidationException("OSS 文件存储当前未启用"));
+        }
+    }
+
+    private static class StubOssObjectStorageClient implements OssObjectStorageClient {
+        String lastContentType;
+        long lastSize;
+
+        @Override
+        public StoredOssObject putObject(OssStorageConfig config, String objectKey, InputStream inputStream, long contentLength, String contentType) {
+            this.lastContentType = contentType;
+            this.lastSize = contentLength;
+            String publicUrl = config.getPublicBaseUrl() != null ? config.getPublicBaseUrl() + "/" + objectKey : null;
+            return new StoredOssObject(config.getBucket(), objectKey, publicUrl);
+        }
     }
 }

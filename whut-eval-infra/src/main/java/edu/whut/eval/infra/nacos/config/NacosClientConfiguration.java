@@ -7,8 +7,10 @@ import edu.whut.eval.infra.nacos.*;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 
 @Configuration
+@Profile("!local")
 public class NacosClientConfiguration {
 
     @Bean

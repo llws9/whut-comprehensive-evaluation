@@ -1,0 +1,9 @@
+- [x] 登录成功后创建 `ACTIVE iam_session`，并保存 `sessionId/loginIp/userAgent/expiredAt`
+- [x] 新签发的 `access token` 与 `refresh token` 都包含 `sid`，且运行时身份模型能读取 `sessionId`
+- [x] 不带 `sid` 的旧 token 被统一识别为非法 token，并返回 `401 AUTH-4012`
+- [x] `JwtAuthenticationFilter` 会拒绝 `sid` 对应会话不存在、已撤销或已过期的受保护请求
+- [x] `POST /api/auth/refresh` 仅在当前会话有效时成功，并在刷新后续期同一会话的 `expiredAt`
+- [x] `POST /api/auth/logout` 仅撤销当前会话，成功后写入 `revokedAt` 并返回 `ApiResponse.success(null)`
+- [x] 已撤销当前会话下的 `access token` 与 `refresh token` 都会立即失效
+- [x] `AUTH-4010/AUTH-4011/AUTH-4012` 语义与文档对齐，未引入新的认证错误码
+- [x] 定向 WebMvc/application/repository 测试通过，且新增修改文件无明显诊断错误

@@ -1,0 +1,10 @@
+- [ ] 用户管理页列表数据来自 `GET /api/admin/users`
+- [ ] 用户管理页筛选条件已收敛为 `keyword + status`
+- [ ] 页面不再依赖本地 mock 用户数组
+- [ ] 用户状态切换通过 `PATCH /api/admin/users/{userId}/status` 完成
+- [ ] 用户创建通过 `POST /api/admin/users` 完成
+- [ ] 用户导入通过 `POST /api/admin/users/import` 完成
+- [ ] 创建、状态切换、导入成功后都会重新拉取列表
+- [ ] 导入结果能展示统计信息与失败行摘要
+- [ ] 用户管理页联调未影响角色模板页面
+- [ ] 前端定向测试、`typecheck`、`build` 均通过

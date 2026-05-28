@@ -1,0 +1,10 @@
+- [ ] `A-9 ~ A-12` 的公开契约已统一收敛到 `roleScope/status`，不再使用 `roleType/description`
+- [ ] `A-9` 列表返回已明确包含 `roleScope`
+- [ ] `A-10` 创建请求已明确只接受 `roleCode/roleName/roleScope`
+- [ ] `A-11` 已明确采用字段快照并发保护，并对快照过期返回 `409 BIZ-4090`
+- [ ] `A-12` 已明确采用整集合替换语义，且支持空权限集合
+- [ ] 角色权限选择器的数据源已明确绑定到 `A-20 GET /api/admin/permissions`
+- [ ] 文档与 API 总表中不再残留 `roleType/description` 旧口径
+- [ ] `role.manage` 与 `permission.manage` 的页面/动作权限边界已写清
+- [ ] 已明确 `PermissionsView.vue` 真实接入必须等待本契约收口完成
+- [ ] 本契约收口完成后，才能开始角色模板管理前端接入 Spec
