@@ -10,6 +10,7 @@ import edu.whut.eval.infra.persistence.dataobject.ApplicationSubmissionDO;
 import edu.whut.eval.infra.persistence.mapper.ApplicationAttachmentMapper;
 import edu.whut.eval.infra.persistence.mapper.ApplicationSubmissionMapper;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -43,6 +44,7 @@ public class MybatisPlusApplicationSubmissionRepository implements ApplicationSu
     }
 
     @Override
+    @Transactional
     public ApplicationSubmission save(ApplicationSubmission applicationSubmission) {
         ApplicationSubmissionDO applicationSubmissionDO = toDataObject(applicationSubmission);
         if (applicationSubmission.getApplicationId() == null) {
@@ -98,12 +100,16 @@ public class MybatisPlusApplicationSubmissionRepository implements ApplicationSu
     }
 
     private AttachmentRef toAttachment(ApplicationAttachmentDO applicationAttachmentDO) {
+        Long size = applicationAttachmentDO.getSize();
+        if (size == null) {
+            throw new IllegalStateException("附件大小不能为空: fileId=" + applicationAttachmentDO.getFileId());
+        }
         return new AttachmentRef(
                 applicationAttachmentDO.getFileId(),
                 applicationAttachmentDO.getStorageKey(),
                 applicationAttachmentDO.getOriginalFilename(),
                 applicationAttachmentDO.getContentType(),
-                applicationAttachmentDO.getSize() == null ? 0L : applicationAttachmentDO.getSize(),
+                size,
                 applicationAttachmentDO.getUploadedBy()
         );
     }

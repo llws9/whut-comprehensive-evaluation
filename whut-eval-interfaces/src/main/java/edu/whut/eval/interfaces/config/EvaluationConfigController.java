@@ -7,6 +7,7 @@ import edu.whut.eval.domain.config.StudentEvaluationSummary;
 import edu.whut.eval.domain.config.model.EligibilityRulesConfig;
 import edu.whut.eval.domain.config.model.EvaluationItemsConfig;
 import edu.whut.eval.domain.config.model.IndexOptionsConfig;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -42,7 +43,7 @@ public class EvaluationConfigController {
     }
 
     @PostMapping("/calculate/points")
-    public ApiResponse<BigDecimal> calculatePoints(@RequestBody PointsCalculationRequest request) {
+    public ApiResponse<BigDecimal> calculatePoints(@Valid @RequestBody PointsCalculationRequest request) {
         StudentContext context = StudentContext.builder()
                 .studentId(request.getStudentId())
                 .grade(request.getGrade())
@@ -55,7 +56,7 @@ public class EvaluationConfigController {
     }
 
     @PostMapping("/calculate/max-points")
-    public ApiResponse<BigDecimal> calculateMaxPoints(@RequestBody MaxPointsCalculationRequest request) {
+    public ApiResponse<BigDecimal> calculateMaxPoints(@Valid @RequestBody MaxPointsCalculationRequest request) {
         StudentContext context = StudentContext.builder()
                 .studentId(request.getStudentId())
                 .grade(request.getGrade())
@@ -77,7 +78,7 @@ public class EvaluationConfigController {
     @PostMapping("/evaluate-eligibility/{categoryCode}")
     public ApiResponse<Boolean> evaluateEligibility(
             @PathVariable String categoryCode,
-            @RequestBody EligibilityEvaluationRequest request) {
+            @Valid @RequestBody EligibilityEvaluationRequest request) {
         StudentEvaluationSummary summary = StudentEvaluationSummary.builder()
                 .studentId(request.getStudentId())
                 .studentName(request.getStudentName())

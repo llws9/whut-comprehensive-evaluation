@@ -39,6 +39,10 @@ public class ScoreQuerySqlProvider {
 
     /**
      * 授权范围条件和业务过滤条件必须使用 AND 组合，确保业务筛选只会继续收窄可见范围。
+     *
+     * 安全说明：expression 由 ScoreScopeSqlTranslator 生成，已使用参数化查询（#{parameters.pN}），
+     * 值通过 parameters Map 传递，不存在 SQL 注入风险。字段名来自硬编码的 fieldMapping，
+     * 不是用户直接输入。
      */
     private String buildSql(String selectFromSql, Map<String, Object> params, boolean paged) {
         String expression = params == null ? "" : (String) params.get("expression");
