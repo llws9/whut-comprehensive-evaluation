@@ -7,7 +7,7 @@ import edu.whut.eval.common.exception.ConfigLoadException;
 import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.common.log.AppLog;
 import edu.whut.eval.infra.nacos.config.OssStorageConfigProvider;
-import edu.whut.eval.infra.nacos.model.typed.OssStorageConfig;
+import edu.whut.eval.domain.config.model.OssStorageConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;

@@ -8,7 +8,7 @@ import edu.whut.eval.infra.nacos.config.NacosTypedConfigConfiguration;
 import edu.whut.eval.infra.nacos.config.OssStorageConfigProvider;
 import edu.whut.eval.infra.nacos.model.ConfigResource;
 import edu.whut.eval.infra.nacos.model.RawConfigPayload;
-import edu.whut.eval.infra.nacos.model.typed.OssStorageConfig;
+import edu.whut.eval.domain.config.model.OssStorageConfig;
 import edu.whut.eval.infra.nacos.parser.ConfigPayloadParser;
 import org.junit.jupiter.api.Test;
 

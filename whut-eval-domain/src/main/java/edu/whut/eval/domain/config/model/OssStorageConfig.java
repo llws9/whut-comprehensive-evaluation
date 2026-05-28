@@ -1,4 +1,4 @@
-package edu.whut.eval.infra.nacos.model.typed;
+package edu.whut.eval.domain.config.model;
 
 /**
  * 阿里云 OSS 对象存储配置。

@@ -3,7 +3,7 @@ package edu.whut.eval.app.storage;
 import edu.whut.eval.application.file.command.UploadFileCommand;
 import edu.whut.eval.application.file.query.StoredFileDescriptor;
 import edu.whut.eval.common.exception.ValidationException;
-import edu.whut.eval.infra.nacos.model.typed.OssStorageConfig;
+import edu.whut.eval.domain.config.model.OssStorageConfig;
 import edu.whut.eval.infra.storage.OssFileStorageService;
 import edu.whut.eval.infra.storage.OssObjectStorageClient;
 import edu.whut.eval.infra.storage.StoredOssObject;

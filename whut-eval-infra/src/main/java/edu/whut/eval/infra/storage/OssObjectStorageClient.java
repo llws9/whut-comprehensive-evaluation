@@ -1,6 +1,6 @@
 package edu.whut.eval.infra.storage;
 
-import edu.whut.eval.infra.nacos.model.typed.OssStorageConfig;
+import edu.whut.eval.domain.config.model.OssStorageConfig;
 
 import java.io.InputStream;
 
