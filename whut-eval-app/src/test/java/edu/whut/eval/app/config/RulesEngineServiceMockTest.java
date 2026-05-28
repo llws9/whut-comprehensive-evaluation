@@ -426,4 +426,27 @@ class RulesEngineServiceMockTest {
 
         assertTrue(eligible);
     }
+
+    @Test
+    @DisplayName("测试资格评估表达式安全边界 - 禁止类型访问")
+    void testEligibilityExpression_ShouldBlockTypeReference() {
+        EligibilityRulesConfig config = new EligibilityRulesConfig();
+        EligibilityRulesConfig.EligibilityRuleItem rule = new EligibilityRulesConfig.EligibilityRuleItem();
+        rule.setRuleId("DANGEROUS_RULE");
+        rule.setEnabled(true);
+        rule.setExpression("T(java.lang.System).getProperty('user.home') != null");
+        Map<String, List<EligibilityRulesConfig.EligibilityRuleItem>> rules = new HashMap<>();
+        rules.put("MORAL", List.of(rule));
+        config.setEligibilityRules(rules);
+        when(configRepository.find("eligibility-rules-config", EligibilityRulesConfig.class))
+                .thenReturn(java.util.Optional.of(config));
+
+        StudentEvaluationSummary summary = StudentEvaluationSummary.builder()
+                .studentId("2023999")
+                .build();
+
+        boolean eligible = rulesEngineService.evaluateEligibility("MORAL", summary);
+
+        assertFalse(eligible);
+    }
 }

@@ -12,12 +12,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.expression.Expression;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
-import org.springframework.expression.spel.support.StandardEvaluationContext;
+import org.springframework.expression.spel.support.SimpleEvaluationContext;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @Service
@@ -143,9 +144,13 @@ public class RulesEngineServiceImpl implements RuleEngineService {
         if (condition == null || condition.isEmpty() || "true".equals(condition)) {
             return true;
         }
+        if (isUnsafeExpression(condition)) {
+            log.warn("Blocked unsafe condition expression: {}", condition);
+            return false;
+        }
         try {
             Expression exp = spelParser.parseExpression(condition);
-            StandardEvaluationContext evalContext = createStudentEvaluationContext(context);
+            SimpleEvaluationContext evalContext = createStudentEvaluationContext(context);
             Object result = exp.getValue(evalContext);
             return Boolean.TRUE.equals(result);
         } catch (Exception e) {
@@ -155,9 +160,13 @@ public class RulesEngineServiceImpl implements RuleEngineService {
     }
 
     private BigDecimal evaluateMaxPointsExpression(String expression, StudentContext context) {
+        if (isUnsafeExpression(expression)) {
+            log.warn("Blocked unsafe maxPoints expression: {}", expression);
+            return null;
+        }
         try {
             Expression exp = spelParser.parseExpression(expression);
-            StandardEvaluationContext evalContext = createStudentEvaluationContext(context);
+            SimpleEvaluationContext evalContext = createStudentEvaluationContext(context);
             Object result = exp.getValue(evalContext);
             if (result instanceof Number) {
                 return BigDecimal.valueOf(((Number) result).doubleValue());
@@ -170,9 +179,13 @@ public class RulesEngineServiceImpl implements RuleEngineService {
     }
 
     private boolean evaluateSpelExpression(String expression, StudentEvaluationSummary summary) {
+        if (isUnsafeExpression(expression)) {
+            log.warn("Blocked unsafe eligibility expression: {}", expression);
+            return false;
+        }
         try {
             Expression exp = spelParser.parseExpression(expression);
-            StandardEvaluationContext evalContext = createSummaryEvaluationContext(summary);
+            SimpleEvaluationContext evalContext = createSummaryEvaluationContext(summary);
             Object result = exp.getValue(evalContext);
             return Boolean.TRUE.equals(result);
         } catch (Exception e) {
@@ -181,35 +194,30 @@ public class RulesEngineServiceImpl implements RuleEngineService {
         }
     }
 
-    private StandardEvaluationContext createStudentEvaluationContext(StudentContext context) {
-        StandardEvaluationContext context1 = new StandardEvaluationContext(context);
-        context1.setVariable("studentId", context.getStudentId());
-        context1.setVariable("studentName", context.getStudentName());
-        context1.setVariable("grade", context.getGrade());
-        context1.setVariable("academicYear", context.getAcademicYear());
-        context1.setVariable("className", context.getClassName());
-        context1.setVariable("major", context.getMajor());
-        context1.setVariable("isPartyMember", context.isPartyMember());
-        context1.setVariable("customAttributes", context.getCustomAttributes());
-        return context1;
+    private SimpleEvaluationContext createStudentEvaluationContext(StudentContext context) {
+        return SimpleEvaluationContext.forReadOnlyDataBinding()
+                .withRootObject(context)
+                .build();
     }
 
-    private StandardEvaluationContext createSummaryEvaluationContext(StudentEvaluationSummary summary) {
-        StandardEvaluationContext context = new StandardEvaluationContext(summary);
-        context.setVariable("studentId", summary.getStudentId());
-        context.setVariable("studentName", summary.getStudentName());
-        context.setVariable("isPartyMember", summary.isPartyMember());
-        context.setVariable("academicYear", summary.getAcademicYear());
-        context.setVariable("grade", summary.getGrade());
-        context.setVariable("moralScore", summary.getMoralScore());
-        context.setVariable("intellectualScore", summary.getIntellectualScore());
-        context.setVariable("sportsScore", summary.getSportsScore());
-        context.setVariable("sportsCompetitionScore", summary.getSportsCompetitionScore());
-        context.setVariable("sportsArtContributionScore", summary.getSportsArtContributionScore());
-        context.setVariable("laborScore", summary.getLaborScore());
-        context.setVariable("failedCourseCount", summary.getFailedCourseCount());
-        context.setVariable("hasMajorViolation", summary.isHasMajorViolation());
-        context.setVariable("volunteerHours", summary.getVolunteerHours());
-        return context;
+    private SimpleEvaluationContext createSummaryEvaluationContext(StudentEvaluationSummary summary) {
+        return SimpleEvaluationContext.forReadOnlyDataBinding()
+                .withRootObject(summary)
+                .build();
+    }
+
+    private boolean isUnsafeExpression(String expression) {
+        if (expression == null || expression.isBlank()) {
+            return false;
+        }
+        String normalized = expression.toLowerCase(Locale.ROOT);
+        return normalized.contains("t(")
+                || normalized.contains("class")
+                || normalized.contains("new ")
+                || normalized.contains("#this")
+                || normalized.contains("#root")
+                || normalized.contains("@")
+                || normalized.contains("[")
+                || normalized.contains("]");
     }
 }

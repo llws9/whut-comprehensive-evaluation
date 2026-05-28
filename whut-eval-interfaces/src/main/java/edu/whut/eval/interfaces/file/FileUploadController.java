@@ -9,6 +9,7 @@ import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.interfaces.file.view.StoredFileDescriptorView;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -18,6 +19,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 最小文件上传入口。
@@ -31,9 +35,19 @@ public class FileUploadController {
     private static final Logger log = LoggerFactory.getLogger(FileUploadController.class);
 
     private final FileUploadApplicationService fileUploadApplicationService;
+    private final long maxFileSize;
+    private final Set<String> allowedContentTypes;
 
-    public FileUploadController(FileUploadApplicationService fileUploadApplicationService) {
+    public FileUploadController(
+            FileUploadApplicationService fileUploadApplicationService,
+            @Value("${infra.file-upload.max-file-size-bytes:10485760}") long maxFileSize,
+            @Value("${infra.file-upload.allowed-content-types:image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain}") String allowedContentTypes) {
         this.fileUploadApplicationService = fileUploadApplicationService;
+        this.maxFileSize = maxFileSize;
+        this.allowedContentTypes = Arrays.stream(allowedContentTypes.split(","))
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     /**
@@ -56,6 +70,28 @@ public class FileUploadController {
                     "contentType", file.getContentType(),
                     "size", file.getSize());
             throw new ValidationException("上传文件不能为空");
+        }
+
+        if (file.getSize() > maxFileSize) {
+            AppLog.warn(log, "file.upload.request.rejected",
+                    "reason", "file-too-large",
+                    "bizType", bizType,
+                    "originalFilename", file.getOriginalFilename(),
+                    "contentType", file.getContentType(),
+                    "size", file.getSize(),
+                    "maxFileSize", maxFileSize);
+            throw new ValidationException("上传文件大小超过限制: " + file.getSize());
+        }
+
+        String contentType = file.getContentType();
+        if (contentType == null || !allowedContentTypes.contains(contentType)) {
+            AppLog.warn(log, "file.upload.request.rejected",
+                    "reason", "content-type-not-allowed",
+                    "bizType", bizType,
+                    "originalFilename", file.getOriginalFilename(),
+                    "contentType", contentType,
+                    "size", file.getSize());
+            throw new ValidationException("不支持的文件类型: " + contentType);
         }
         try {
             StoredFileDescriptor descriptor = fileUploadApplicationService.upload(new UploadFileCommand(

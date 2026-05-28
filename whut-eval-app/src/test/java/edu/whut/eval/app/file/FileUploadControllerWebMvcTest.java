@@ -105,6 +105,33 @@ class FileUploadControllerWebMvcTest {
                 .andExpect(jsonPath("$.message").value("上传文件到 OSS 失败"));
     }
 
+    @Test
+    void shouldReturn400WhenContentTypeNotAllowed() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "script.sh", "application/x-sh", "echo hi".getBytes());
+
+        mockMvc.perform(multipart("/api/files/upload")
+                        .file(file)
+                        .param("bizType", "profile"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("不支持的文件类型: application/x-sh"));
+    }
+
+    @Test
+    void shouldReturn400WhenFileTooLarge() throws Exception {
+        byte[] bytes = new byte[10 * 1024 * 1024 + 1];
+        MockMultipartFile file = new MockMultipartFile("file", "large.png", "image/png", bytes);
+
+        mockMvc.perform(multipart("/api/files/upload")
+                        .file(file)
+                        .param("bizType", "profile"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("上传文件大小超过限制: 10485761"));
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     static class TestApplication {
