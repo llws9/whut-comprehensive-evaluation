@@ -5,6 +5,7 @@ import edu.whut.eval.application.file.query.StoredFileDescriptor;
 import edu.whut.eval.application.file.service.FileUploadApplicationService;
 import edu.whut.eval.common.exception.FileStorageException;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
+import edu.whut.eval.interfaces.file.FileUploadConfiguration;
 import edu.whut.eval.interfaces.file.FileUploadController;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +32,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ContextConfiguration(classes = FileUploadControllerWebMvcTest.TestApplication.class)
 @Import({
         FileUploadController.class,
+        FileUploadConfiguration.class,
         GlobalExceptionHandler.class
 })
 class FileUploadControllerWebMvcTest {
