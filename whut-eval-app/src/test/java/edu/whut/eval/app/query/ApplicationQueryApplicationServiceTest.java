@@ -3,7 +3,7 @@ package edu.whut.eval.app.query;
 import edu.whut.eval.application.application.query.ApplicationRecordView;
 import edu.whut.eval.application.application.service.ApplicationQueryApplicationService;
 import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.domain.application.model.ApplicationRecord;

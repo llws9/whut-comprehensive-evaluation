@@ -1,19 +1,18 @@
-package edu.whut.eval.application.auth.service;
+package edu.whut.eval.domain.auth.service;
 
 import edu.whut.eval.domain.auth.model.ApplicationScopePredicate;
 import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 
 /**
+ * 范围谓词构建器。
  * 把抽象范围集合转换成申请查询可消费的谓词对象。
- * 此接口继承领域层接口，保持向后兼容。
  */
-public interface ScopePredicateBuilder extends edu.whut.eval.domain.auth.service.ScopePredicateBuilder {
+public interface ScopePredicateBuilder {
 
     /**
      * 将一个权限码下的范围集合翻译成申请查询子句集合。
      */
-    @Override
     ApplicationScopePredicate buildForApplication(UserAuthorizationContext authorizationContext,
                                                   AuthorizationScopeSet scopeSet);
 }

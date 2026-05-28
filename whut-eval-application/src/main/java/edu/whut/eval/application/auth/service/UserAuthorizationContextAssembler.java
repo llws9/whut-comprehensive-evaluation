@@ -1,6 +1,6 @@
 package edu.whut.eval.application.auth.service;
 
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.common.exception.AuthenticationFailedException;
 
 import java.util.Optional;

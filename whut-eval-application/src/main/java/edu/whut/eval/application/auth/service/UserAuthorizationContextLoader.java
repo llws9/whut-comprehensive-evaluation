@@ -1,7 +1,7 @@
 package edu.whut.eval.application.auth.service;
 
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
-import edu.whut.eval.application.auth.model.UserAuthorizationContextLoadRequest;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContextLoadRequest;
 
 /**
  * 在请求进入业务层前，按用户主键重新加载最新授权上下文。

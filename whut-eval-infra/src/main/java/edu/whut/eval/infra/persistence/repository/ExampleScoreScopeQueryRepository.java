@@ -1,9 +1,9 @@
 package edu.whut.eval.infra.persistence.repository;
 
-import edu.whut.eval.application.auth.model.AuthorizationScopeSet;
+import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
 import edu.whut.eval.application.auth.model.ScoreResourceContext;
-import edu.whut.eval.application.auth.model.ScoreScopePredicate;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.ScoreScopePredicate;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.AuthorizationScopeEvaluator;
 import edu.whut.eval.application.auth.service.ScoreScopePredicateBuilder;
 import edu.whut.eval.infra.persistence.mapper.ExampleScoreScopeQueryMapper;

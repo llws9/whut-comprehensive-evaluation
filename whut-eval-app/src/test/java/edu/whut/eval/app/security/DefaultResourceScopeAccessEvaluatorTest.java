@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.auth.model.ApplicationResourceContext;
 import edu.whut.eval.application.auth.model.ScopeAccessDecision;
 import edu.whut.eval.application.auth.model.ScoreResourceContext;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.DefaultAuthorizationScopeEvaluator;
 import edu.whut.eval.application.auth.service.DefaultResourceScopeAccessEvaluator;
 import edu.whut.eval.application.auth.service.JsonScopeRuleExpressionInterpreter;

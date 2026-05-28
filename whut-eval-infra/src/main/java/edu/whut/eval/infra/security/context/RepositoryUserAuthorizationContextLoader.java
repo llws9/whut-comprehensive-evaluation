@@ -1,7 +1,7 @@
 package edu.whut.eval.infra.security.context;
 
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
-import edu.whut.eval.application.auth.model.UserAuthorizationContextLoadRequest;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContextLoadRequest;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
 import edu.whut.eval.common.exception.AuthenticationFailedException;
 import edu.whut.eval.common.log.AppLog;

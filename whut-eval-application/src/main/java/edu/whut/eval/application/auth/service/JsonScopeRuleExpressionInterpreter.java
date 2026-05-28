@@ -2,10 +2,10 @@ package edu.whut.eval.application.auth.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import edu.whut.eval.application.auth.model.ScopeExpression;
-import edu.whut.eval.application.auth.model.ScopeExpressionCondition;
+import edu.whut.eval.domain.auth.model.ScopeExpression;
+import edu.whut.eval.domain.auth.model.ScopeExpressionCondition;
 import edu.whut.eval.application.auth.model.ScopeResourceContext;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.common.exception.BizRuleViolationException;
 import org.springframework.stereotype.Service;
 

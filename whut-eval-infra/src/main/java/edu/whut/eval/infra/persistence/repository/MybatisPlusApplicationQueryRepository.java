@@ -1,10 +1,10 @@
 package edu.whut.eval.infra.persistence.repository;
 
-import edu.whut.eval.application.auth.model.ApplicationScopePredicate;
-import edu.whut.eval.application.auth.model.AuthorizationScopeSet;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
-import edu.whut.eval.application.auth.service.AuthorizationScopeEvaluator;
-import edu.whut.eval.application.auth.service.ScopePredicateBuilder;
+import edu.whut.eval.domain.auth.model.ApplicationScopePredicate;
+import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.service.AuthorizationScopeEvaluator;
+import edu.whut.eval.domain.auth.service.ScopePredicateBuilder;
 import edu.whut.eval.domain.application.model.ApplicationRecord;
 import edu.whut.eval.domain.application.query.ApplicationAccessContext;
 import edu.whut.eval.domain.application.query.ApplicationPageQuery;

@@ -1,6 +1,6 @@
 package edu.whut.eval.infra.security.context;
 
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import org.springframework.stereotype.Component;
 

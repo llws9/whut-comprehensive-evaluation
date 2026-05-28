@@ -7,7 +7,7 @@ import edu.whut.eval.application.application.command.CreateApplicationDraftComma
 import edu.whut.eval.application.application.command.UpdateApplicationDraftCommand;
 import edu.whut.eval.application.application.query.ApplicationSubmissionView;
 import edu.whut.eval.application.application.service.ApplicationSubmissionCommandApplicationService;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.domain.application.model.ApplicationSubmission;
 import edu.whut.eval.domain.application.repository.ApplicationSubmissionRepository;

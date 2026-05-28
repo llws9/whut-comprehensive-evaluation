@@ -5,7 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.auth.model.ScoreResourceContext;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.DefaultAuthorizationScopeEvaluator;
 import edu.whut.eval.application.auth.service.DefaultResourceScopeAccessEvaluator;
 import edu.whut.eval.application.auth.service.DefaultScoreScopePredicateBuilder;

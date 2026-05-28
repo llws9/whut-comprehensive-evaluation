@@ -3,7 +3,7 @@ package edu.whut.eval.application.auth.service;
 import edu.whut.eval.application.auth.model.ApplicationResourceContext;
 import edu.whut.eval.application.auth.model.ScopeAccessDecision;
 import edu.whut.eval.application.auth.model.ScoreResourceContext;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 
 /**
  * 对单条资源做范围命中判定，适用于详情查看、审批等非列表场景。

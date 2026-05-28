@@ -1,14 +1,11 @@
 package edu.whut.eval.application.auth.model;
 
-public class ApplicationScopeClause {
-
-    private final String scopeType;
-    private final Long applicantUserId;
-    private final Long orgUnitId;
-    private final Long orgSubtreeRootId;
-    private final String categoryCode;
-    private final String itemCode;
-    private final String expressionJson;
+/**
+ * @deprecated 使用 {@link edu.whut.eval.domain.auth.model.ApplicationScopeClause} 代替。
+ *             此类仅为向后兼容保留，将在未来版本中删除。
+ */
+@Deprecated
+public class ApplicationScopeClause extends edu.whut.eval.domain.auth.model.ApplicationScopeClause {
 
     public ApplicationScopeClause(String scopeType,
                                   Long applicantUserId,
@@ -17,40 +14,6 @@ public class ApplicationScopeClause {
                                   String categoryCode,
                                   String itemCode,
                                   String expressionJson) {
-        this.scopeType = scopeType;
-        this.applicantUserId = applicantUserId;
-        this.orgUnitId = orgUnitId;
-        this.orgSubtreeRootId = orgSubtreeRootId;
-        this.categoryCode = categoryCode;
-        this.itemCode = itemCode;
-        this.expressionJson = expressionJson;
-    }
-
-    public String getScopeType() {
-        return scopeType;
-    }
-
-    public Long getApplicantUserId() {
-        return applicantUserId;
-    }
-
-    public Long getOrgUnitId() {
-        return orgUnitId;
-    }
-
-    public Long getOrgSubtreeRootId() {
-        return orgSubtreeRootId;
-    }
-
-    public String getCategoryCode() {
-        return categoryCode;
-    }
-
-    public String getItemCode() {
-        return itemCode;
-    }
-
-    public String getExpressionJson() {
-        return expressionJson;
+        super(scopeType, applicantUserId, orgUnitId, orgSubtreeRootId, categoryCode, itemCode, expressionJson);
     }
 }

@@ -1,7 +1,7 @@
 package edu.whut.eval.app.security;
 
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
-import edu.whut.eval.application.auth.model.UserAuthorizationContextLoadRequest;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContextLoadRequest;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
 import edu.whut.eval.infra.security.config.JwtConfigurationValidator;

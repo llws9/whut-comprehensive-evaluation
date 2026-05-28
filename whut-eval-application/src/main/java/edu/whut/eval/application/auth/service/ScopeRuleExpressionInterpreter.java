@@ -1,8 +1,8 @@
 package edu.whut.eval.application.auth.service;
 
-import edu.whut.eval.application.auth.model.ScopeExpression;
+import edu.whut.eval.domain.auth.model.ScopeExpression;
 import edu.whut.eval.application.auth.model.ScopeResourceContext;
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 
 /**
  * 解析并执行范围规则里的受控表达式。

@@ -1,6 +1,6 @@
 package edu.whut.eval.app.security;
 
-import edu.whut.eval.application.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.common.api.ApiResponse;
 import org.springframework.web.bind.annotation.GetMapping;
