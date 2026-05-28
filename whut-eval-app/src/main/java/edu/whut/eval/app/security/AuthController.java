@@ -3,6 +3,7 @@ package edu.whut.eval.app.security;
 import edu.whut.eval.application.auth.model.AuthenticatedUserSnapshot;
 import edu.whut.eval.application.auth.model.RefreshTokenReloadContext;
 import edu.whut.eval.application.auth.service.LoginAuthenticationService;
+import edu.whut.eval.application.auth.service.LogoutService;
 import edu.whut.eval.application.auth.service.RefreshTokenCurrentUserLoader;
 import edu.whut.eval.app.security.dto.AuthTokenResponse;
 import edu.whut.eval.app.security.dto.LoginRequest;
@@ -22,6 +23,7 @@ import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -39,19 +41,22 @@ public class AuthController {
     private final RefreshTokenCurrentUserLoader refreshTokenCurrentUserLoader;
     private final JwtTokenIssuer jwtTokenIssuer;
     private final AuthTokenResponseAssembler authTokenResponseAssembler;
+    private final LogoutService logoutService;
 
     public AuthController(LoginAuthenticationService loginAuthenticationService,
                           JwtClaimsParser jwtClaimsParser,
                           RefreshTokenClaimsMapper refreshTokenClaimsMapper,
                           RefreshTokenCurrentUserLoader refreshTokenCurrentUserLoader,
                           JwtTokenIssuer jwtTokenIssuer,
-                          AuthTokenResponseAssembler authTokenResponseAssembler) {
+                          AuthTokenResponseAssembler authTokenResponseAssembler,
+                          LogoutService logoutService) {
         this.loginAuthenticationService = loginAuthenticationService;
         this.jwtClaimsParser = jwtClaimsParser;
         this.refreshTokenClaimsMapper = refreshTokenClaimsMapper;
         this.refreshTokenCurrentUserLoader = refreshTokenCurrentUserLoader;
         this.jwtTokenIssuer = jwtTokenIssuer;
         this.authTokenResponseAssembler = authTokenResponseAssembler;
+        this.logoutService = logoutService;
     }
 
     @PostMapping("/login")
@@ -125,6 +130,51 @@ public class AuthController {
             return ResponseEntity.status(CommonErrorCode.AUTHENTICATION_FAILED.httpStatus())
                     .body(ApiResponse.failure(CommonErrorCode.AUTHENTICATION_FAILED,
                             "refresh token 校验失败: " + exception.getMessage()));
+        }
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<ApiResponse<?>> logout(Authentication authentication) {
+        if (authentication == null) {
+            AppLog.warn(log, "security.auth.logout.authentication.missing");
+            return ResponseEntity.status(CommonErrorCode.TOKEN_INVALID.httpStatus())
+                    .body(ApiResponse.failure(CommonErrorCode.TOKEN_INVALID, "未提供有效的访问令牌"));
+        }
+
+        Object credentials = authentication.getCredentials();
+
+        if (!(credentials instanceof String tokenString)) {
+            AppLog.warn(log, "security.auth.logout.token.missing");
+            return ResponseEntity.status(CommonErrorCode.TOKEN_INVALID.httpStatus())
+                    .body(ApiResponse.failure(CommonErrorCode.TOKEN_INVALID, "未找到有效的访问令牌"));
+        }
+
+        try {
+            Claims claims = jwtClaimsParser.parse(tokenString, "logout-endpoint");
+            String accessTokenId = claims.getId();
+
+            if (accessTokenId == null || accessTokenId.isBlank()) {
+                AppLog.warn(log, "security.auth.logout.jti.missing",
+                        "tokenLength", tokenString.length());
+                return ResponseEntity.status(CommonErrorCode.TOKEN_INVALID.httpStatus())
+                        .body(ApiResponse.failure(CommonErrorCode.TOKEN_INVALID, "访问令牌缺少唯一标识"));
+            }
+
+            AppLog.info(log, "security.auth.logout.request.received",
+                    "accessTokenId", accessTokenId);
+
+            boolean revoked = logoutService.logoutByAccessTokenId(accessTokenId);
+
+            AppLog.info(log, "security.auth.logout.completed",
+                    "accessTokenId", accessTokenId,
+                    "revoked", revoked);
+
+            return ResponseEntity.ok(ApiResponse.success(null));
+        } catch (JwtAuthenticationException exception) {
+            AppLog.warn(log, "security.auth.logout.token.invalid",
+                    "reason", exception.getMessage());
+            return ResponseEntity.status(CommonErrorCode.TOKEN_INVALID.httpStatus())
+                    .body(ApiResponse.failure(CommonErrorCode.TOKEN_INVALID, "访问令牌校验失败: " + exception.getMessage()));
         }
     }
 }

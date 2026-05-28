@@ -2,12 +2,14 @@ package edu.whut.eval.app.security;
 
 import edu.whut.eval.application.auth.model.AuthenticatedUserSnapshot;
 import edu.whut.eval.application.auth.service.LoginAuthenticationService;
+import edu.whut.eval.application.auth.service.LogoutService;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
 import edu.whut.eval.common.exception.AuthenticationFailedException;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
 import edu.whut.eval.application.auth.service.RefreshTokenCurrentUserLoader;
 import edu.whut.eval.infra.security.config.JwtConfigurationValidator;
 import edu.whut.eval.infra.security.config.SecurityConfiguration;
+import edu.whut.eval.infra.security.context.CurrentUser;
 import edu.whut.eval.infra.security.jwt.JwtAuthenticationFilter;
 import edu.whut.eval.infra.security.jwt.JwtClaimsParser;
 import edu.whut.eval.infra.security.jwt.JwtClaimsToCurrentUserMapper;
@@ -78,7 +80,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "infra.security.jwt.authorities-claim=authorities",
         "infra.security.jwt.token-type-claim=token_type",
         "infra.security.jwt.access-token-type=access",
-        "infra.security.jwt.refresh-token-type=refresh"
+        "infra.security.jwt.refresh-token-type=refresh",
+        "infra.security.permit-all-patterns[0]=/error",
+        "infra.security.permit-all-patterns[1]=/actuator/health",
+        "infra.security.permit-all-patterns[2]=/actuator/info",
+        "infra.security.permit-all-patterns[3]=/api/auth/login",
+        "infra.security.permit-all-patterns[4]=/api/auth/refresh",
+        "infra.security.permit-all-patterns[5]=/api/auth/logout",
+        "infra.security.permit-all-patterns[6]=/swagger-ui/**",
+        "infra.security.permit-all-patterns[7]=/v3/api-docs/**"
 })
 class AuthControllerWebMvcTest {
 
@@ -95,6 +105,9 @@ class AuthControllerWebMvcTest {
 
     @MockBean
     private UserAuthorizationContextLoader userAuthorizationContextLoader;
+
+    @MockBean
+    private LogoutService logoutService;
 
     @Test
     void shouldIssueTokenPairWhenLoginSucceeds() throws Exception {
@@ -198,9 +211,71 @@ class AuthControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.refreshTokenType").value("refresh"));
     }
 
+    @Test
+    void shouldReturn401WhenLogoutWithoutToken() throws Exception {
+        mockMvc.perform(post("/api/auth/logout"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4012"));
+    }
+
+    @Test
+    void shouldReturn401WhenLogoutWithInvalidToken() throws Exception {
+        String invalidToken = "invalid-token-string";
+
+        mockMvc.perform(post("/api/auth/logout")
+                        .header("Authorization", "Bearer " + invalidToken))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4012"));
+    }
+
+    @Test
+    void shouldLogoutSuccessfullyWithValidToken() throws Exception {
+        String accessToken = createAccessTokenWithJti();
+
+        given(userAuthorizationContextLoader.load(any())).willReturn(
+                new edu.whut.eval.domain.auth.model.UserAuthorizationContext(
+                        1001L,
+                        "2024305999",
+                        "Test User",
+                        "student",
+                        Set.of("student"),
+                        Set.of("evaluation:apply:create"),
+                        List.of()
+                )
+        );
+
+        given(logoutService.logoutByAccessTokenId(eq("test-jti-123")))
+                .willReturn(true);
+
+        mockMvc.perform(post("/api/auth/logout")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("OK"));
+    }
+
     private String createAccessToken() {
         Instant now = Instant.now();
         return Jwts.builder()
+                .subject("1001")
+                .issuer("whut-eval")
+                .audience().add("whut-eval-api").and()
+                .issuedAt(Date.from(now))
+                .expiration(Date.from(now.plusSeconds(3600)))
+                .claim("token_type", "access")
+                .claim("uid", 1001L)
+                .claim("uno", "2024305999")
+                .claim("uname", "Test User")
+                .claim("identity", "student")
+                .claim("roles", List.of("student", "class-monitor"))
+                .claim("authorities", List.of("system:security:probe"))
+                .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
+                .compact();
+    }
+
+    private String createAccessTokenWithJti() {
+        Instant now = Instant.now();
+        return Jwts.builder()
+                .id("test-jti-123")
                 .subject("1001")
                 .issuer("whut-eval")
                 .audience().add("whut-eval-api").and()

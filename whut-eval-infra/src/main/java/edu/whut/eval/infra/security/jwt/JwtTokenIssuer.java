@@ -67,7 +67,9 @@ public class JwtTokenIssuer {
     String issueAccessToken(CurrentUser currentUser, Instant issuedAt, Instant expiresAt) {
         JwtProperties jwt = securityProperties.getJwt();
         try {
+            String jti = generateJti();
             JwtBuilder builder = Jwts.builder()
+                    .id(jti)
                     .subject(String.valueOf(currentUser.getUserId()))
                     .issuer(jwt.getIssuer())
                     .audience().add(jwt.getAudience()).and()
@@ -85,6 +87,7 @@ public class JwtTokenIssuer {
                     "userId", currentUser.getUserId(),
                     "userNo", currentUser.getUserNo(),
                     "identity", currentUser.getIdentity(),
+                    "jti", jti,
                     "expiresAt", expiresAt);
             return token;
         } catch (Exception exception) {
@@ -98,7 +101,9 @@ public class JwtTokenIssuer {
     String issueRefreshToken(CurrentUser currentUser, Instant issuedAt, Instant expiresAt) {
         JwtProperties jwt = securityProperties.getJwt();
         try {
+            String jti = generateJti();
             JwtBuilder builder = Jwts.builder()
+                    .id(jti)
                     .subject(String.valueOf(currentUser.getUserId()))
                     .issuer(jwt.getIssuer())
                     .audience().add(jwt.getAudience()).and()
@@ -113,6 +118,7 @@ public class JwtTokenIssuer {
                     "userId", currentUser.getUserId(),
                     "userNo", currentUser.getUserNo(),
                     "identity", currentUser.getIdentity(),
+                    "jti", jti,
                     "expiresAt", expiresAt);
             return token;
         } catch (Exception exception) {
@@ -180,5 +186,9 @@ public class JwtTokenIssuer {
 
     private String normalizeAlgorithm(String algorithm) {
         return algorithm == null ? "" : algorithm.trim().toUpperCase();
+    }
+
+    private String generateJti() {
+        return java.util.UUID.randomUUID().toString();
     }
 }
