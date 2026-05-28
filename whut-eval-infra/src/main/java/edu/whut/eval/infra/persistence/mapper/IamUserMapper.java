@@ -5,10 +5,14 @@ import edu.whut.eval.infra.persistence.entity.IamUserDO;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface IamUserMapper extends BaseMapper<IamUserDO> {
 
     @Select("SELECT id FROM iam_user WHERE id = #{userId} FOR UPDATE")
     Long selectIdForUpdate(@Param("userId") Long userId);
+
+    @Update("UPDATE iam_user SET status = #{status}, updated_at = NOW() WHERE id = #{userId}")
+    int updateStatus(@Param("userId") Long userId, @Param("status") String status);
 }
