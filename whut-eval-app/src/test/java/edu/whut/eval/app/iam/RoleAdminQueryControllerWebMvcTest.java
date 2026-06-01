@@ -1,8 +1,13 @@
 package edu.whut.eval.app.iam;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import edu.whut.eval.application.iam.command.CreateRoleCommand;
 import edu.whut.eval.application.iam.query.RoleAdminPageItemView;
 import edu.whut.eval.application.iam.query.RoleAdminPageQuery;
+import edu.whut.eval.application.iam.query.RoleCreatedView;
+import edu.whut.eval.application.iam.service.RoleAdminApplicationService;
 import edu.whut.eval.application.iam.service.RoleAdminQueryApplicationService;
+import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
@@ -23,7 +28,9 @@ import java.util.List;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -39,8 +46,14 @@ class RoleAdminQueryControllerWebMvcTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @MockBean
     private RoleAdminQueryApplicationService roleAdminQueryApplicationService;
+
+    @MockBean
+    private RoleAdminApplicationService roleAdminApplicationService;
 
     @Test
     void shouldReturnPagedRoles() throws Exception {
@@ -91,8 +104,36 @@ class RoleAdminQueryControllerWebMvcTest {
                 .andExpect(jsonPath("$.message").value("status 仅允许 ACTIVE 或 DISABLED"));
     }
 
+    @Test
+    void shouldCreateRole() throws Exception {
+        given(roleAdminApplicationService.createRole(any(CreateRoleCommand.class)))
+                .willReturn(new RoleCreatedView(31L, "COUNSELOR_NEW", "新辅导员", "ACTIVE"));
+
+        mockMvc.perform(post("/api/admin/roles")
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CreateRolePayload("COUNSELOR_NEW", "新辅导员"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.roleCode").value("COUNSELOR_NEW"));
+    }
+
+    @Test
+    void shouldReturn409WhenRoleCodeAlreadyExists() throws Exception {
+        given(roleAdminApplicationService.createRole(any(CreateRoleCommand.class)))
+                .willThrow(new ConflictException("角色编码已存在: COUNSELOR"));
+
+        mockMvc.perform(post("/api/admin/roles")
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CreateRolePayload("COUNSELOR", "辅导员"))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     static class TestApplication {
+    }
+
+    private record CreateRolePayload(String roleCode, String roleName) {
     }
 }
