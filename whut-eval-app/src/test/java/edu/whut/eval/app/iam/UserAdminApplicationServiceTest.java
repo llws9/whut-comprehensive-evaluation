@@ -2,18 +2,53 @@ package edu.whut.eval.app.iam;
 
 import edu.whut.eval.application.auth.service.SessionRevocationService;
 import edu.whut.eval.application.iam.command.UpdateUserStatusCommand;
+import edu.whut.eval.application.iam.query.UserAdminPageItemView;
+import edu.whut.eval.application.iam.query.UserAdminPageQuery;
 import edu.whut.eval.application.iam.service.UserAdminApplicationService;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
+import edu.whut.eval.domain.iam.model.IamUser;
+import edu.whut.eval.domain.iam.query.UserPageQuery;
 import edu.whut.eval.domain.iam.repository.IamUserCommandRepository;
 import edu.whut.eval.domain.iam.repository.IamUserQueryRepository;
+import edu.whut.eval.domain.shared.PageResult;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.mock;
 import static org.mockito.BDDMockito.verify;
 import static org.mockito.BDDMockito.when;
 
 class UserAdminApplicationServiceTest {
+
+    @Test
+    void shouldQueryRepositoryForPagedUsers() {
+        IamUserQueryRepository queryRepository = mock(IamUserQueryRepository.class);
+        IamUserCommandRepository commandRepository = mock(IamUserCommandRepository.class);
+        SessionRevocationService revocationService = mock(SessionRevocationService.class);
+
+        UserAdminApplicationService service = new UserAdminApplicationService(
+                queryRepository,
+                commandRepository,
+                revocationService
+        );
+
+        when(queryRepository.pageUsers(any(UserPageQuery.class))).thenReturn(new PageResult<>(1L, List.of(
+                new IamUser(1010L, "2024305001", "王老师", "w@example.com", "13800000000", "ACTIVE")
+        )));
+
+        PageResult<UserAdminPageItemView> result = service.pageUsers(
+                new UserAdminPageQuery(1, 20, "王", "ACTIVE", 2002L)
+        );
+
+        assertThat(result.total()).isEqualTo(1L);
+        assertThat(result.records()).hasSize(1);
+        assertThat(result.records().getFirst().userNo()).isEqualTo("2024305001");
+        verify(queryRepository).pageUsers(any(UserPageQuery.class));
+    }
 
     @Test
     void shouldRevokeSessionsWhenStatusBecomesDisabled() {

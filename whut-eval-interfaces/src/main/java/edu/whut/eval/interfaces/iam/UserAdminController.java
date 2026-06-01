@@ -14,6 +14,7 @@ import edu.whut.eval.interfaces.iam.request.UpdateUserStatusRequest;
 import edu.whut.eval.interfaces.iam.response.UserCreatedResponse;
 import edu.whut.eval.interfaces.iam.response.UserPageItemResponse;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Positive;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -41,13 +42,13 @@ public class UserAdminController {
     @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).USER_MANAGE)")
     @GetMapping
     public ApiResponse<PageResult<UserPageItemResponse>> pageUsers(
-            @RequestParam(defaultValue = "1") long pageNo,
-            @RequestParam(defaultValue = "20") long pageSize,
-            @RequestParam(required = false) String userName,
+            @RequestParam(defaultValue = "1") @Positive long pageNo,
+            @RequestParam(defaultValue = "20") @Positive long pageSize,
+            @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long orgUnitId) {
 
-        UserAdminPageQuery query = new UserAdminPageQuery(pageNo, pageSize, userName, status, orgUnitId);
+        UserAdminPageQuery query = new UserAdminPageQuery(pageNo, pageSize, keyword, status, orgUnitId);
         PageResult<UserAdminPageItemView> result = userAdminApplicationService.pageUsers(query);
         PageResult<UserPageItemResponse> response = new PageResult<>(
                 result.total(),

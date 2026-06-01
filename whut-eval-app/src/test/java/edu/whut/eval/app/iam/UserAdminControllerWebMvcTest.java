@@ -67,7 +67,10 @@ class UserAdminControllerWebMvcTest {
 
         mockMvc.perform(get("/api/admin/users")
                         .param("pageNo", "1")
-                        .param("pageSize", "20"))
+                        .param("pageSize", "20")
+                        .param("keyword", "王")
+                        .param("status", "ACTIVE")
+                        .param("orgUnitId", "2002"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.total").value(1))

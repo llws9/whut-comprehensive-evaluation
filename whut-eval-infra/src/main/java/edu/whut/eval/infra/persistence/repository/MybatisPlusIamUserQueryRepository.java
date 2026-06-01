@@ -60,8 +60,14 @@ public class MybatisPlusIamUserQueryRepository implements IamUserQueryRepository
     public PageResult<IamUser> pageUsers(UserPageQuery query) {
         Page<IamUserDO> page = Page.of(query.getPageNo(), query.getPageSize());
         LambdaQueryWrapper<IamUserDO> wrapper = new LambdaQueryWrapper<IamUserDO>()
-                .like(query.getUserName() != null && !query.getUserName().isBlank(), IamUserDO::getUserName, query.getUserName())
+                .and(query.getKeyword() != null && !query.getKeyword().isBlank(),
+                        w -> w.like(IamUserDO::getUserNo, query.getKeyword())
+                                .or()
+                                .like(IamUserDO::getUserName, query.getKeyword()))
                 .eq(query.getStatus() != null && !query.getStatus().isBlank(), IamUserDO::getStatus, query.getStatus())
+                .inSql(query.getOrgUnitId() != null,
+                        IamUserDO::getId,
+                        "SELECT user_id FROM org_membership WHERE status = 'ACTIVE' AND org_unit_id = " + query.getOrgUnitId())
                 .orderByAsc(IamUserDO::getId);
         Page<IamUserDO> result = iamUserMapper.selectPage(page, wrapper);
         return new PageResult<>(result.getTotal(), result.getRecords().stream().map(this::toDomain).toList());
