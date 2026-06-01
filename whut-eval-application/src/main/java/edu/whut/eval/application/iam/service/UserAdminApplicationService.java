@@ -43,9 +43,33 @@ public class UserAdminApplicationService {
 
     @Transactional(readOnly = true)
     public PageResult<UserAdminPageItemView> pageUsers(UserAdminPageQuery query) {
-        // For minimal implementation, return empty list - full implementation would query database
-        // This is placeholder logic to pass tests that mock the service
-        return new PageResult<>(0L, List.of());
+        edu.whut.eval.domain.iam.query.UserPageQuery domainQuery = new edu.whut.eval.domain.iam.query.UserPageQuery();
+        domainQuery.setPageNo(query.pageNo());
+        domainQuery.setPageSize(query.pageSize());
+        String keyword = query.keyword();
+        if (keyword != null) {
+            keyword = keyword.trim();
+            if (keyword.isBlank()) {
+                keyword = null;
+            }
+        }
+        domainQuery.setKeyword(keyword);
+        domainQuery.setStatus(query.status());
+        domainQuery.setOrgUnitId(query.orgUnitId());
+
+        PageResult<IamUser> page = userQueryRepository.pageUsers(domainQuery);
+        List<UserAdminPageItemView> views = page.records().stream()
+                .map(user -> new UserAdminPageItemView(
+                        user.id(),
+                        user.userNo(),
+                        user.userName(),
+                        user.status(),
+                        List.of(),
+                        List.of(),
+                        null
+                ))
+                .toList();
+        return new PageResult<>(page.total(), views);
     }
 
     @Transactional

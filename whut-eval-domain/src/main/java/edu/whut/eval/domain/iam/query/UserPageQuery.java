@@ -3,8 +3,9 @@ package edu.whut.eval.domain.iam.query;
 public class UserPageQuery {
     private long pageNo = 1;
     private long pageSize = 20;
-    private String userName;
+    private String keyword;
     private String status;
+    private Long orgUnitId;
 
     public long getPageNo() {
         return pageNo;
@@ -22,12 +23,12 @@ public class UserPageQuery {
         this.pageSize = pageSize;
     }
 
-    public String getUserName() {
-        return userName;
+    public String getKeyword() {
+        return keyword;
     }
 
-    public void setUserName(String userName) {
-        this.userName = userName;
+    public void setKeyword(String keyword) {
+        this.keyword = keyword;
     }
 
     public String getStatus() {
@@ -36,5 +37,13 @@ public class UserPageQuery {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public Long getOrgUnitId() {
+        return orgUnitId;
+    }
+
+    public void setOrgUnitId(Long orgUnitId) {
+        this.orgUnitId = orgUnitId;
     }
 }
