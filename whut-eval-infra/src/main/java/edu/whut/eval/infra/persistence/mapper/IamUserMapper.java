@@ -15,4 +15,19 @@ public interface IamUserMapper extends BaseMapper<IamUserDO> {
 
     @Update("UPDATE iam_user SET status = #{status}, updated_at = NOW() WHERE id = #{userId}")
     int updateStatus(@Param("userId") Long userId, @Param("status") String status);
+
+    @Update("""
+            UPDATE iam_user
+            SET user_name = #{userName},
+                password_hash = #{passwordHash},
+                email = #{email},
+                phone = #{phone},
+                updated_at = NOW()
+            WHERE user_no = #{userNo}
+            """)
+    int updateForImportByUserNo(@Param("userNo") String userNo,
+                                @Param("userName") String userName,
+                                @Param("passwordHash") String passwordHash,
+                                @Param("email") String email,
+                                @Param("phone") String phone);
 }

@@ -49,18 +49,32 @@
   - 文档契约影响：A-5 参数口径与组文档保持一致（`keyword`）
 
 ### 2. A-8 批量导入用户改为真实导入
-- **状态**：[ ]
+- **状态**：[x]
 - **目标**：`/api/admin/users/import` 完成 Excel 解析及导入。
 - **当前问题**：仅参数校验，返回固定 `0/0/0`。
 - **关键文件**：
   - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/UserAdminApplicationService.java`
+  - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/UserImportParser.java`
+  - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/query/UserImportRowView.java`
+  - `whut-eval-domain/src/main/java/edu/whut/eval/domain/iam/repository/IamUserCommandRepository.java`
+  - `whut-eval-infra/src/main/java/edu/whut/eval/infra/iam/ExcelUserImportParser.java`
+  - `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/IamUserMapper.java`
+  - `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusIamUserCommandRepository.java`
   - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/UserAdminController.java`
+  - `whut-eval-app/src/test/java/edu/whut/eval/app/iam/UserAdminApplicationServiceTest.java`
+  - `whut-eval-app/src/test/java/edu/whut/eval/app/iam/UserAdminControllerWebMvcTest.java`
+  - `whut-eval-app/src/test/java/edu/whut/eval/app/iam/ExcelUserImportParserTest.java`
+  - `whut-eval-app/src/test/java/edu/whut/eval/app/iam/MybatisPlusIamUserCommandRepositoryIntegrationTest.java`
 - **验收标准**：
   - `totalCount/successCount/failedCount` 真实统计
   - `failedRows` 包含行号与原因
   - `INSERT_ONLY` 遇重复按契约返回冲突语义
 - **完成说明**：
-  - （待填写）
+  - 导入链路从固定 `0/0/0` 改为真实解析 + 行级校验 + 落库统计
+  - `failedRows` 返回真实 `rowNo + reason`
+  - `INSERT_ONLY` 模式检测到重复 `userNo` 时返回 409（`BIZ-4090`）并整批回滚
+  - 解析模板沿用现有约定表头：`userNo/userName/password/email/phone`
+  - 最小验证：`mvn -pl whut-eval-app -am -Dsurefire.failIfNoSpecifiedTests=false -Dtest=UserAdminApplicationServiceTest,UserAdminControllerWebMvcTest,ExcelUserImportParserTest,MybatisPlusIamUserCommandRepositoryIntegrationTest test`
 
 ---
 
@@ -168,3 +182,4 @@
 |---|---|---|---|
 | 2026-06-02 | Claude | 初始化清单 | 首版建立 |
 | 2026-06-02 | Claude | A-5 | /api/admin/users 改为真实查库，支持 keyword/status/orgUnitId |
+| 2026-06-02 | Claude | A-8 | /api/admin/users/import 真实导入，INSERT_ONLY 重复返回 409 并整批回滚 |

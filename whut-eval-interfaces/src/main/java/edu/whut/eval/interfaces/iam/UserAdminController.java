@@ -2,16 +2,21 @@ package edu.whut.eval.interfaces.iam;
 
 import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
 import edu.whut.eval.application.iam.command.CreateUserCommand;
+import edu.whut.eval.application.iam.command.ImportUsersCommand;
 import edu.whut.eval.application.iam.query.UserAdminPageItemView;
 import edu.whut.eval.application.iam.query.UserAdminPageQuery;
 import edu.whut.eval.application.iam.command.UpdateUserStatusCommand;
 import edu.whut.eval.application.iam.query.UserCreatedView;
+import edu.whut.eval.application.iam.query.UserImportResultView;
 import edu.whut.eval.application.iam.service.UserAdminApplicationService;
 import edu.whut.eval.common.api.ApiResponse;
+import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.interfaces.iam.request.CreateUserRequest;
 import edu.whut.eval.interfaces.iam.request.UpdateUserStatusRequest;
 import edu.whut.eval.interfaces.iam.response.UserCreatedResponse;
+import edu.whut.eval.interfaces.iam.response.UserImportFailedRowResponse;
+import edu.whut.eval.interfaces.iam.response.UserImportResultResponse;
 import edu.whut.eval.interfaces.iam.response.UserPageItemResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
@@ -25,6 +30,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
@@ -83,6 +89,26 @@ public class UserAdminController {
                                           @Valid @RequestBody UpdateUserStatusRequest request) {
         userAdminApplicationService.updateStatus(userId, new UpdateUserStatusCommand(request.getStatus(), request.getReason()));
         return ApiResponse.success(null);
+    }
+
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).USER_IMPORT)")
+    @PostMapping("/import")
+    public ApiResponse<UserImportResultResponse> importUsers(@RequestParam("file") MultipartFile file,
+                                                             @RequestParam(value = "importMode", defaultValue = "UPSERT") String importMode)
+            throws java.io.IOException {
+        if (file == null || file.isEmpty()) {
+            throw new ValidationException("上传文件不能为空");
+        }
+        if (importMode == null || (!"UPSERT".equals(importMode) && !"INSERT_ONLY".equals(importMode))) {
+            throw new ValidationException("importMode 仅允许 UPSERT 或 INSERT_ONLY");
+        }
+        UserImportResultView view = userAdminApplicationService.importUsers(new ImportUsersCommand(file.getBytes(), importMode));
+        return ApiResponse.success(new UserImportResultResponse(
+                view.totalCount(),
+                view.successCount(),
+                view.failedCount(),
+                view.failedRows().stream().map(item -> new UserImportFailedRowResponse(item.rowNo(), item.reason())).toList()
+        ));
     }
 
     private UserPageItemResponse toPageItemResponse(UserAdminPageItemView view) {
