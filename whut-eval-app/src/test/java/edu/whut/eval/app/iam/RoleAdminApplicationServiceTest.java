@@ -1,5 +1,6 @@
 package edu.whut.eval.app.iam;
 
+import edu.whut.eval.application.iam.command.BindRolePermissionsCommand;
 import edu.whut.eval.application.iam.command.CreateRoleCommand;
 import edu.whut.eval.application.iam.command.UpdateRoleCommand;
 import edu.whut.eval.application.iam.query.RoleCreatedView;
@@ -15,6 +16,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -83,5 +85,19 @@ class RoleAdminApplicationServiceTest {
         assertThat(view.roleName()).isEqualTo("新辅导员");
         assertThat(view.status()).isEqualTo("DISABLED");
         verify(iamRoleCommandRepository).updateRole(21L, "新辅导员", "DISABLED");
+    }
+
+    @Test
+    void shouldRejectBindRolePermissionsWhenPermissionCodesIsNull() {
+        assertThatThrownBy(() -> service.bindRolePermissions(new BindRolePermissionsCommand(21L, null, true)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("permissionCodes 不能为空");
+    }
+
+    @Test
+    void shouldBindRolePermissionsWhenInputValid() {
+        service.bindRolePermissions(new BindRolePermissionsCommand(21L, List.of("permission.manage"), true));
+
+        verify(iamRoleCommandRepository).replaceRolePermissions(21L, List.of("permission.manage"));
     }
 }

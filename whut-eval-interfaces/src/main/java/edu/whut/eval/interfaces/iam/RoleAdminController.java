@@ -1,5 +1,6 @@
 package edu.whut.eval.interfaces.iam;
 
+import edu.whut.eval.application.iam.command.BindRolePermissionsCommand;
 import edu.whut.eval.application.iam.command.CreateRoleCommand;
 import edu.whut.eval.application.iam.command.UpdateRoleCommand;
 import edu.whut.eval.application.iam.query.RoleAdminPageItemView;
@@ -9,6 +10,7 @@ import edu.whut.eval.application.iam.service.RoleAdminApplicationService;
 import edu.whut.eval.application.iam.service.RoleAdminQueryApplicationService;
 import edu.whut.eval.common.api.ApiResponse;
 import edu.whut.eval.domain.shared.PageResult;
+import edu.whut.eval.interfaces.iam.request.BindRolePermissionsRequest;
 import edu.whut.eval.interfaces.iam.request.CreateRoleRequest;
 import edu.whut.eval.interfaces.iam.request.UpdateRoleRequest;
 import edu.whut.eval.interfaces.iam.response.RoleAdminPageItemResponse;
@@ -81,6 +83,18 @@ public class RoleAdminController {
                 view.roleName(),
                 view.status()
         ));
+    }
+
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).PERMISSION_MANAGE)")
+    @PostMapping("/{roleId}/permissions")
+    public ApiResponse<Void> bindRolePermissions(@PathVariable Long roleId,
+                                                 @Valid @RequestBody BindRolePermissionsRequest request) {
+        roleAdminApplicationService.bindRolePermissions(new BindRolePermissionsCommand(
+                roleId,
+                request.getPermissionCodes(),
+                request.getReplaceAll()
+        ));
+        return ApiResponse.success(null);
     }
 
     private RoleAdminPageItemResponse toResponse(RoleAdminPageItemView view) {

@@ -1,6 +1,7 @@
 package edu.whut.eval.app.iam;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import edu.whut.eval.application.iam.command.BindRolePermissionsCommand;
 import edu.whut.eval.application.iam.command.CreateRoleCommand;
 import edu.whut.eval.application.iam.command.UpdateRoleCommand;
 import edu.whut.eval.application.iam.query.RoleAdminPageItemView;
@@ -29,6 +30,7 @@ import java.util.List;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -161,6 +163,30 @@ class RoleAdminQueryControllerWebMvcTest {
                 .andExpect(jsonPath("$.message").value("status 仅允许 ACTIVE 或 DISABLED"));
     }
 
+    @Test
+    void shouldBindRolePermissions() throws Exception {
+        mockMvc.perform(post("/api/admin/roles/21/permissions")
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new BindRolePermissionsPayload(List.of("permission.manage"), true))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+    }
+
+    @Test
+    void shouldReturn400WhenBindRolePermissionsIllegal() throws Exception {
+        willThrow(new ValidationException("permissionCodes 不能为空"))
+                .given(roleAdminApplicationService)
+                .bindRolePermissions(any(BindRolePermissionsCommand.class));
+
+        mockMvc.perform(post("/api/admin/roles/21/permissions")
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new BindRolePermissionsPayload(null, true))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("permissionCodes 不能为空"));
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     static class TestApplication {
@@ -170,5 +196,8 @@ class RoleAdminQueryControllerWebMvcTest {
     }
 
     private record UpdateRolePayload(String roleName, String status) {
+    }
+
+    private record BindRolePermissionsPayload(List<String> permissionCodes, Boolean replaceAll) {
     }
 }

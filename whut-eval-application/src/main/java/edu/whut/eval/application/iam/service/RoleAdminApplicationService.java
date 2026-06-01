@@ -1,5 +1,6 @@
 package edu.whut.eval.application.iam.service;
 
+import edu.whut.eval.application.iam.command.BindRolePermissionsCommand;
 import edu.whut.eval.application.iam.command.CreateRoleCommand;
 import edu.whut.eval.application.iam.command.UpdateRoleCommand;
 import edu.whut.eval.application.iam.query.RoleCreatedView;
@@ -10,6 +11,8 @@ import edu.whut.eval.domain.iam.repository.IamRoleCommandRepository;
 import edu.whut.eval.domain.iam.repository.IamRoleQueryRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
 
 @Service
 public class RoleAdminApplicationService {
@@ -55,6 +58,20 @@ public class RoleAdminApplicationService {
         }
         IamRoleDefinition updated = iamRoleCommandRepository.updateRole(command.roleId(), roleName, status);
         return new RoleCreatedView(updated.roleId(), updated.roleCode(), updated.roleName(), updated.status());
+    }
+
+    @Transactional
+    public void bindRolePermissions(BindRolePermissionsCommand command) {
+        List<String> permissionCodes = command.permissionCodes();
+        if (permissionCodes == null) {
+            throw new ValidationException("permissionCodes 不能为空");
+        }
+        for (String permissionCode : permissionCodes) {
+            if (normalize(permissionCode) == null) {
+                throw new ValidationException("permissionCodes 不允许包含空值");
+            }
+        }
+        iamRoleCommandRepository.replaceRolePermissions(command.roleId(), permissionCodes);
     }
 
     private String normalize(String value) {
