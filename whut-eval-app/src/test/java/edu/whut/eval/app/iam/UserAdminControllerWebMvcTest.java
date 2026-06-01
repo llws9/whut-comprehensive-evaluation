@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.iam.command.UpdateUserStatusCommand;
 import edu.whut.eval.application.iam.query.UserAdminPageItemView;
 import edu.whut.eval.application.iam.query.UserCreatedView;
+import edu.whut.eval.application.iam.query.UserImportFailedRowView;
+import edu.whut.eval.application.iam.query.UserImportResultView;
 import edu.whut.eval.application.iam.service.UserAdminApplicationService;
 import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
@@ -18,6 +20,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -27,6 +30,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -108,6 +112,50 @@ class UserAdminControllerWebMvcTest {
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
+    }
+
+    @Test
+    void shouldImportUsers() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "users.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "dummy".getBytes()
+        );
+        given(userAdminApplicationService.importUsers(any()))
+                .willReturn(new UserImportResultView(
+                        3,
+                        2,
+                        1,
+                        java.util.List.of(new UserImportFailedRowView(3, "userNo 重复"))
+                ));
+
+        mockMvc.perform(multipart("/api/admin/users/import")
+                        .file(file)
+                        .param("importMode", "UPSERT"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.totalCount").value(3))
+                .andExpect(jsonPath("$.data.successCount").value(2))
+                .andExpect(jsonPath("$.data.failedCount").value(1))
+                .andExpect(jsonPath("$.data.failedRows[0].rowNo").value(3));
+    }
+
+    @Test
+    void shouldReturn400WhenImportModeIllegal() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "users.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "dummy".getBytes()
+        );
+
+        mockMvc.perform(multipart("/api/admin/users/import")
+                        .file(file)
+                        .param("importMode", "MERGE"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"));
     }
 
     @SpringBootConfiguration

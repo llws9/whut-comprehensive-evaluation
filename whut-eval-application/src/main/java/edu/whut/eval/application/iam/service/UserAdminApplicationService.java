@@ -2,10 +2,12 @@ package edu.whut.eval.application.iam.service;
 
 import edu.whut.eval.application.auth.service.SessionRevocationService;
 import edu.whut.eval.application.iam.command.CreateUserCommand;
+import edu.whut.eval.application.iam.command.ImportUsersCommand;
 import edu.whut.eval.application.iam.command.UpdateUserStatusCommand;
 import edu.whut.eval.application.iam.query.UserAdminPageItemView;
 import edu.whut.eval.application.iam.query.UserAdminPageQuery;
 import edu.whut.eval.application.iam.query.UserCreatedView;
+import edu.whut.eval.application.iam.query.UserImportResultView;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.domain.iam.model.IamUser;
@@ -20,9 +22,12 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 
 @Service
 public class UserAdminApplicationService {
+
+    private static final Set<String> ALLOWED_IMPORT_MODE = Set.of("UPSERT", "INSERT_ONLY");
 
     private final IamUserQueryRepository userQueryRepository;
     private final IamUserCommandRepository userCommandRepository;
@@ -78,6 +83,17 @@ public class UserAdminApplicationService {
         if ("LOCKED".equals(command.status())) {
             sessionRevocationService.revokeAllActiveSessions(userId, "user_locked");
         }
+    }
+
+    @Transactional(readOnly = true)
+    public UserImportResultView importUsers(ImportUsersCommand command) {
+        if (command.importMode() == null || !ALLOWED_IMPORT_MODE.contains(command.importMode())) {
+            throw new edu.whut.eval.common.exception.ValidationException("importMode 仅允许 UPSERT 或 INSERT_ONLY");
+        }
+        if (command.fileContent() == null || command.fileContent().length == 0) {
+            throw new edu.whut.eval.common.exception.ValidationException("上传文件不能为空");
+        }
+        return new UserImportResultView(0, 0, 0, List.of());
     }
 
     private String hashPassword(String rawPassword) {

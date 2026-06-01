@@ -4,6 +4,7 @@ import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
 import edu.whut.eval.interfaces.iam.UserAdminController;
 import edu.whut.eval.interfaces.iam.request.CreateUserRequest;
 import edu.whut.eval.interfaces.iam.request.UpdateUserStatusRequest;
+import org.springframework.web.multipart.MultipartFile;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.access.prepost.PreAuthorize;
 
@@ -64,5 +65,22 @@ class UserAdminControllerSecurityAnnotationTest {
                 "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).USER_MANAGE)"
         );
         assertThat(AuthorizationPermissionCodes.USER_MANAGE).isEqualTo("user.manage");
+    }
+
+    @Test
+    void shouldRequireUserImportAuthorityOnImportEndpoint() throws NoSuchMethodException {
+        Method method = UserAdminController.class.getMethod(
+                "importUsers",
+                MultipartFile.class,
+                String.class
+        );
+
+        PreAuthorize preAuthorize = method.getAnnotation(PreAuthorize.class);
+
+        assertThat(preAuthorize).isNotNull();
+        assertThat(preAuthorize.value()).isEqualTo(
+                "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).USER_IMPORT)"
+        );
+        assertThat(AuthorizationPermissionCodes.USER_IMPORT).isEqualTo("user.import");
     }
 }
