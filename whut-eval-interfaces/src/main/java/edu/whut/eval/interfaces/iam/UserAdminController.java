@@ -96,6 +96,9 @@ public class UserAdminController {
     public ApiResponse<UserImportResultResponse> importUsers(@RequestParam("file") MultipartFile file,
                                                              @RequestParam(value = "importMode", defaultValue = "UPSERT") String importMode)
             throws java.io.IOException {
+        if (file == null || file.isEmpty()) {
+            throw new ValidationException("上传文件不能为空");
+        }
         if (importMode == null || (!"UPSERT".equals(importMode) && !"INSERT_ONLY".equals(importMode))) {
             throw new ValidationException("importMode 仅允许 UPSERT 或 INSERT_ONLY");
         }

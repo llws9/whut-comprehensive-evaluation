@@ -7,7 +7,9 @@ import edu.whut.eval.application.iam.command.UpdateUserStatusCommand;
 import edu.whut.eval.application.iam.query.UserAdminPageItemView;
 import edu.whut.eval.application.iam.query.UserAdminPageQuery;
 import edu.whut.eval.application.iam.query.UserCreatedView;
+import edu.whut.eval.application.iam.query.UserImportFailedRowView;
 import edu.whut.eval.application.iam.query.UserImportResultView;
+import edu.whut.eval.application.iam.query.UserImportRowView;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.domain.iam.model.IamUser;
@@ -20,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
@@ -32,13 +35,16 @@ public class UserAdminApplicationService {
     private final IamUserQueryRepository userQueryRepository;
     private final IamUserCommandRepository userCommandRepository;
     private final SessionRevocationService sessionRevocationService;
+    private final UserImportParser userImportParser;
 
     public UserAdminApplicationService(IamUserQueryRepository userQueryRepository,
-                                        IamUserCommandRepository userCommandRepository,
-                                        SessionRevocationService sessionRevocationService) {
+                                       IamUserCommandRepository userCommandRepository,
+                                       SessionRevocationService sessionRevocationService,
+                                       UserImportParser userImportParser) {
         this.userQueryRepository = userQueryRepository;
         this.userCommandRepository = userCommandRepository;
         this.sessionRevocationService = sessionRevocationService;
+        this.userImportParser = userImportParser;
     }
 
     @Transactional(readOnly = true)
@@ -109,7 +115,7 @@ public class UserAdminApplicationService {
         }
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public UserImportResultView importUsers(ImportUsersCommand command) {
         if (command.importMode() == null || !ALLOWED_IMPORT_MODE.contains(command.importMode())) {
             throw new edu.whut.eval.common.exception.ValidationException("importMode 仅允许 UPSERT 或 INSERT_ONLY");
@@ -117,7 +123,55 @@ public class UserAdminApplicationService {
         if (command.fileContent() == null || command.fileContent().length == 0) {
             throw new edu.whut.eval.common.exception.ValidationException("上传文件不能为空");
         }
-        return new UserImportResultView(0, 0, 0, List.of());
+
+        List<UserImportRowView> rows = userImportParser.parse(command.fileContent());
+        if (rows.isEmpty()) {
+            return new UserImportResultView(0, 0, 0, List.of());
+        }
+
+        if ("INSERT_ONLY".equals(command.importMode())) {
+            for (UserImportRowView row : rows) {
+                String userNo = row.userNo() == null ? null : row.userNo().trim();
+                if (userNo != null && !userNo.isBlank() && userQueryRepository.findByUserNo(userNo).isPresent()) {
+                    throw new ConflictException("INSERT_ONLY 模式存在重复 userNo: " + userNo);
+                }
+            }
+        }
+
+        long totalCount = rows.size();
+        long successCount = 0;
+        List<UserImportFailedRowView> failedRows = new ArrayList<>();
+
+        for (UserImportRowView row : rows) {
+            String userNo = row.userNo() == null ? null : row.userNo().trim();
+            String userName = row.userName() == null ? null : row.userName().trim();
+            String password = row.password() == null ? null : row.password().trim();
+
+            if (userNo == null || userNo.isBlank()) {
+                failedRows.add(new UserImportFailedRowView(row.rowNo(), "userNo 不能为空"));
+                continue;
+            }
+            if (userName == null || userName.isBlank()) {
+                failedRows.add(new UserImportFailedRowView(row.rowNo(), "userName 不能为空"));
+                continue;
+            }
+            if (password == null || password.isBlank()) {
+                failedRows.add(new UserImportFailedRowView(row.rowNo(), "password 不能为空"));
+                continue;
+            }
+
+            String passwordHash = hashPassword(password);
+            IamUser existing = userQueryRepository.findByUserNo(userNo).orElse(null);
+            if (existing == null) {
+                userCommandRepository.createUser(userNo, userName, passwordHash, row.email(), row.phone());
+            } else {
+                userCommandRepository.updateForImportByUserNo(userNo, userName, passwordHash, row.email(), row.phone());
+            }
+            successCount++;
+        }
+
+        long failedCount = failedRows.size();
+        return new UserImportResultView(totalCount, successCount, failedCount, failedRows);
     }
 
     private String hashPassword(String rawPassword) {

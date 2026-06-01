@@ -8,6 +8,7 @@ import edu.whut.eval.application.iam.query.UserImportFailedRowView;
 import edu.whut.eval.application.iam.query.UserImportResultView;
 import edu.whut.eval.application.iam.service.UserAdminApplicationService;
 import edu.whut.eval.domain.shared.PageResult;
+import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
 import edu.whut.eval.interfaces.iam.UserAdminController;
 import edu.whut.eval.interfaces.iam.request.CreateUserRequest;
@@ -29,6 +30,7 @@ import java.util.List;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
+import static org.mockito.BDDMockito.willThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -159,6 +161,44 @@ class UserAdminControllerWebMvcTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.code").value("VAL-4001"));
+    }
+
+    @Test
+    void shouldReturn400WhenImportFileEmpty() throws Exception {
+        MockMultipartFile emptyFile = new MockMultipartFile(
+                "file",
+                "users.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                new byte[0]
+        );
+
+        mockMvc.perform(multipart("/api/admin/users/import")
+                        .file(emptyFile)
+                        .param("importMode", "UPSERT"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"));
+    }
+
+    @Test
+    void shouldReturn409WhenInsertOnlyConflict() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "users.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "dummy".getBytes()
+        );
+
+        willThrow(new ConflictException("INSERT_ONLY 模式存在重复 userNo: 2024305001"))
+                .given(userAdminApplicationService)
+                .importUsers(any());
+
+        mockMvc.perform(multipart("/api/admin/users/import")
+                        .file(file)
+                        .param("importMode", "INSERT_ONLY"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("BIZ-4090"));
     }
 
     @SpringBootConfiguration
