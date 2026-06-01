@@ -38,4 +38,21 @@ class MybatisPlusIamRoleCommandRepositoryTest {
         assertThat(result.roleName()).isEqualTo("新辅导员");
         assertThat(result.status()).isEqualTo("ACTIVE");
     }
+
+    @Test
+    void shouldUpdateRole() {
+        IamRoleDO updated = new IamRoleDO();
+        updated.setId(21L);
+        updated.setRoleCode("COUNSELOR");
+        updated.setRoleName("新辅导员");
+        updated.setStatus("DISABLED");
+        given(iamRoleMapper.selectById(21L)).willReturn(updated);
+
+        IamRoleDefinition result = repository.updateRole(21L, "新辅导员", "DISABLED");
+
+        assertThat(result.roleId()).isEqualTo(21L);
+        assertThat(result.roleCode()).isEqualTo("COUNSELOR");
+        assertThat(result.roleName()).isEqualTo("新辅导员");
+        assertThat(result.status()).isEqualTo("DISABLED");
+    }
 }

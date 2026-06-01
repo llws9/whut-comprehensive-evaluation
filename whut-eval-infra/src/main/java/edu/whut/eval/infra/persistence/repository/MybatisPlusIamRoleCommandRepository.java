@@ -28,4 +28,16 @@ public class MybatisPlusIamRoleCommandRepository implements IamRoleCommandReposi
         iamRoleMapper.insert(entity);
         return new IamRoleDefinition(entity.getId(), entity.getRoleCode(), entity.getRoleName(), entity.getStatus());
     }
+
+    @Override
+    public IamRoleDefinition updateRole(Long roleId, String roleName, String status) {
+        IamRoleDO update = new IamRoleDO();
+        update.setId(roleId);
+        update.setRoleName(roleName);
+        update.setStatus(status);
+        iamRoleMapper.updateById(update);
+
+        IamRoleDO entity = iamRoleMapper.selectById(roleId);
+        return new IamRoleDefinition(entity.getId(), entity.getRoleCode(), entity.getRoleName(), entity.getStatus());
+    }
 }

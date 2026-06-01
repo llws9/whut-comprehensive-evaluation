@@ -1,6 +1,7 @@
 package edu.whut.eval.interfaces.iam;
 
 import edu.whut.eval.application.iam.command.CreateRoleCommand;
+import edu.whut.eval.application.iam.command.UpdateRoleCommand;
 import edu.whut.eval.application.iam.query.RoleAdminPageItemView;
 import edu.whut.eval.application.iam.query.RoleAdminPageQuery;
 import edu.whut.eval.application.iam.query.RoleCreatedView;
@@ -9,12 +10,15 @@ import edu.whut.eval.application.iam.service.RoleAdminQueryApplicationService;
 import edu.whut.eval.common.api.ApiResponse;
 import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.interfaces.iam.request.CreateRoleRequest;
+import edu.whut.eval.interfaces.iam.request.UpdateRoleRequest;
 import edu.whut.eval.interfaces.iam.response.RoleAdminPageItemResponse;
 import edu.whut.eval.interfaces.iam.response.RoleCreatedResponse;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -55,6 +59,21 @@ public class RoleAdminController {
     public ApiResponse<RoleCreatedResponse> createRole(@Valid @RequestBody CreateRoleRequest request) {
         RoleCreatedView view = roleAdminApplicationService.createRole(
                 new CreateRoleCommand(request.getRoleCode(), request.getRoleName())
+        );
+        return ApiResponse.success(new RoleCreatedResponse(
+                view.roleId(),
+                view.roleCode(),
+                view.roleName(),
+                view.status()
+        ));
+    }
+
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).ROLE_MANAGE)")
+    @PatchMapping("/{roleId}")
+    public ApiResponse<RoleCreatedResponse> updateRole(@PathVariable Long roleId,
+                                                       @Valid @RequestBody UpdateRoleRequest request) {
+        RoleCreatedView view = roleAdminApplicationService.updateRole(
+                new UpdateRoleCommand(roleId, request.getRoleName(), request.getStatus())
         );
         return ApiResponse.success(new RoleCreatedResponse(
                 view.roleId(),

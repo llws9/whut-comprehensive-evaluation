@@ -2,6 +2,7 @@ package edu.whut.eval.app.iam;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.iam.command.CreateRoleCommand;
+import edu.whut.eval.application.iam.command.UpdateRoleCommand;
 import edu.whut.eval.application.iam.query.RoleAdminPageItemView;
 import edu.whut.eval.application.iam.query.RoleAdminPageQuery;
 import edu.whut.eval.application.iam.query.RoleCreatedView;
@@ -30,6 +31,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -129,11 +131,44 @@ class RoleAdminQueryControllerWebMvcTest {
                 .andExpect(jsonPath("$.success").value(false));
     }
 
+    @Test
+    void shouldUpdateRole() throws Exception {
+        given(roleAdminApplicationService.updateRole(any(UpdateRoleCommand.class)))
+                .willReturn(new RoleCreatedView(21L, "COUNSELOR", "新辅导员", "DISABLED"));
+
+        mockMvc.perform(patch("/api/admin/roles/21")
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new UpdateRolePayload("新辅导员", "DISABLED"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.roleId").value(21))
+                .andExpect(jsonPath("$.data.roleCode").value("COUNSELOR"))
+                .andExpect(jsonPath("$.data.roleName").value("新辅导员"))
+                .andExpect(jsonPath("$.data.status").value("DISABLED"));
+    }
+
+    @Test
+    void shouldReturn400WhenPatchRoleStatusIllegal() throws Exception {
+        given(roleAdminApplicationService.updateRole(any(UpdateRoleCommand.class)))
+                .willThrow(new ValidationException("status 仅允许 ACTIVE 或 DISABLED"));
+
+        mockMvc.perform(patch("/api/admin/roles/21")
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new UpdateRolePayload("辅导员", "LOCKED"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("status 仅允许 ACTIVE 或 DISABLED"));
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     static class TestApplication {
     }
 
     private record CreateRolePayload(String roleCode, String roleName) {
+    }
+
+    private record UpdateRolePayload(String roleName, String status) {
     }
 }

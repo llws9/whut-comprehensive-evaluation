@@ -5,4 +5,6 @@ import edu.whut.eval.domain.iam.model.IamRoleDefinition;
 public interface IamRoleCommandRepository {
 
     IamRoleDefinition createRole(String roleCode, String roleName, String roleScope, String status);
+
+    IamRoleDefinition updateRole(Long roleId, String roleName, String status);
 }

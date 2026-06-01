@@ -1,6 +1,7 @@
 package edu.whut.eval.application.iam.service;
 
 import edu.whut.eval.application.iam.command.CreateRoleCommand;
+import edu.whut.eval.application.iam.command.UpdateRoleCommand;
 import edu.whut.eval.application.iam.query.RoleCreatedView;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ValidationException;
@@ -12,6 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class RoleAdminApplicationService {
+
+    private static final java.util.Set<String> ALLOWED_STATUS = java.util.Set.of("ACTIVE", "DISABLED");
 
     private final IamRoleQueryRepository iamRoleQueryRepository;
     private final IamRoleCommandRepository iamRoleCommandRepository;
@@ -38,6 +41,20 @@ public class RoleAdminApplicationService {
 
         IamRoleDefinition created = iamRoleCommandRepository.createRole(roleCode, roleName, "ORG_SUBTREE", "ACTIVE");
         return new RoleCreatedView(created.roleId(), created.roleCode(), created.roleName(), created.status());
+    }
+
+    @Transactional
+    public RoleCreatedView updateRole(UpdateRoleCommand command) {
+        String roleName = normalize(command.roleName());
+        String status = normalize(command.status());
+        if (roleName == null) {
+            throw new ValidationException("roleName 不能为空");
+        }
+        if (status == null || !ALLOWED_STATUS.contains(status)) {
+            throw new ValidationException("status 仅允许 ACTIVE 或 DISABLED");
+        }
+        IamRoleDefinition updated = iamRoleCommandRepository.updateRole(command.roleId(), roleName, status);
+        return new RoleCreatedView(updated.roleId(), updated.roleCode(), updated.roleName(), updated.status());
     }
 
     private String normalize(String value) {
