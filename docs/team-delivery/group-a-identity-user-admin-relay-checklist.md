@@ -96,7 +96,7 @@
   - 最小验证：UserAdminApplicationServiceTest / UserAdminControllerWebMvcTest / MybatisPlusUserMembershipAdminRepositoryIntegrationTest
 
 ### 4. A-4 身份查询补鉴权（user.manage）
-- **状态**：[ ]
+- **状态**：[x]
 - **目标**：`/api/iam/users/{userNo}/identity` 增加 `user.manage` 鉴权。
 - **当前问题**：控制器缺少 `@PreAuthorize`。
 - **关键文件**：
@@ -105,7 +105,9 @@
   - 无权限调用返回 403
   - 有权限调用保持正常
 - **完成说明**：
-  - （待填写）
+  - `GET /api/iam/users/{userNo}/identity` 增加 `user.manage` 方法级鉴权
+  - 无权限访问返回 403，有权限访问保持 200 与原响应结构
+  - 最小验证：UserIdentityQueryControllerSecurityAnnotationTest / UserIdentityQueryControllerWebMvcTest
 
 ---
 
@@ -186,3 +188,4 @@
 | 2026-06-02 | Claude | A-5 | /api/admin/users 改为真实查库，支持 keyword/status/orgUnitId |
 | 2026-06-02 | Claude | A-8 | /api/admin/users/import 真实导入，INSERT_ONLY 重复返回 409 并整批回滚 |
 | 2026-06-03 | Claude | A-6 | 创建用户补 primaryOrgUnitId 落库与 404 语义 |
+| 2026-06-03 | Claude | A-4 | 身份查询接口补 user.manage 鉴权与 403 契约 |
