@@ -17,6 +17,8 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -27,7 +29,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(controllers = UserIdentityQueryController.class)
-@AutoConfigureMockMvc(addFilters = false)
+@AutoConfigureMockMvc
 @ContextConfiguration(classes = UserIdentityQueryControllerWebMvcTest.TestApplication.class)
 @Import({
         UserIdentityQueryController.class,
@@ -43,6 +45,28 @@ class UserIdentityQueryControllerWebMvcTest {
     private StubUserIdentityQueryApplicationService userIdentityQueryApplicationService;
 
     @Test
+    void shouldReturn403WhenUserLacksUserManageAuthority() throws Exception {
+        mockMvc.perform(get("/api/iam/users/2024305001/identity")
+                        .with(SecurityMockMvcRequestPostProcessors.user("viewer").authorities(() -> "user.read")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void shouldReturn200WhenUserHasUserManageAuthority() throws Exception {
+        userIdentityQueryApplicationService.willReturn(new UserIdentityView(
+                new IamUser(1010L, "2024305001", "王老师", "w@example.com", "13800000000", "ACTIVE"),
+                List.of(),
+                List.of()
+        ));
+
+        mockMvc.perform(get("/api/iam/users/2024305001/identity")
+                        .with(SecurityMockMvcRequestPostProcessors.user("admin").authorities(() -> "user.manage")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.user.userNo").value("2024305001"));
+    }
+
+    @Test
     void shouldKeepFrozenMembershipFieldsInIdentityResponse() throws Exception {
         userIdentityQueryApplicationService.willReturn(new UserIdentityView(
                 new IamUser(1010L, "2024305001", "王老师", "w@example.com", "13800000000", "ACTIVE"),
@@ -50,7 +74,8 @@ class UserIdentityQueryControllerWebMvcTest {
                 List.of(new UserIdentityMembershipView(80001L, 1010L, 2002L, "IMPORT", "ACTIVE"))
         ));
 
-        mockMvc.perform(get("/api/iam/users/2024305001/identity"))
+        mockMvc.perform(get("/api/iam/users/2024305001/identity")
+                        .with(SecurityMockMvcRequestPostProcessors.user("admin").authorities(() -> "user.manage")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.memberships[0].id").value(80001))
@@ -66,6 +91,7 @@ class UserIdentityQueryControllerWebMvcTest {
 
     @SpringBootConfiguration
     @EnableAutoConfiguration
+    @EnableMethodSecurity
     static class TestApplication {
     }
 
