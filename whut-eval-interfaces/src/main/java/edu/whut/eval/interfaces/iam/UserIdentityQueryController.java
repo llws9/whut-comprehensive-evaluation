@@ -3,6 +3,7 @@ package edu.whut.eval.interfaces.iam;
 import edu.whut.eval.application.iam.query.UserIdentityView;
 import edu.whut.eval.application.iam.service.UserIdentityQueryApplicationService;
 import edu.whut.eval.common.api.ApiResponse;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -20,6 +21,7 @@ public class UserIdentityQueryController {
         this.userIdentityQueryApplicationService = userIdentityQueryApplicationService;
     }
 
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).USER_MANAGE)")
     @GetMapping("/{userNo}/identity")
     public ApiResponse<UserIdentityView> getUserIdentity(@PathVariable String userNo) {
         return ApiResponse.success(userIdentityQueryApplicationService.getUserIdentityByUserNo(userNo));
