@@ -10,6 +10,8 @@ import jakarta.validation.ConstraintViolationException;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authorization.AuthorizationDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -58,6 +60,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleDataAccessException(DataAccessException exception) {
         return ResponseEntity.status(CommonErrorCode.SYSTEM_ERROR.httpStatus())
                 .body(ApiResponse.failure(CommonErrorCode.SYSTEM_ERROR, "数据访问异常，请稍后重试"));
+    }
+
+    @ExceptionHandler({AccessDeniedException.class, AuthorizationDeniedException.class})
+    public ResponseEntity<ApiResponse<Void>> handleAccessDeniedException(Exception exception) {
+        return ResponseEntity.status(CommonErrorCode.ACCESS_DENIED.httpStatus())
+                .body(ApiResponse.failure(CommonErrorCode.ACCESS_DENIED, CommonErrorCode.ACCESS_DENIED.defaultMessage()));
     }
 
     @ExceptionHandler(Exception.class)
