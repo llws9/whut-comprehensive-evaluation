@@ -1,6 +1,7 @@
 package edu.whut.eval.app.iam;
 
 import edu.whut.eval.application.auth.service.SessionRevocationService;
+import edu.whut.eval.application.iam.command.CreateUserCommand;
 import edu.whut.eval.application.iam.command.ImportUsersCommand;
 import edu.whut.eval.application.iam.command.UpdateUserStatusCommand;
 import edu.whut.eval.application.iam.query.UserAdminPageItemView;
@@ -17,6 +18,9 @@ import edu.whut.eval.domain.iam.model.IamUser;
 import edu.whut.eval.domain.iam.query.UserPageQuery;
 import edu.whut.eval.domain.iam.repository.IamUserCommandRepository;
 import edu.whut.eval.domain.iam.repository.IamUserQueryRepository;
+import edu.whut.eval.domain.org.model.OrgUnit;
+import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
+import edu.whut.eval.domain.org.repository.UserMembershipAdminRepository;
 import edu.whut.eval.domain.shared.PageResult;
 import org.junit.jupiter.api.Test;
 
@@ -40,11 +44,15 @@ class UserAdminApplicationServiceTest {
         SessionRevocationService revocationService = mock(SessionRevocationService.class);
 
         UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
         UserAdminApplicationService service = new UserAdminApplicationService(
                 queryRepository,
                 commandRepository,
                 revocationService,
-                userImportParser
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
         );
 
         when(queryRepository.pageUsers(any(UserPageQuery.class))).thenReturn(new PageResult<>(1L, List.of(
@@ -67,12 +75,16 @@ class UserAdminApplicationServiceTest {
         IamUserCommandRepository commandRepository = mock(IamUserCommandRepository.class);
         SessionRevocationService revocationService = mock(SessionRevocationService.class);
         UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
 
         UserAdminApplicationService service = new UserAdminApplicationService(
                 queryRepository,
                 commandRepository,
                 revocationService,
-                userImportParser
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
         );
 
         when(userImportParser.parse(any())).thenReturn(List.of(
@@ -102,12 +114,16 @@ class UserAdminApplicationServiceTest {
         IamUserCommandRepository commandRepository = mock(IamUserCommandRepository.class);
         SessionRevocationService revocationService = mock(SessionRevocationService.class);
         UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
 
         UserAdminApplicationService service = new UserAdminApplicationService(
                 queryRepository,
                 commandRepository,
                 revocationService,
-                userImportParser
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
         );
 
         when(userImportParser.parse(any())).thenReturn(List.of(
@@ -129,12 +145,16 @@ class UserAdminApplicationServiceTest {
         IamUserCommandRepository commandRepository = mock(IamUserCommandRepository.class);
         SessionRevocationService revocationService = mock(SessionRevocationService.class);
         UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
 
         UserAdminApplicationService service = new UserAdminApplicationService(
                 queryRepository,
                 commandRepository,
                 revocationService,
-                userImportParser
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
         );
 
         assertThrows(ValidationException.class,
@@ -148,11 +168,15 @@ class UserAdminApplicationServiceTest {
         SessionRevocationService revocationService = mock(SessionRevocationService.class);
 
         UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
         UserAdminApplicationService service = new UserAdminApplicationService(
                 queryRepository,
                 commandRepository,
                 revocationService,
-                userImportParser
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
         );
 
         when(commandRepository.updateStatus(1010L, "DISABLED")).thenReturn(true);
@@ -169,11 +193,15 @@ class UserAdminApplicationServiceTest {
         SessionRevocationService revocationService = mock(SessionRevocationService.class);
 
         UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
         UserAdminApplicationService service = new UserAdminApplicationService(
                 queryRepository,
                 commandRepository,
                 revocationService,
-                userImportParser
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
         );
 
         when(commandRepository.updateStatus(1010L, "LOCKED")).thenReturn(true);
@@ -190,11 +218,15 @@ class UserAdminApplicationServiceTest {
         SessionRevocationService revocationService = mock(SessionRevocationService.class);
 
         UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
         UserAdminApplicationService service = new UserAdminApplicationService(
                 queryRepository,
                 commandRepository,
                 revocationService,
-                userImportParser
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
         );
 
         when(commandRepository.updateStatus(1010L, "ACTIVE")).thenReturn(true);
@@ -214,11 +246,15 @@ class UserAdminApplicationServiceTest {
         SessionRevocationService revocationService = mock(SessionRevocationService.class);
 
         UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
         UserAdminApplicationService service = new UserAdminApplicationService(
                 queryRepository,
                 commandRepository,
                 revocationService,
-                userImportParser
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
         );
 
         when(commandRepository.updateStatus(999L, "DISABLED")).thenReturn(false);
@@ -226,5 +262,69 @@ class UserAdminApplicationServiceTest {
         assertThrows(ResourceNotFoundException.class, () ->
                 service.updateStatus(999L, new UpdateUserStatusCommand("DISABLED", "manual disable"))
         );
+    }
+
+    @Test
+    void shouldCreatePrimaryMembershipWhenPrimaryOrgUnitIdProvided() {
+        IamUserQueryRepository queryRepository = mock(IamUserQueryRepository.class);
+        IamUserCommandRepository commandRepository = mock(IamUserCommandRepository.class);
+        SessionRevocationService revocationService = mock(SessionRevocationService.class);
+        UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
+
+        UserAdminApplicationService service = new UserAdminApplicationService(
+                queryRepository,
+                commandRepository,
+                revocationService,
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
+        );
+
+        when(queryRepository.findByUserNo("2024305111")).thenReturn(Optional.empty());
+        when(orgUnitLookupRepository.findById(2002L))
+                .thenReturn(Optional.of(new OrgUnit(2002L, 1000L, "COLLEGE", "CS", "计算机学院", "/1000/2002", "ACTIVE")));
+        when(commandRepository.createUser(any(), any(), any(), any(), any()))
+                .thenReturn(new IamUser(1011L, "2024305111", "李老师", "li@example.com", "13800001111", "ACTIVE"));
+
+        service.createUser(new CreateUserCommand(
+                "2024305111", "李老师", "secret123", "li@example.com", "13800001111", 2002L
+        ));
+
+        verify(userMembershipAdminRepository).createPrimaryMembership(
+                org.mockito.ArgumentMatchers.eq(1011L),
+                org.mockito.ArgumentMatchers.eq(2002L),
+                org.mockito.ArgumentMatchers.anyString()
+        );
+    }
+
+    @Test
+    void shouldThrowNotFoundWhenPrimaryOrgUnitIdInvalid() {
+        IamUserQueryRepository queryRepository = mock(IamUserQueryRepository.class);
+        IamUserCommandRepository commandRepository = mock(IamUserCommandRepository.class);
+        SessionRevocationService revocationService = mock(SessionRevocationService.class);
+        UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
+
+        UserAdminApplicationService service = new UserAdminApplicationService(
+                queryRepository,
+                commandRepository,
+                revocationService,
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
+        );
+
+        when(queryRepository.findByUserNo("2024305111")).thenReturn(Optional.empty());
+        when(orgUnitLookupRepository.findById(9999L)).thenReturn(Optional.empty());
+
+        assertThrows(ResourceNotFoundException.class, () -> service.createUser(new CreateUserCommand(
+                "2024305111", "李老师", "secret123", "li@example.com", "13800001111", 9999L
+        )));
+
+        verify(commandRepository, never()).createUser(any(), any(), any(), any(), any());
+        verify(userMembershipAdminRepository, never()).createPrimaryMembership(any(), any(), any());
     }
 }

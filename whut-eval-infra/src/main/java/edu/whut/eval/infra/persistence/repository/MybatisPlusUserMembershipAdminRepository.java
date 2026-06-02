@@ -55,11 +55,25 @@ public class MybatisPlusUserMembershipAdminRepository implements UserMembershipA
         }
         for (OrgMembership membership : inactiveMemberships) {
             OrgMembershipDO updateDO = new OrgMembershipDO();
-            updateDO.setId(membership.id());
+            updateDO.setId(Objects.requireNonNull(membership.id(), "inactive membership id must not be null"));
             updateDO.setStatus(membership.status());
             updateDO.setLeftAt(parseTime(membership.leftAt()));
             orgMembershipMapper.updateById(updateDO);
         }
+    }
+
+    @Override
+    public void createPrimaryMembership(Long userId, Long orgUnitId, String joinedAt) {
+        OrgMembershipDO membershipDO = new OrgMembershipDO();
+        membershipDO.setUserId(userId);
+        membershipDO.setOrgUnitId(orgUnitId);
+        membershipDO.setMembershipType("MANUAL");
+        membershipDO.setPrimary(true);
+        membershipDO.setStatus("ACTIVE");
+        membershipDO.setJoinedAt(parseTime(joinedAt));
+        membershipDO.setLeftAt(null);
+        membershipDO.setCreatedAt(parseTime(joinedAt));
+        orgMembershipMapper.insert(membershipDO);
     }
 
     private OrgMembershipDO toInsertDO(Long userId, OrgMembership membership) {

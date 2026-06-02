@@ -15,6 +15,8 @@ import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.domain.iam.model.IamUser;
 import edu.whut.eval.domain.iam.repository.IamUserCommandRepository;
 import edu.whut.eval.domain.iam.repository.IamUserQueryRepository;
+import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
+import edu.whut.eval.domain.org.repository.UserMembershipAdminRepository;
 import edu.whut.eval.domain.shared.PageResult;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -36,15 +39,21 @@ public class UserAdminApplicationService {
     private final IamUserCommandRepository userCommandRepository;
     private final SessionRevocationService sessionRevocationService;
     private final UserImportParser userImportParser;
+    private final OrgUnitLookupRepository orgUnitLookupRepository;
+    private final UserMembershipAdminRepository userMembershipAdminRepository;
 
     public UserAdminApplicationService(IamUserQueryRepository userQueryRepository,
                                        IamUserCommandRepository userCommandRepository,
                                        SessionRevocationService sessionRevocationService,
-                                       UserImportParser userImportParser) {
+                                       UserImportParser userImportParser,
+                                       OrgUnitLookupRepository orgUnitLookupRepository,
+                                       UserMembershipAdminRepository userMembershipAdminRepository) {
         this.userQueryRepository = userQueryRepository;
         this.userCommandRepository = userCommandRepository;
         this.sessionRevocationService = sessionRevocationService;
         this.userImportParser = userImportParser;
+        this.orgUnitLookupRepository = orgUnitLookupRepository;
+        this.userMembershipAdminRepository = userMembershipAdminRepository;
     }
 
     @Transactional(readOnly = true)
@@ -84,6 +93,11 @@ public class UserAdminApplicationService {
             throw new ConflictException("用户编号已存在: " + command.userNo());
         });
 
+        if (command.primaryOrgUnitId() != null) {
+            orgUnitLookupRepository.findById(command.primaryOrgUnitId())
+                    .orElseThrow(() -> new ResourceNotFoundException("组织不存在: " + command.primaryOrgUnitId()));
+        }
+
         String passwordHash = hashPassword(command.passwordHash());
         IamUser user = userCommandRepository.createUser(
                 command.userNo(),
@@ -92,6 +106,14 @@ public class UserAdminApplicationService {
                 command.email(),
                 command.phone()
         );
+
+        if (command.primaryOrgUnitId() != null) {
+            userMembershipAdminRepository.createPrimaryMembership(
+                    user.id(),
+                    command.primaryOrgUnitId(),
+                    LocalDateTime.now().toString()
+            );
+        }
 
         return new UserCreatedView(
                 user.id(),

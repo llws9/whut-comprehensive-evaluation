@@ -81,7 +81,7 @@
 ## 三、P1（契约一致性）
 
 ### 3. A-6 创建用户补齐 primaryOrgUnitId 落库
-- **状态**：[ ]
+- **状态**：[x]
 - **目标**：创建用户时若传 `primaryOrgUnitId`，同步写入 `org_membership` 主组织归属。
 - **当前问题**：字段已接收，业务未使用。
 - **关键文件**：
@@ -91,7 +91,9 @@
   - 创建后 `A-22` 可查到对应主组织
   - 非法组织 ID 返回 404 语义
 - **完成说明**：
-  - （待填写）
+  - 创建用户时若传 `primaryOrgUnitId`，同事务写入 `org_membership` 主组织记录
+  - 非法组织 ID 抛 `ResourceNotFoundException`，接口返回 404（RES-4040）
+  - 最小验证：UserAdminApplicationServiceTest / UserAdminControllerWebMvcTest / MybatisPlusUserMembershipAdminRepositoryIntegrationTest
 
 ### 4. A-4 身份查询补鉴权（user.manage）
 - **状态**：[ ]
@@ -183,3 +185,4 @@
 | 2026-06-02 | Claude | 初始化清单 | 首版建立 |
 | 2026-06-02 | Claude | A-5 | /api/admin/users 改为真实查库，支持 keyword/status/orgUnitId |
 | 2026-06-02 | Claude | A-8 | /api/admin/users/import 真实导入，INSERT_ONLY 重复返回 409 并整批回滚 |
+| 2026-06-03 | Claude | A-6 | 创建用户补 primaryOrgUnitId 落库与 404 语义 |

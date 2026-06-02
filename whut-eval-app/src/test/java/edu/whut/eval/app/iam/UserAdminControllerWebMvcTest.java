@@ -9,6 +9,7 @@ import edu.whut.eval.application.iam.query.UserImportResultView;
 import edu.whut.eval.application.iam.service.UserAdminApplicationService;
 import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.common.exception.ConflictException;
+import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
 import edu.whut.eval.interfaces.iam.UserAdminController;
 import edu.whut.eval.interfaces.iam.request.CreateUserRequest;
@@ -104,6 +105,28 @@ class UserAdminControllerWebMvcTest {
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.userId").value(1011))
                 .andExpect(jsonPath("$.data.userNo").value("2024305111"));
+    }
+
+    @Test
+    void shouldReturn404WhenCreateUserPrimaryOrgUnitNotFound() throws Exception {
+        CreateUserRequest request = new CreateUserRequest();
+        request.setUserNo("2024305112");
+        request.setUserName("赵老师");
+        request.setPassword("secret123");
+        request.setEmail("zhao@example.com");
+        request.setPhone("13800002222");
+        request.setPrimaryOrgUnitId(9999L);
+
+        willThrow(new ResourceNotFoundException("组织不存在: 9999"))
+                .given(userAdminApplicationService)
+                .createUser(any());
+
+        mockMvc.perform(post("/api/admin/users")
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("RES-4040"));
     }
 
     @Test
