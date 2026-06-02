@@ -2,7 +2,7 @@
 
 > 用途：用于多人接力推进 A 组剩余收口工作。
 > 来源：基于当前代码状态对 `group-a-identity-user-admin.md` 的差距分析。
-> 更新时间：2026-06-02
+> 更新时间：2026-06-03
 
 ---
 
@@ -116,43 +116,43 @@
 ### 5. A-10 创建角色支持 roleScope
 - **状态**：[ ]
 - **目标**：请求显式传 `roleScope` 并校验，不再硬编码。
-- **当前问题**：当前实现固定写死 `ORG_SUBTREE`。
-- **关键文件**：
+- **当前问题**：当前代码库尚未落地“角色创建”HTTP 入口与应用服务；不存在 `CreateRoleRequest` / `RoleAdminApplicationService`。
+- **关键文件（待新增）**：
   - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/request/CreateRoleRequest.java`
   - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/RoleAdminApplicationService.java`
 - **验收标准**：
   - 合法 `roleScope` 可持久化
   - 非法值返回 400
 - **完成说明**：
-  - （待填写）
+  - 未开始（待先落地角色创建链路后实施）
 
 ### 6. A-11 修改角色补快照并发校验
 - **状态**：[ ]
 - **目标**：更新时携带快照字段，冲突返回 409。
-- **当前问题**：无快照并发校验，字段口径与文档不一致。
-- **关键文件**：
+- **当前问题**：当前代码库尚未落地“角色修改”HTTP 入口与应用服务；不存在 `UpdateRoleRequest` / `RoleAdminApplicationService`。
+- **关键文件（待新增）**：
   - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/request/UpdateRoleRequest.java`
   - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/RoleAdminApplicationService.java`
 - **验收标准**：
   - 并发修改可触发冲突检测
   - 冲突时返回约定错误码/状态
 - **完成说明**：
-  - （待填写）
+  - 未开始（待先落地角色修改链路后实施）
 
 ### 7. A-12 replaceAll 语义收口
 - **状态**：[ ]
 - **目标**：`replaceAll` 参数语义与实现一致。
-- **当前问题**：当前实际始终走整集合替换。
+- **当前问题**：当前代码库无对应“角色权限绑定 replaceAll”接口实现，暂不具备语义收口前置条件。
 - **可选方案**：
   - 方案A：明确只支持整集合替换（固定 true，简化契约）
   - 方案B：实现 `replaceAll=false` 的增量绑定语义
-- **关键文件**：
+- **关键文件（待新增/待确认）**：
   - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/RoleAdminController.java`
   - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/RoleAdminApplicationService.java`
 - **验收标准**：
   - 接口文档、参数、实现三者一致
 - **完成说明**：
-  - （待填写）
+  - 未开始（待角色权限绑定接口落地后实施）
 
 ---
 
@@ -162,12 +162,12 @@
 - **状态**：[ ]
 - **目标**：修正 `group-a-identity-user-admin.md` 中过时进度描述。
 - **建议更新**：
-  - 删除“`A-9~A-12` HTTP 入口未落地”相关表述
-  - 改为“入口已落地，仍有契约细节待收口（roleScope/并发快照/replaceAll）”
+  - 对 A-10~A-12 改为“相关 HTTP 入口与应用服务尚未落地”，不再使用“仅契约细节待收口”的表述
+  - 补充“待完成角色创建/修改/权限绑定链路后，再执行 roleScope/快照并发/replaceAll 语义收口”
 - **关键文件**：
   - `docs/team-delivery/group-a-identity-user-admin.md`
 - **完成说明**：
-  - （待填写）
+  - 未开始
 
 ---
 
