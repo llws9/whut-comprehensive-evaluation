@@ -36,6 +36,11 @@ public class MybatisPlusIamUserCommandRepository implements IamUserCommandReposi
     }
 
     @Override
+    public boolean updateForImportByUserNo(String userNo, String userName, String passwordHash, String email, String phone) {
+        return iamUserMapper.updateForImportByUserNo(userNo, userName, passwordHash, email, phone) > 0;
+    }
+
+    @Override
     public boolean updateStatus(Long userId, String status) {
         return iamUserMapper.updateStatus(userId, status) > 0;
     }
