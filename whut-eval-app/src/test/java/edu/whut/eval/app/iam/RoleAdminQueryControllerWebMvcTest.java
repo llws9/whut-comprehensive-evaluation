@@ -2,7 +2,11 @@ package edu.whut.eval.app.iam;
 
 import edu.whut.eval.application.iam.query.RoleAdminPageItemView;
 import edu.whut.eval.application.iam.query.RoleAdminPageQuery;
+import edu.whut.eval.application.iam.query.RoleCreatedView;
+import edu.whut.eval.application.iam.service.RoleAdminApplicationService;
 import edu.whut.eval.application.iam.service.RoleAdminQueryApplicationService;
+import edu.whut.eval.common.exception.ConflictException;
+import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
@@ -23,7 +27,11 @@ import java.util.List;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
+import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -41,6 +49,9 @@ class RoleAdminQueryControllerWebMvcTest {
 
     @MockBean
     private RoleAdminQueryApplicationService roleAdminQueryApplicationService;
+
+    @MockBean
+    private RoleAdminApplicationService roleAdminApplicationService;
 
     @Test
     void shouldReturnPagedRoles() throws Exception {
@@ -89,6 +100,102 @@ class RoleAdminQueryControllerWebMvcTest {
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.code").value("VAL-4001"))
                 .andExpect(jsonPath("$.message").value("status 仅允许 ACTIVE 或 DISABLED"));
+    }
+
+    @Test
+    void shouldCreateRole() throws Exception {
+        given(roleAdminApplicationService.createRole(any()))
+                .willReturn(new RoleCreatedView(31L, "COUNSELOR", "辅导员", "ORG_SUBTREE", "ACTIVE"));
+
+        mockMvc.perform(post("/api/admin/roles")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {"roleCode":"COUNSELOR","roleName":"辅导员","roleScope":"ORG_SUBTREE"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.roleId").value(31))
+                .andExpect(jsonPath("$.data.roleCode").value("COUNSELOR"))
+                .andExpect(jsonPath("$.data.roleScope").value("ORG_SUBTREE"))
+                .andExpect(jsonPath("$.data.status").value("ACTIVE"));
+    }
+
+    @Test
+    void shouldReturn409WhenCreateRoleCodeConflict() throws Exception {
+        willThrow(new ConflictException("角色编码已存在: COUNSELOR"))
+                .given(roleAdminApplicationService)
+                .createRole(any());
+
+        mockMvc.perform(post("/api/admin/roles")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {"roleCode":"COUNSELOR","roleName":"辅导员","roleScope":"ORG_SUBTREE"}
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("BIZ-4090"));
+    }
+
+    @Test
+    void shouldUpdateRoleWithSnapshot() throws Exception {
+        mockMvc.perform(patch("/api/admin/roles/21")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "roleName":"辅导员(新)",
+                                  "roleScope":"ORG_SUBTREE",
+                                  "status":"ACTIVE",
+                                  "snapshotRoleName":"辅导员",
+                                  "snapshotRoleScope":"ORG_SUBTREE",
+                                  "snapshotStatus":"ACTIVE"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+    }
+
+    @Test
+    void shouldReturn404WhenUpdateRoleNotFound() throws Exception {
+        willThrow(new ResourceNotFoundException("角色不存在: 21"))
+                .given(roleAdminApplicationService)
+                .updateRole(any(), any());
+
+        mockMvc.perform(patch("/api/admin/roles/21")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "roleName":"辅导员(新)",
+                                  "roleScope":"ORG_SUBTREE",
+                                  "status":"ACTIVE",
+                                  "snapshotRoleName":"辅导员",
+                                  "snapshotRoleScope":"ORG_SUBTREE",
+                                  "snapshotStatus":"ACTIVE"
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("RES-4040"));
+    }
+
+    @Test
+    void shouldReturn409WhenUpdateRoleSnapshotConflict() throws Exception {
+        willThrow(new ConflictException("角色模板已被更新，请刷新后重试"))
+                .given(roleAdminApplicationService)
+                .updateRole(any(), any());
+
+        mockMvc.perform(patch("/api/admin/roles/21")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "roleName":"辅导员(新)",
+                                  "roleScope":"ORG_SUBTREE",
+                                  "status":"ACTIVE",
+                                  "snapshotRoleName":"辅导员",
+                                  "snapshotRoleScope":"ORG_SUBTREE",
+                                  "snapshotStatus":"ACTIVE"
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("BIZ-4090"));
     }
 
     @SpringBootConfiguration

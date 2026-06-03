@@ -1,0 +1,101 @@
+package edu.whut.eval.app.iam;
+
+import edu.whut.eval.application.iam.command.CreateRoleCommand;
+import edu.whut.eval.application.iam.command.UpdateRoleCommand;
+import edu.whut.eval.application.iam.service.DefaultRoleAdminApplicationService;
+import edu.whut.eval.common.exception.ConflictException;
+import edu.whut.eval.common.exception.ResourceNotFoundException;
+import edu.whut.eval.common.exception.ValidationException;
+import edu.whut.eval.domain.iam.model.IamRoleDetail;
+import edu.whut.eval.domain.iam.repository.RoleAdminCommandRepository;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.Optional;
+
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verify;
+
+@ExtendWith(MockitoExtension.class)
+class RoleAdminApplicationServiceTest {
+
+    @Mock
+    private RoleAdminCommandRepository roleAdminCommandRepository;
+
+    @InjectMocks
+    private DefaultRoleAdminApplicationService service;
+
+    @Test
+    void shouldRejectIllegalRoleScopeOnCreate() {
+        assertThatThrownBy(() -> service.createRole(new CreateRoleCommand("COUNSELOR", "辅导员", "ALL")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("roleScope 仅允许 ORG_SUBTREE");
+    }
+
+    @Test
+    void shouldRejectDuplicateRoleCodeOnCreate() {
+        given(roleAdminCommandRepository.findByRoleCode("COUNSELOR"))
+                .willReturn(Optional.of(new IamRoleDetail(21L, "COUNSELOR", "旧辅导员", "ORG_SUBTREE", "ACTIVE")));
+
+        assertThatThrownBy(() -> service.createRole(new CreateRoleCommand("COUNSELOR", "辅导员", "ORG_SUBTREE")))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("角色编码已存在: COUNSELOR");
+    }
+
+    @Test
+    void shouldReturn404WhenUpdateRoleNotFound() {
+        given(roleAdminCommandRepository.findById(21L)).willReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.updateRole(21L, updateCommand()))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessage("角色不存在: 21");
+    }
+
+    @Test
+    void shouldRejectUpdateWhenSnapshotConflict() {
+        given(roleAdminCommandRepository.findById(21L))
+                .willReturn(Optional.of(new IamRoleDetail(21L, "COUNSELOR", "辅导员-已变更", "ORG_SUBTREE", "ACTIVE")));
+
+        assertThatThrownBy(() -> service.updateRole(21L, updateCommand()))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("角色模板已被更新，请刷新后重试");
+    }
+
+    @Test
+    void shouldRejectIllegalStatusOnUpdate() {
+        given(roleAdminCommandRepository.findById(21L))
+                .willReturn(Optional.of(new IamRoleDetail(21L, "COUNSELOR", "辅导员", "ORG_SUBTREE", "ACTIVE")));
+
+        assertThatThrownBy(() -> service.updateRole(21L,
+                new UpdateRoleCommand("辅导员(新)", "ORG_SUBTREE", "LOCKED", "辅导员", "ORG_SUBTREE", "ACTIVE")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("status 仅允许 ACTIVE 或 DISABLED");
+    }
+
+    @Test
+    void shouldUpdateRoleWhenSnapshotMatches() {
+        given(roleAdminCommandRepository.findById(21L))
+                .willReturn(Optional.of(new IamRoleDetail(21L, "COUNSELOR", "辅导员", "ORG_SUBTREE", "ACTIVE")));
+
+        service.updateRole(21L, updateCommand());
+
+        verify(roleAdminCommandRepository)
+                .update(21L, "辅导员(新)", "ORG_SUBTREE", "ACTIVE");
+    }
+
+    private UpdateRoleCommand updateCommand() {
+        return new UpdateRoleCommand(
+                "辅导员(新)",
+                "ORG_SUBTREE",
+                "ACTIVE",
+                "辅导员",
+                "ORG_SUBTREE",
+                "ACTIVE"
+        );
+    }
+}
