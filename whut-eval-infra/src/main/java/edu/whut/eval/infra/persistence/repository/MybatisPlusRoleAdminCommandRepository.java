@@ -46,13 +46,25 @@ public class MybatisPlusRoleAdminCommandRepository implements RoleAdminCommandRe
     }
 
     @Override
-    public void update(Long roleId, String roleName, String roleScope, String status) {
-        IamRoleDO item = new IamRoleDO();
-        item.setId(roleId);
-        item.setRoleName(roleName);
-        item.setRoleScope(roleScope);
-        item.setStatus(status);
-        iamRoleMapper.updateById(item);
+    public boolean updateWithSnapshot(Long roleId,
+                                      String roleName,
+                                      String roleScope,
+                                      String status,
+                                      String snapshotRoleName,
+                                      String snapshotRoleScope,
+                                      String snapshotStatus) {
+        LambdaQueryWrapper<IamRoleDO> wrapper = new LambdaQueryWrapper<IamRoleDO>()
+                .eq(IamRoleDO::getId, roleId)
+                .eq(IamRoleDO::getRoleName, snapshotRoleName)
+                .eq(IamRoleDO::getRoleScope, snapshotRoleScope)
+                .eq(IamRoleDO::getStatus, snapshotStatus);
+
+        IamRoleDO update = new IamRoleDO();
+        update.setRoleName(roleName);
+        update.setRoleScope(roleScope);
+        update.setStatus(status);
+
+        return iamRoleMapper.update(update, wrapper) > 0;
     }
 
     private IamRoleDetail toDetail(IamRoleDO item) {

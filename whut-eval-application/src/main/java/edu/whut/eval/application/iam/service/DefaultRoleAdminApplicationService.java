@@ -70,12 +70,18 @@ public class DefaultRoleAdminApplicationService implements RoleAdminApplicationS
             throw new ValidationException("status 仅允许 ACTIVE 或 DISABLED");
         }
 
-        roleAdminCommandRepository.update(
+        boolean updated = roleAdminCommandRepository.updateWithSnapshot(
                 roleId,
                 normalize(command.roleName()),
                 roleScope,
-                status
+                status,
+                normalize(command.snapshotRoleName()),
+                normalize(command.snapshotRoleScope()),
+                normalize(command.snapshotStatus())
         );
+        if (!updated) {
+            throw new ConflictException("角色模板已被更新，请刷新后重试");
+        }
     }
 
     private String normalize(String value) {

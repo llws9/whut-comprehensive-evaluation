@@ -18,7 +18,9 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -64,6 +66,10 @@ class RoleAdminApplicationServiceTest {
         assertThatThrownBy(() -> service.updateRole(21L, updateCommand()))
                 .isInstanceOf(ConflictException.class)
                 .hasMessage("角色模板已被更新，请刷新后重试");
+
+        verify(roleAdminCommandRepository, never()).updateWithSnapshot(
+                any(), any(), any(), any(), any(), any(), any()
+        );
     }
 
     @Test
@@ -81,11 +87,33 @@ class RoleAdminApplicationServiceTest {
     void shouldUpdateRoleWhenSnapshotMatches() {
         given(roleAdminCommandRepository.findById(21L))
                 .willReturn(Optional.of(new IamRoleDetail(21L, "COUNSELOR", "辅导员", "ORG_SUBTREE", "ACTIVE")));
+        given(roleAdminCommandRepository.updateWithSnapshot(
+                eq(21L),
+                eq("辅导员(新)"),
+                eq("ORG_SUBTREE"),
+                eq("ACTIVE"),
+                eq("辅导员"),
+                eq("ORG_SUBTREE"),
+                eq("ACTIVE")
+        )).willReturn(true);
 
         service.updateRole(21L, updateCommand());
 
         verify(roleAdminCommandRepository)
-                .update(21L, "辅导员(新)", "ORG_SUBTREE", "ACTIVE");
+                .updateWithSnapshot(21L, "辅导员(新)", "ORG_SUBTREE", "ACTIVE", "辅导员", "ORG_SUBTREE", "ACTIVE");
+    }
+
+    @Test
+    void shouldReturnConflictWhenAtomicUpdateNotMatched() {
+        given(roleAdminCommandRepository.findById(21L))
+                .willReturn(Optional.of(new IamRoleDetail(21L, "COUNSELOR", "辅导员", "ORG_SUBTREE", "ACTIVE")));
+        given(roleAdminCommandRepository.updateWithSnapshot(
+                any(), any(), any(), any(), any(), any(), any()
+        )).willReturn(false);
+
+        assertThatThrownBy(() -> service.updateRole(21L, updateCommand()))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("角色模板已被更新，请刷新后重试");
     }
 
     private UpdateRoleCommand updateCommand() {

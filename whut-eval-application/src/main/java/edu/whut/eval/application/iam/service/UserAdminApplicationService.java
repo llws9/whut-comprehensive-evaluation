@@ -34,6 +34,7 @@ import java.util.Set;
 public class UserAdminApplicationService {
 
     private static final Set<String> ALLOWED_IMPORT_MODE = Set.of("UPSERT", "INSERT_ONLY");
+    private static final String INSERT_ONLY_CONFLICT_PREFIX = "INSERT_ONLY 模式存在重复 userNo: ";
 
     private final IamUserQueryRepository userQueryRepository;
     private final IamUserCommandRepository userCommandRepository;
@@ -151,11 +152,19 @@ public class UserAdminApplicationService {
             return new UserImportResultView(0, 0, 0, List.of());
         }
 
-        if ("INSERT_ONLY".equals(command.importMode())) {
+        boolean insertOnly = "INSERT_ONLY".equals(command.importMode());
+        java.util.Set<String> seenUserNos = new java.util.HashSet<>();
+        if (insertOnly) {
             for (UserImportRowView row : rows) {
                 String userNo = row.userNo() == null ? null : row.userNo().trim();
-                if (userNo != null && !userNo.isBlank() && userQueryRepository.findByUserNo(userNo).isPresent()) {
-                    throw new ConflictException("INSERT_ONLY 模式存在重复 userNo: " + userNo);
+                if (userNo == null || userNo.isBlank()) {
+                    continue;
+                }
+                if (!seenUserNos.add(userNo)) {
+                    throw new ConflictException(INSERT_ONLY_CONFLICT_PREFIX + userNo);
+                }
+                if (userQueryRepository.findByUserNo(userNo).isPresent()) {
+                    throw new ConflictException(INSERT_ONLY_CONFLICT_PREFIX + userNo);
                 }
             }
         }
@@ -186,8 +195,18 @@ public class UserAdminApplicationService {
             IamUser existing = userQueryRepository.findByUserNo(userNo).orElse(null);
             if (existing == null) {
                 userCommandRepository.createUser(userNo, userName, passwordHash, row.email(), row.phone());
-            } else {
-                userCommandRepository.updateForImportByUserNo(userNo, userName, passwordHash, row.email(), row.phone());
+                successCount++;
+                continue;
+            }
+
+            if (insertOnly) {
+                throw new ConflictException(INSERT_ONLY_CONFLICT_PREFIX + userNo);
+            }
+
+            boolean updated = userCommandRepository.updateForImportByUserNo(userNo, userName, passwordHash, row.email(), row.phone());
+            if (!updated) {
+                failedRows.add(new UserImportFailedRowView(row.rowNo(), "userNo 对应用户不存在或已被并发删除"));
+                continue;
             }
             successCount++;
         }

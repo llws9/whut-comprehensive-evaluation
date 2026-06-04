@@ -41,11 +41,20 @@ class MybatisPlusRoleAdminCommandRepositoryTest {
     }
 
     @Test
-    void shouldUpdateRole() {
-        given(iamRoleMapper.updateById(any(IamRoleDO.class))).willReturn(1);
+    void shouldUpdateRoleWithSnapshot() {
+        given(iamRoleMapper.update(any(IamRoleDO.class), any())).willReturn(1);
 
-        repository.update(21L, "辅导员(新)", "ORG_SUBTREE", "ACTIVE");
+        boolean updated = repository.updateWithSnapshot(
+                21L,
+                "辅导员(新)",
+                "ORG_SUBTREE",
+                "ACTIVE",
+                "辅导员",
+                "ORG_SUBTREE",
+                "ACTIVE"
+        );
 
-        verify(iamRoleMapper).updateById(any(IamRoleDO.class));
+        assertThat(updated).isTrue();
+        verify(iamRoleMapper).update(any(IamRoleDO.class), any());
     }
 }

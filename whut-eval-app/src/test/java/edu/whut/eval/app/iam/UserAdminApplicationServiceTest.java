@@ -32,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.mock;
 import static org.mockito.BDDMockito.never;
+import static org.mockito.BDDMockito.times;
 import static org.mockito.BDDMockito.verify;
 import static org.mockito.BDDMockito.when;
 
@@ -95,6 +96,8 @@ class UserAdminApplicationServiceTest {
 
         when(queryRepository.findByUserNo("2024305001"))
                 .thenReturn(Optional.of(new IamUser(1010L, "2024305001", "王老师", "w@example.com", "13800000000", "ACTIVE")));
+        when(commandRepository.updateForImportByUserNo(any(), any(), any(), any(), any()))
+                .thenReturn(true);
         when(queryRepository.findByUserNo("2024305002")).thenReturn(Optional.empty());
 
         UserImportResultView result = service.importUsers(new ImportUsersCommand("ok".getBytes(), "UPSERT"));
@@ -106,6 +109,40 @@ class UserAdminApplicationServiceTest {
 
         verify(commandRepository).updateForImportByUserNo(any(), any(), any(), any(), any());
         verify(commandRepository).createUser(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void shouldCountAsFailedWhenUpsertUpdateReturnsFalse() {
+        IamUserQueryRepository queryRepository = mock(IamUserQueryRepository.class);
+        IamUserCommandRepository commandRepository = mock(IamUserCommandRepository.class);
+        SessionRevocationService revocationService = mock(SessionRevocationService.class);
+        UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
+
+        UserAdminApplicationService service = new UserAdminApplicationService(
+                queryRepository,
+                commandRepository,
+                revocationService,
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
+        );
+
+        when(userImportParser.parse(any())).thenReturn(List.of(
+                new UserImportRowView(2L, "2024305001", "王老师", "pwd123", "w@example.com", "13800000000")
+        ));
+        when(queryRepository.findByUserNo("2024305001"))
+                .thenReturn(Optional.of(new IamUser(1010L, "2024305001", "王老师", "w@example.com", "13800000000", "ACTIVE")));
+        when(commandRepository.updateForImportByUserNo(any(), any(), any(), any(), any())).thenReturn(false);
+
+        UserImportResultView result = service.importUsers(new ImportUsersCommand("ok".getBytes(), "UPSERT"));
+
+        assertThat(result.totalCount()).isEqualTo(1);
+        assertThat(result.successCount()).isEqualTo(0);
+        assertThat(result.failedCount()).isEqualTo(1);
+        assertThat(result.failedRows()).containsExactly(new UserImportFailedRowView(2L, "userNo 对应用户不存在或已被并发删除"));
+        verify(commandRepository, times(1)).updateForImportByUserNo(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -136,6 +173,68 @@ class UserAdminApplicationServiceTest {
                 () -> service.importUsers(new ImportUsersCommand("ok".getBytes(), "INSERT_ONLY")));
 
         verify(commandRepository, never()).createUser(any(), any(), any(), any(), any());
+        verify(commandRepository, never()).updateForImportByUserNo(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void shouldThrowConflictWhenInsertOnlyHasDuplicateUserNoInSameFile() {
+        IamUserQueryRepository queryRepository = mock(IamUserQueryRepository.class);
+        IamUserCommandRepository commandRepository = mock(IamUserCommandRepository.class);
+        SessionRevocationService revocationService = mock(SessionRevocationService.class);
+        UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
+
+        UserAdminApplicationService service = new UserAdminApplicationService(
+                queryRepository,
+                commandRepository,
+                revocationService,
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
+        );
+
+        when(userImportParser.parse(any())).thenReturn(List.of(
+                new UserImportRowView(2L, "2024305001", "王老师", "pwd123", "w@example.com", "13800000000"),
+                new UserImportRowView(3L, "2024305001", "李老师", "pwd234", "l@example.com", "13800001111")
+        ));
+        when(queryRepository.findByUserNo("2024305001")).thenReturn(Optional.empty());
+
+        assertThrows(ConflictException.class,
+                () -> service.importUsers(new ImportUsersCommand("ok".getBytes(), "INSERT_ONLY")));
+
+        verify(commandRepository, never()).createUser(any(), any(), any(), any(), any());
+        verify(commandRepository, never()).updateForImportByUserNo(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void shouldThrowConflictWhenInsertOnlyHitsConcurrentDuplicateOnRowWrite() {
+        IamUserQueryRepository queryRepository = mock(IamUserQueryRepository.class);
+        IamUserCommandRepository commandRepository = mock(IamUserCommandRepository.class);
+        SessionRevocationService revocationService = mock(SessionRevocationService.class);
+        UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
+
+        UserAdminApplicationService service = new UserAdminApplicationService(
+                queryRepository,
+                commandRepository,
+                revocationService,
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
+        );
+
+        when(userImportParser.parse(any())).thenReturn(List.of(
+                new UserImportRowView(2L, "2024305001", "王老师", "pwd123", "w@example.com", "13800000000")
+        ));
+        when(queryRepository.findByUserNo("2024305001"))
+                .thenReturn(Optional.empty())
+                .thenReturn(Optional.of(new IamUser(1010L, "2024305001", "王老师", "w@example.com", "13800000000", "ACTIVE")));
+
+        assertThrows(ConflictException.class,
+                () -> service.importUsers(new ImportUsersCommand("ok".getBytes(), "INSERT_ONLY")));
+
         verify(commandRepository, never()).updateForImportByUserNo(any(), any(), any(), any(), any());
     }
 

@@ -12,5 +12,11 @@ public interface RoleAdminCommandRepository {
 
     IamRoleDetail create(String roleCode, String roleName, String roleScope, String status);
 
-    void update(Long roleId, String roleName, String roleScope, String status);
+    boolean updateWithSnapshot(Long roleId,
+                               String roleName,
+                               String roleScope,
+                               String status,
+                               String snapshotRoleName,
+                               String snapshotRoleScope,
+                               String snapshotStatus);
 }
