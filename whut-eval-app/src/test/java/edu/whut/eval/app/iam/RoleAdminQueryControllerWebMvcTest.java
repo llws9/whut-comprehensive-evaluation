@@ -2,6 +2,8 @@ package edu.whut.eval.app.iam;
 
 import edu.whut.eval.application.iam.query.RoleAdminPageItemView;
 import edu.whut.eval.application.iam.query.RoleAdminPageQuery;
+import edu.whut.eval.application.iam.query.RoleAdminView;
+import edu.whut.eval.application.iam.service.RoleAdminApplicationService;
 import edu.whut.eval.application.iam.service.RoleAdminQueryApplicationService;
 import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.shared.PageResult;
@@ -24,8 +26,11 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.http.MediaType.APPLICATION_JSON;
 
 @WebMvcTest(controllers = RoleAdminController.class)
 @AutoConfigureMockMvc(addFilters = false)
@@ -41,6 +46,9 @@ class RoleAdminQueryControllerWebMvcTest {
 
     @MockBean
     private RoleAdminQueryApplicationService roleAdminQueryApplicationService;
+
+    @MockBean
+    private RoleAdminApplicationService roleAdminApplicationService;
 
     @Test
     void shouldReturnPagedRoles() throws Exception {
@@ -89,6 +97,46 @@ class RoleAdminQueryControllerWebMvcTest {
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.code").value("VAL-4001"))
                 .andExpect(jsonPath("$.message").value("status 仅允许 ACTIVE 或 DISABLED"));
+    }
+
+    @Test
+    void shouldCreateRoleTemplate() throws Exception {
+        given(roleAdminApplicationService.createRole(any()))
+                .willReturn(new RoleAdminView(31L, "ACADEMIC_SECRETARY", "教学秘书", "ORG_UNIT", "ACTIVE", 0, "2026-06-04T10:00:00"));
+
+        mockMvc.perform(post("/api/admin/roles")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {"roleCode":"ACADEMIC_SECRETARY","roleName":"教学秘书","roleScope":"ORG_UNIT"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.roleId").value(31))
+                .andExpect(jsonPath("$.data.roleCode").value("ACADEMIC_SECRETARY"))
+                .andExpect(jsonPath("$.data.roleScope").value("ORG_UNIT"))
+                .andExpect(jsonPath("$.data.status").value("ACTIVE"));
+    }
+
+    @Test
+    void shouldUpdateRoleTemplateWithSnapshot() throws Exception {
+        mockMvc.perform(patch("/api/admin/roles/31")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {"roleName":"教学秘书负责人","roleScope":"ORG_SUBTREE","status":"ACTIVE",
+                                 "expectedRoleName":"教学秘书","expectedRoleScope":"ORG_UNIT","expectedStatus":"ACTIVE"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+    }
+
+    @Test
+    void shouldReplaceRolePermissionsWithEmptySet() throws Exception {
+        mockMvc.perform(post("/api/admin/roles/31/permissions")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {"permissionCodes":[],"replaceAll":true}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
     }
 
     @SpringBootConfiguration

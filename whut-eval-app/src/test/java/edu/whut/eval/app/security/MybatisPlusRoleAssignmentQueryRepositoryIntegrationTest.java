@@ -49,7 +49,9 @@ class MybatisPlusRoleAssignmentQueryRepositoryIntegrationTest {
                         "id BIGINT PRIMARY KEY, " +
                         "role_code VARCHAR(64) NOT NULL, " +
                         "role_name VARCHAR(64) NOT NULL, " +
-                        "status VARCHAR(32) NOT NULL)"
+                        "role_scope VARCHAR(32) NOT NULL, " +
+                        "status VARCHAR(32) NOT NULL, " +
+                        "created_at TIMESTAMP NULL)"
         );
         jdbcTemplate.execute(
                 "CREATE TABLE iam_user_role_assignment (" +
@@ -64,8 +66,8 @@ class MybatisPlusRoleAssignmentQueryRepositoryIntegrationTest {
                         "assigned_by BIGINT NULL, " +
                         "created_at TIMESTAMP NOT NULL)"
         );
-        jdbcTemplate.update("INSERT INTO iam_role (id, role_code, role_name, status) VALUES (?,?,?,?)",
-                21L, "COUNSELOR", "辅导员", "ACTIVE");
+        jdbcTemplate.update("INSERT INTO iam_role (id, role_code, role_name, role_scope, status, created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
+                21L, "COUNSELOR", "辅导员", "ORG_SUBTREE", "ACTIVE");
     }
 
     @Test

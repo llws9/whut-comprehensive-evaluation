@@ -2,12 +2,15 @@ package edu.whut.eval.app.security;
 
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContextLoadRequest;
+import edu.whut.eval.application.auth.model.AccessSessionValidationCommand;
+import edu.whut.eval.application.auth.service.AccessSessionService;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
 import edu.whut.eval.infra.security.config.JwtConfigurationValidator;
 import edu.whut.eval.infra.security.config.SecurityConfiguration;
 import edu.whut.eval.infra.security.context.SecurityContextCurrentUserProvider;
 import edu.whut.eval.infra.security.context.SecurityContextUserAuthorizationContextAssembler;
+import edu.whut.eval.common.exception.AuthenticationFailedException;
 import edu.whut.eval.infra.security.jwt.JwtAuthenticationFilter;
 import edu.whut.eval.infra.security.jwt.JwtClaimsParser;
 import edu.whut.eval.infra.security.jwt.JwtClaimsToCurrentUserMapper;
@@ -38,6 +41,8 @@ import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasSize;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.never;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -86,6 +91,9 @@ class SecurityProbeControllerWebMvcTest {
     @MockBean
     private UserAuthorizationContextLoader userAuthorizationContextLoader;
 
+    @MockBean
+    private AccessSessionService accessSessionService;
+
     @Test
     void shouldReturn401WhenTokenIsMissing() throws Exception {
         mockMvc.perform(get("/api/security/me"))
@@ -98,7 +106,7 @@ class SecurityProbeControllerWebMvcTest {
         mockMvc.perform(get("/api/security/me")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer invalid-token"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.code").value("AUTH-4010"));
+                .andExpect(jsonPath("$.code").value("AUTH-4012"));
     }
 
     @Test
@@ -139,11 +147,31 @@ class SecurityProbeControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.scopeRules", hasSize(1)))
                 .andExpect(jsonPath("$.data.scopeRules[0].permissionCode").value("application.view.self"))
                 .andExpect(jsonPath("$.data.scopeRules[0].scopeType").value("SELF"));
+
+        then(accessSessionService).should().validateAccessSession(
+                new AccessSessionValidationCommand(1001L, "session-no-123", "access-jti-123")
+        );
+    }
+
+    @Test
+    void shouldReturn401WhenSessionIsRevokedOrExpired() throws Exception {
+        String token = createValidToken();
+        org.mockito.BDDMockito.willThrow(new AuthenticationFailedException("access token 会话不存在或已失效"))
+                .given(accessSessionService)
+                .validateAccessSession(new AccessSessionValidationCommand(1001L, "session-no-123", "access-jti-123"));
+
+        mockMvc.perform(get("/api/security/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4012"));
+
+        then(userAuthorizationContextLoader).should(never()).load(any(UserAuthorizationContextLoadRequest.class));
     }
 
     private String createValidToken() {
         Instant now = Instant.now();
         return Jwts.builder()
+                .id("access-jti-123")
                 .subject("1001")
                 .issuer("whut-eval")
                 .audience().add("whut-eval-api").and()
@@ -153,6 +181,7 @@ class SecurityProbeControllerWebMvcTest {
                 .claim("uno", "2024305999")
                 .claim("uname", "Test User")
                 .claim("identity", "student")
+                .claim("sid", "session-no-123")
                 .claim("roles", List.of("student", "class-monitor"))
                 .claim("authorities", List.of("system:security:probe"))
                 .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))

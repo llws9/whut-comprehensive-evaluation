@@ -1,11 +1,17 @@
 package edu.whut.eval.app.security;
 
 import edu.whut.eval.application.auth.model.AuthenticatedUserSnapshot;
+import edu.whut.eval.application.auth.service.AccessSessionService;
 import edu.whut.eval.application.auth.service.LoginAuthenticationService;
+import edu.whut.eval.application.auth.model.LoginSessionCreateCommand;
+import edu.whut.eval.application.auth.model.RefreshSessionContinueCommand;
+import edu.whut.eval.application.auth.model.RefreshSessionValidationCommand;
+import edu.whut.eval.application.auth.service.LoginSessionService;
 import edu.whut.eval.application.auth.service.LogoutService;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
 import edu.whut.eval.common.exception.AuthenticationFailedException;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
+import edu.whut.eval.application.auth.service.RefreshSessionService;
 import edu.whut.eval.application.auth.service.RefreshTokenCurrentUserLoader;
 import edu.whut.eval.infra.security.config.JwtConfigurationValidator;
 import edu.whut.eval.infra.security.config.SecurityConfiguration;
@@ -19,9 +25,11 @@ import edu.whut.eval.infra.security.jwt.RefreshTokenClaimsMapper;
 import edu.whut.eval.infra.security.web.RestAccessDeniedHandler;
 import edu.whut.eval.infra.security.web.RestAuthenticationEntryPoint;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
+import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -32,6 +40,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -39,9 +48,12 @@ import java.util.Date;
 import java.util.List;
 import java.util.Set;
 
-import static org.mockito.ArgumentMatchers.eq;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.times;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -101,10 +113,19 @@ class AuthControllerWebMvcTest {
     private RefreshTokenCurrentUserLoader refreshTokenCurrentUserLoader;
 
     @MockBean
+    private RefreshSessionService refreshSessionService;
+
+    @MockBean
     private LoginAuthenticationService loginAuthenticationService;
 
     @MockBean
+    private LoginSessionService loginSessionService;
+
+    @MockBean
     private UserAuthorizationContextLoader userAuthorizationContextLoader;
+
+    @MockBean
+    private AccessSessionService accessSessionService;
 
     @MockBean
     private LogoutService logoutService;
@@ -141,6 +162,44 @@ class AuthControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.refreshToken").isString())
                 .andExpect(jsonPath("$.data.accessTokenType").value("access"))
                 .andExpect(jsonPath("$.data.refreshTokenType").value("refresh"));
+    }
+
+    @Test
+    void shouldCreateServerSessionAndReturnTokensWithSidWhenLoginSucceeds() throws Exception {
+        given(loginAuthenticationService.authenticate(eq("2024305999"), eq("secret")))
+                .willReturn(new AuthenticatedUserSnapshot(
+                        1001L,
+                        "2024305999",
+                        "Test User",
+                        "student",
+                        Set.of("student"),
+                        Set.of("application.view.self"),
+                        List.of()
+                ));
+
+        MvcResult result = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"credential\":\"2024305999\",\"password\":\"secret\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String responseBody = result.getResponse().getContentAsString();
+        String accessToken = com.jayway.jsonpath.JsonPath.read(responseBody, "$.data.accessToken");
+        String refreshToken = com.jayway.jsonpath.JsonPath.read(responseBody, "$.data.refreshToken");
+        Claims accessClaims = parseClaims(accessToken);
+        Claims refreshClaims = parseClaims(refreshToken);
+
+        assertThat(accessClaims.get("sid", String.class)).isNotBlank();
+        assertThat(refreshClaims.get("sid", String.class)).isEqualTo(accessClaims.get("sid", String.class));
+        ArgumentCaptor<LoginSessionCreateCommand> commandCaptor = ArgumentCaptor.forClass(LoginSessionCreateCommand.class);
+        then(loginSessionService).should().createLoginSession(commandCaptor.capture());
+        LoginSessionCreateCommand command = commandCaptor.getValue();
+        assertThat(command.userId()).isEqualTo(1001L);
+        assertThat(command.sessionNo()).isEqualTo(accessClaims.get("sid", String.class));
+        assertThat(command.accessTokenId()).isEqualTo(accessClaims.getId());
+        assertThat(command.refreshTokenId()).isEqualTo(refreshClaims.getId());
+        assertThat(command.clientIp()).isEqualTo("127.0.0.1");
+        assertThat(command.refreshTokenExpiresAt()).isNotNull();
     }
 
     @Test
@@ -200,7 +259,7 @@ class AuthControllerWebMvcTest {
                 ))
         ));
 
-        mockMvc.perform(post("/api/auth/refresh")
+        MvcResult result = mockMvc.perform(post("/api/auth/refresh")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"refreshToken\":\"" + refreshToken + "\"}"))
                 .andExpect(status().isOk())
@@ -208,7 +267,25 @@ class AuthControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.accessToken").isString())
                 .andExpect(jsonPath("$.data.accessTokenType").value("access"))
                 .andExpect(jsonPath("$.data.refreshToken").isString())
-                .andExpect(jsonPath("$.data.refreshTokenType").value("refresh"));
+                .andExpect(jsonPath("$.data.refreshTokenType").value("refresh"))
+                .andReturn();
+
+        String responseBody = result.getResponse().getContentAsString();
+        Claims accessClaims = parseClaims(com.jayway.jsonpath.JsonPath.read(responseBody, "$.data.accessToken"));
+        Claims refreshClaims = parseClaims(com.jayway.jsonpath.JsonPath.read(responseBody, "$.data.refreshToken"));
+        assertThat(accessClaims.get("sid", String.class)).isEqualTo("session-no-123");
+        assertThat(refreshClaims.get("sid", String.class)).isEqualTo("session-no-123");
+        then(refreshSessionService).should().validateRefreshSession(
+                new RefreshSessionValidationCommand(1001L, "session-no-123", "refresh-jti-456")
+        );
+        ArgumentCaptor<RefreshSessionContinueCommand> continueCaptor = ArgumentCaptor.forClass(RefreshSessionContinueCommand.class);
+        then(refreshSessionService).should(times(1)).continueRefreshSession(continueCaptor.capture());
+        RefreshSessionContinueCommand continueCommand = continueCaptor.getValue();
+        assertThat(continueCommand.sessionNo()).isEqualTo("session-no-123");
+        assertThat(continueCommand.oldRefreshTokenId()).isEqualTo("refresh-jti-456");
+        assertThat(continueCommand.newAccessTokenId()).isEqualTo(accessClaims.getId());
+        assertThat(continueCommand.newRefreshTokenId()).isEqualTo(refreshClaims.getId());
+        assertThat(continueCommand.refreshTokenExpiresAt()).isNotNull();
     }
 
     @Test
@@ -253,9 +330,34 @@ class AuthControllerWebMvcTest {
                 .andExpect(jsonPath("$.code").value("OK"));
     }
 
+
+    @Test
+    void shouldReturn401WhenLogoutSessionDoesNotExistOrIsInvalid() throws Exception {
+        String accessToken = createAccessTokenWithJti();
+        given(userAuthorizationContextLoader.load(any())).willReturn(
+                new edu.whut.eval.domain.auth.model.UserAuthorizationContext(
+                        1001L,
+                        "2024305999",
+                        "Test User",
+                        "student",
+                        Set.of("student"),
+                        Set.of("evaluation:apply:create"),
+                        List.of()
+                )
+        );
+        given(logoutService.logoutByAccessTokenId(eq("test-jti-123")))
+                .willReturn(false);
+
+        mockMvc.perform(post("/api/auth/logout")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4012"));
+    }
+
     private String createAccessToken() {
         Instant now = Instant.now();
         return Jwts.builder()
+                .id("refresh-jti-456")
                 .subject("1001")
                 .issuer("whut-eval")
                 .audience().add("whut-eval-api").and()
@@ -286,6 +388,7 @@ class AuthControllerWebMvcTest {
                 .claim("uno", "2024305999")
                 .claim("uname", "Test User")
                 .claim("identity", "student")
+                .claim("sid", "session-no-123")
                 .claim("roles", List.of("student", "class-monitor"))
                 .claim("authorities", List.of("system:security:probe"))
                 .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
@@ -295,6 +398,7 @@ class AuthControllerWebMvcTest {
     private String createRefreshToken() {
         Instant now = Instant.now();
         return Jwts.builder()
+                .id("refresh-jti-456")
                 .subject("1001")
                 .issuer("whut-eval")
                 .audience().add("whut-eval-api").and()
@@ -304,8 +408,17 @@ class AuthControllerWebMvcTest {
                 .claim("uid", 1001L)
                 .claim("uno", "2024305999")
                 .claim("identity", "student")
+                .claim("sid", "session-no-123")
                 .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
                 .compact();
+    }
+
+    private Claims parseClaims(String token) {
+        return Jwts.parser()
+                .verifyWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
     }
 
     @SpringBootConfiguration

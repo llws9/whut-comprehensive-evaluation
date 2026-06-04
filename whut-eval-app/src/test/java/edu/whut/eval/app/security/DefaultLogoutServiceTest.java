@@ -12,6 +12,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,10 +38,10 @@ class DefaultLogoutServiceTest {
                 "refresh-token-jti-456",
                 "web",
                 "192.168.1.1",
-                null,
+                java.time.LocalDateTime.now().plusDays(7),
                 null,
                 IamSession.SessionStatus.ACTIVE,
-                null
+                java.time.LocalDateTime.now().minusMinutes(1)
         );
 
         when(sessionRepository.findByAccessTokenId("access-token-jti-123")).thenReturn(session);

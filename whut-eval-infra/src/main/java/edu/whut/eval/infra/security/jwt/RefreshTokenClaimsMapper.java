@@ -34,13 +34,20 @@ public class RefreshTokenClaimsMapper {
         Long userId = readRequiredLongClaim(claims, jwt.getUserIdClaim());
         String userNo = readRequiredStringClaim(claims, jwt.getUserNoClaim());
         String identity = readRequiredStringClaim(claims, jwt.getIdentityClaim());
+        String sessionNo = readRequiredStringClaim(claims, jwt.getSessionIdClaim());
+        String refreshTokenId = claims.getId();
+        if (!StringUtils.hasText(refreshTokenId)) {
+            throw new JwtAuthenticationException("Refresh token id is missing");
+        }
 
         AppLog.info(log, "security.jwt.refresh.claims.mapped",
                 "subject", claims.getSubject(),
                 "userId", userId,
                 "userNo", userNo,
-                "identity", identity);
-        return new RefreshTokenSubject(userId, userNo, identity);
+                "identity", identity,
+                "sessionNo", sessionNo,
+                "refreshTokenId", refreshTokenId);
+        return new RefreshTokenSubject(userId, userNo, identity, sessionNo, refreshTokenId);
     }
 
     private Long readRequiredLongClaim(Claims claims, String claimName) {

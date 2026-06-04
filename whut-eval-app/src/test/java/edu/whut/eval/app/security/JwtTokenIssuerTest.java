@@ -62,6 +62,34 @@ class JwtTokenIssuerTest {
         assertThat(refreshClaims.get("authorities")).isNull();
     }
 
+    @Test
+    void shouldIssueTokenPairWithSameSessionIdClaim() {
+        SecurityProperties properties = new SecurityProperties();
+        properties.getJwt().setSecret(SECRET);
+        JwtTokenIssuer issuer = new JwtTokenIssuer(properties);
+        CurrentUser currentUser = new CurrentUser(
+                1001L,
+                "2024305999",
+                "Test User",
+                "student",
+                Set.of("student"),
+                Set.of("application.view.self"),
+                List.of()
+        );
+
+        JwtTokenPair tokenPair = issuer.issueTokenPair(currentUser, "session-no-123");
+        Claims accessClaims = parseClaims(tokenPair.getAccessToken());
+        Claims refreshClaims = parseClaims(tokenPair.getRefreshToken());
+
+        assertThat(tokenPair.getSessionNo()).isEqualTo("session-no-123");
+        assertThat(tokenPair.getAccessTokenId()).isNotBlank();
+        assertThat(tokenPair.getRefreshTokenId()).isNotBlank();
+        assertThat(accessClaims.get("sid", String.class)).isEqualTo("session-no-123");
+        assertThat(refreshClaims.get("sid", String.class)).isEqualTo("session-no-123");
+        assertThat(accessClaims.getId()).isEqualTo(tokenPair.getAccessTokenId());
+        assertThat(refreshClaims.getId()).isEqualTo(tokenPair.getRefreshTokenId());
+    }
+
     private Claims parseClaims(String token) {
         return Jwts.parser()
                 .verifyWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
