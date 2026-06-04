@@ -2,7 +2,7 @@
 
 > 用途：用于多人接力推进 A 组剩余收口工作。
 > 来源：基于当前代码状态对 `group-a-identity-user-admin.md` 的差距分析。
-> 更新时间：2026-06-03
+> 更新时间：2026-06-05
 
 ---
 
@@ -114,60 +114,70 @@
 ## 四、P2（角色契约收口）
 
 ### 5. A-10 创建角色支持 roleScope
-- **状态**：[ ]
+- **状态**：[x]
 - **目标**：请求显式传 `roleScope` 并校验，不再硬编码。
-- **当前问题**：当前代码库尚未落地“角色创建”HTTP 入口与应用服务；不存在 `CreateRoleRequest` / `RoleAdminApplicationService`。
-- **关键文件（待新增）**：
+- **当前问题**：已完成。
+- **关键文件**：
+  - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/RoleAdminController.java`
   - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/request/CreateRoleRequest.java`
   - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/RoleAdminApplicationService.java`
+  - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/DefaultRoleAdminApplicationService.java`
 - **验收标准**：
   - 合法 `roleScope` 可持久化
   - 非法值返回 400
 - **完成说明**：
-  - 未开始（待先落地角色创建链路后实施）
+  - `POST /api/admin/roles` 已落地，支持 `roleCode/roleName/roleScope` 创建角色模板。
+  - 最小验证：`RoleAdminApplicationServiceTest` / `RoleAdminControllerSecurityAnnotationTest`
 
 ### 6. A-11 修改角色补快照并发校验
-- **状态**：[ ]
+- **状态**：[x]
 - **目标**：更新时携带快照字段，冲突返回 409。
-- **当前问题**：当前代码库尚未落地“角色修改”HTTP 入口与应用服务；不存在 `UpdateRoleRequest` / `RoleAdminApplicationService`。
-- **关键文件（待新增）**：
+- **当前问题**：已完成。
+- **关键文件**：
+  - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/RoleAdminController.java`
   - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/request/UpdateRoleRequest.java`
   - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/RoleAdminApplicationService.java`
+  - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/DefaultRoleAdminApplicationService.java`
 - **验收标准**：
   - 并发修改可触发冲突检测
   - 冲突时返回约定错误码/状态
 - **完成说明**：
-  - 未开始（待先落地角色修改链路后实施）
+  - `PATCH /api/admin/roles/{roleId}` 已落地，支持角色模板字段更新与快照冲突检测。
+  - 最小验证：`RoleAdminApplicationServiceTest` / `RoleAdminControllerSecurityAnnotationTest`
 
 ### 7. A-12 replaceAll 语义收口
-- **状态**：[ ]
+- **状态**：[x]
 - **目标**：`replaceAll` 参数语义与实现一致。
-- **当前问题**：当前代码库无对应“角色权限绑定 replaceAll”接口实现，暂不具备语义收口前置条件。
-- **可选方案**：
-  - 方案A：明确只支持整集合替换（固定 true，简化契约）
-  - 方案B：实现 `replaceAll=false` 的增量绑定语义
-- **关键文件（待新增/待确认）**：
+- **当前问题**：已完成。
+- **最终方案**：
+  - 明确只支持整集合替换：`replaceAll=true`。
+  - `replaceAll=false` 或缺失时返回参数校验错误，避免前端误认为支持增量绑定。
+- **关键文件**：
   - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/RoleAdminController.java`
+  - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/request/ReplaceRolePermissionsRequest.java`
   - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/RoleAdminApplicationService.java`
+  - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/DefaultRoleAdminApplicationService.java`
 - **验收标准**：
   - 接口文档、参数、实现三者一致
 - **完成说明**：
-  - 未开始（待角色权限绑定接口落地后实施）
+  - `POST /api/admin/roles/{roleId}/permissions` 已落地，支持角色权限整集合替换。
+  - 最小验证：`RoleAdminApplicationServiceTest` / `MybatisPlusRoleAdminCommandRepositoryTest`
 
 ---
 
 ## 五、文档同步项
 
 ### 8. 更新组文档进度描述
-- **状态**：[ ]
+- **状态**：[x]
 - **目标**：修正 `group-a-identity-user-admin.md` 中过时进度描述。
-- **建议更新**：
-  - 对 A-10~A-12 改为“相关 HTTP 入口与应用服务尚未落地”，不再使用“仅契约细节待收口”的表述
-  - 补充“待完成角色创建/修改/权限绑定链路后，再执行 roleScope/快照并发/replaceAll 语义收口”
+- **已更新**：
+  - A-10~A-12 改为已完成代码落地。
+  - A-2 refresh 错误码口径与当前实现对齐：过期返回 `AUTH-4011`，非法/类型错误/会话失效返回 `AUTH-4012`。
+  - A-12 `replaceAll` 明确为当前仅接受 `true` 的整集合替换。
 - **关键文件**：
   - `docs/team-delivery/group-a-identity-user-admin.md`
 - **完成说明**：
-  - 未开始
+  - 已完成。
 
 ---
 
@@ -188,4 +198,5 @@
 | 2026-06-02 | Claude | A-5 | /api/admin/users 改为真实查库，支持 keyword/status/orgUnitId |
 | 2026-06-02 | Claude | A-8 | /api/admin/users/import 真实导入，INSERT_ONLY 重复返回 409 并整批回滚 |
 | 2026-06-03 | Claude | A-6 | 创建用户补 primaryOrgUnitId 落库与 404 语义 |
+| 2026-06-05 | SOLO | A-10~A-12、A-2、文档收口 | 角色模板写接口已落地；refresh 错误码细分为 `AUTH-4011/AUTH-4012`；组文档与接力清单更新 |
 | 2026-06-03 | Claude | A-4 | 身份查询接口补 user.manage 鉴权与 403 契约 |

@@ -123,9 +123,9 @@ A 组应优先依赖并落地以下表：
 | 错误码 | HTTP 状态码 | 场景 |
 |---|---:|---|
 | `VAL-4001` | `400` | 请求参数不合法 |
-| `AUTH-4010` | `401` | 用户名密码错误或认证失败 |
+| `AUTH-4010` | `401` | 用户名密码错误、账号状态不可用或认证失败 |
 | `AUTH-4011` | `401` | token 已过期 |
-| `AUTH-4012` | `401` | token 非法 |
+| `AUTH-4012` | `401` | token 非法、类型错误、会话不存在或已失效 |
 | `AUTH-4030` | `403` | 无权限访问 |
 | `RES-4040` | `404` | 用户、角色、分配、组织不存在 |
 | `BIZ-4090` | `409` | 重复用户、重复角色、重复分配、状态冲突 |
@@ -162,7 +162,7 @@ A 组应优先依赖并落地以下表：
 补充说明：
 
 - `A-9 ~ A-12` 当前已完成交付契约收口，字段口径以本文件详细定义为准。
-- 但在当前代码仓状态下，角色模板相关 HTTP 入口与 `role.manage` 权限常量尚未形成最终实现；因此这四项当前应视为“已冻结契约、待代码落地”，而不是“已经完成联调”。
+- `A-10 ~ A-12` 当前已有 HTTP 入口、应用服务、仓储实现与测试覆盖；后续不再作为“待代码落地”项接力。
 
 ## 6. 详细接口定义
 
@@ -184,10 +184,10 @@ A 组应优先依赖并落地以下表：
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `accessToken` | `string` | 访问 token |
-| `accessTokenType` | `string` | 固定为 `Bearer` |
+| `accessTokenType` | `string` | 固定为 `access` |
 | `accessTokenExpiresAt` | `string` | 过期时间 |
 | `refreshToken` | `string` | 刷新 token |
-| `refreshTokenType` | `string` | 固定为 `Bearer` |
+| `refreshTokenType` | `string` | 固定为 `refresh` |
 | `refreshTokenExpiresAt` | `string` | 过期时间 |
 
 成功示例：
@@ -199,10 +199,10 @@ A 组应优先依赖并落地以下表：
   "message": "success",
   "data": {
     "accessToken": "eyJ...",
-    "accessTokenType": "Bearer",
+    "accessTokenType": "access",
     "accessTokenExpiresAt": "2026-05-20T10:00:00Z",
     "refreshToken": "eyJ...",
-    "refreshTokenType": "Bearer",
+    "refreshTokenType": "refresh",
     "refreshTokenExpiresAt": "2026-05-27T10:00:00Z"
   }
 }
@@ -236,7 +236,8 @@ A 组应优先依赖并落地以下表：
 |---|---:|---|---|
 | refresh token 缺失 | `400` | `VAL-4001` | 参数缺失 |
 | refresh token 过期 | `401` | `AUTH-4011` | 无法刷新 |
-| refresh token 非法 | `401` | `AUTH-4012` | 签名或类型错误 |
+| refresh token 非法 | `401` | `AUTH-4012` | 签名、格式或类型错误 |
+| refresh token 会话不存在或已失效 | `401` | `AUTH-4012` | 服务端 `iam_session` 不存在、已撤销、已过期或与 token 不匹配 |
 | 用户状态不可刷新 | `401` | `AUTH-4010` | 查库后账号状态为 `DISABLED` 或 `LOCKED`，统一视为非 `ACTIVE` |
 
 ### A-3 查询当前认证上下文
@@ -465,7 +466,7 @@ A 组应优先依赖并落地以下表：
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `permissionCodes` | `string[]` | 是 | 角色要绑定的权限码集合 |
-| `replaceAll` | `boolean` | 否 | 是否整集合替换，默认 `true` |
+| `replaceAll` | `boolean` | 是 | 当前仅接受 `true`，表示整集合替换 |
 
 成功返回：`data = null`
 
@@ -481,7 +482,7 @@ A 组应优先依赖并落地以下表：
 |---|---:|---|---|
 | 角色不存在 | `404` | `RES-4040` | `roleId` 无效 |
 | 权限码不存在 | `404` | `RES-4040` | 任一 `permissionCode` 无效 |
-| 请求字段非法 | `400` | `VAL-4001` | 权限集合缺失，或包含空值 / 非法权限码 |
+| 请求字段非法 | `400` | `VAL-4001` | 权限集合缺失、包含空值 / 非法权限码，或 `replaceAll` 不为 `true` |
 | 无权限访问 | `403` | `AUTH-4030` | 当前用户无权限绑定权限 |
 
 ### A-13 分页查询角色分配

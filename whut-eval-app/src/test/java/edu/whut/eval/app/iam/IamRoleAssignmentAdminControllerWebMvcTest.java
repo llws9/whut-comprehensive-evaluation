@@ -13,6 +13,7 @@ import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
 import edu.whut.eval.interfaces.iam.IamRoleAssignmentAdminController;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -26,9 +27,11 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.List;
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -89,6 +92,17 @@ class IamRoleAssignmentAdminControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.total").value(1))
                 .andExpect(jsonPath("$.data.records[0].userNo").value("2024305001"))
                 .andExpect(jsonPath("$.data.records[0].roleCode").value("COUNSELOR"));
+
+        ArgumentCaptor<edu.whut.eval.application.iam.query.RoleAssignmentAdminPageQuery> queryCaptor =
+                ArgumentCaptor.forClass(edu.whut.eval.application.iam.query.RoleAssignmentAdminPageQuery.class);
+        then(roleAssignmentAdminApplicationService).should().pageAssignments(queryCaptor.capture());
+        edu.whut.eval.application.iam.query.RoleAssignmentAdminPageQuery query = queryCaptor.getValue();
+        assertThat(query.pageNo()).isEqualTo(1L);
+        assertThat(query.pageSize()).isEqualTo(20L);
+        assertThat(query.userId()).isEqualTo(1010L);
+        assertThat(query.roleCode()).isEqualTo("COUNSELOR");
+        assertThat(query.status()).isEqualTo("ACTIVE");
+        assertThat(query.orgUnitId()).isEqualTo(2002L);
     }
 
     @Test
@@ -205,6 +219,8 @@ class IamRoleAssignmentAdminControllerWebMvcTest {
                 .andExpect(jsonPath("$.data[0].scopeRuleId").value(81001))
                 .andExpect(jsonPath("$.data[0].scopeType").value("ORG_SUBTREE"))
                 .andExpect(jsonPath("$.data[1].categoryCode").value("MORAL"));
+
+        then(scopeRuleAdminApplicationService).should().listScopeRules(70021L);
     }
 
     @Test
@@ -241,6 +257,14 @@ class IamRoleAssignmentAdminControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.scopeRuleId").value(81004))
                 .andExpect(jsonPath("$.data.scopeType").value("CATEGORY"))
                 .andExpect(jsonPath("$.data.categoryCode").value("MORAL"));
+
+        ArgumentCaptor<CreateScopeRuleCommand> commandCaptor = ArgumentCaptor.forClass(CreateScopeRuleCommand.class);
+        then(scopeRuleAdminApplicationService).should().createScopeRule(eq(70021L), commandCaptor.capture());
+        CreateScopeRuleCommand command = commandCaptor.getValue();
+        assertThat(command.permissionCode()).isEqualTo("manage.review.view");
+        assertThat(command.scopeType()).isEqualTo("CATEGORY");
+        assertThat(command.categoryCode()).isEqualTo("MORAL");
+        assertThat(command.priority()).isEqualTo(90);
     }
 
     @SpringBootConfiguration
