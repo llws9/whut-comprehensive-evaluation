@@ -57,6 +57,7 @@ CREATE TABLE `file_asset` (
   `original_filename` VARCHAR(255) NOT NULL,
   `content_type` VARCHAR(128) NOT NULL,
   `size` BIGINT NOT NULL,
+  `sha256` VARCHAR(128) DEFAULT NULL,
   `uploader_user_id` BIGINT NOT NULL,
   `uploader_type` VARCHAR(32) NOT NULL,
   `upload_channel` VARCHAR(32) NOT NULL,
@@ -111,19 +112,19 @@ INSERT INTO `evaluation_item` (`id`, `category_code`, `item_code`, `item_name`, 
 (12011, 'RESERVE_RESEARCH', 'RESERVE_RESEARCH_VISIT', '学术访学预留项', 'STUDENT_APPLY', 'COLLEGE_REVIEW', 'OPTION', JSON_OBJECT('maxPoints', 2.00, 'allowOverflow', false), '保留给二期使用的科研拓展项目', 110, 'INACTIVE', '2026-05-01 11:10:10', '2026-05-18 11:10:10'),
 (12012, 'RESERVE_SOCIAL', 'RESERVE_SOCIAL_ORGANIZATION', '社团治理预留项', 'STUDENT_APPLY', 'COUNSELOR_REVIEW', 'OPTION', JSON_OBJECT('maxPoints', 2.00, 'allowOverflow', false), '保留给二期使用的社会工作项目', 120, 'INACTIVE', '2026-05-01 11:10:11', '2026-05-18 11:10:11');
 
-INSERT INTO `file_asset` (`id`, `file_id`, `storage_key`, `bucket`, `original_filename`, `content_type`, `size`, `uploader_user_id`, `uploader_type`, `upload_channel`, `status`, `created_at`, `updated_at`) VALUES
-(13001, 'FILE-0001', 'attachments/2026/05/certificate-mcm.pdf', 'whut-eval-dev', '数学建模校赛一等奖.pdf', 'application/pdf', 256000, 1001, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:00:00', '2026-05-10 10:00:00'),
-(13002, 'FILE-0002', 'attachments/2026/05/volunteer-hours.docx', 'whut-eval-dev', '志愿服务时长证明.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 88000, 1002, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:05:00', '2026-05-10 10:05:00'),
-(13003, 'FILE-0003', 'attachments/2026/05/essay-accepted.pdf', 'whut-eval-dev', '征稿录用函.pdf', 'application/pdf', 198000, 1003, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:10:00', '2026-05-10 10:10:00'),
-(13004, 'FILE-0004', 'attachments/2026/05/sports-award.jpg', 'whut-eval-dev', '校运会获奖照片.jpg', 'image/jpeg', 620000, 1004, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:15:00', '2026-05-10 10:15:00'),
-(13005, 'FILE-0005', 'attachments/2026/05/paper-index.png', 'whut-eval-dev', '论文检索截图.png', 'image/png', 480000, 1005, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:20:00', '2026-05-10 10:20:00'),
-(13006, 'FILE-0006', 'attachments/2026/05/labor-practice.pdf', 'whut-eval-dev', '社会实践报告.pdf', 'application/pdf', 310000, 1006, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:25:00', '2026-05-10 10:25:00'),
-(13007, 'FILE-0007', 'attachments/2026/05/class-monitor.docx', 'whut-eval-dev', '班级活动总结.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 102000, 1002, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:30:00', '2026-05-10 10:30:00'),
-(13008, 'FILE-0008', 'attachments/2026/05/guide-template.pdf', 'whut-eval-dev', '综测申请模板.pdf', 'application/pdf', 142000, 1012, 'ADMIN', 'ADMIN_UPLOAD', 'ACTIVE', '2026-05-10 10:35:00', '2026-05-10 10:35:00'),
-(13009, 'FILE-0009', 'attachments/2026/05/review-spec.docx', 'whut-eval-dev', '审核口径说明.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 94000, 1011, 'ADMIN', 'ADMIN_UPLOAD', 'ACTIVE', '2026-05-10 10:40:00', '2026-05-10 10:40:00'),
-(13010, 'FILE-0010', 'attachments/2026/05/public-photo.zip', 'whut-eval-dev', '公共素材包.zip', 'application/zip', 804000, 1012, 'ADMIN', 'ADMIN_UPLOAD', 'ACTIVE', '2026-05-10 10:45:00', '2026-05-10 10:45:00'),
-(13011, 'FILE-0011', 'attachments/2026/05/old-template.pdf', 'whut-eval-dev', '旧版模板.pdf', 'application/pdf', 156000, 1012, 'SYSTEM', 'SYSTEM_IMPORT', 'ARCHIVED', '2026-05-10 10:50:00', '2026-05-10 10:50:00'),
-(13012, 'FILE-0012', 'attachments/2026/05/poster.png', 'whut-eval-dev', '活动海报.png', 'image/png', 512000, 1007, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:55:00', '2026-05-10 10:55:00');
+INSERT INTO `file_asset` (`id`, `file_id`, `storage_key`, `bucket`, `original_filename`, `content_type`, `size`, `sha256`, `uploader_user_id`, `uploader_type`, `upload_channel`, `status`, `created_at`, `updated_at`) VALUES
+(13001, 'FILE-0001', 'attachments/2026/05/certificate-mcm.pdf', 'whut-eval-dev', '数学建模校赛一等奖.pdf', 'application/pdf', 256000, 'sha256-file-0001', 1001, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:00:00', '2026-05-10 10:00:00'),
+(13002, 'FILE-0002', 'attachments/2026/05/volunteer-hours.docx', 'whut-eval-dev', '志愿服务时长证明.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 88000, 'sha256-file-0002', 1002, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:05:00', '2026-05-10 10:05:00'),
+(13003, 'FILE-0003', 'attachments/2026/05/essay-accepted.pdf', 'whut-eval-dev', '征稿录用函.pdf', 'application/pdf', 198000, 'sha256-file-0003', 1003, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:10:00', '2026-05-10 10:10:00'),
+(13004, 'FILE-0004', 'attachments/2026/05/sports-award.jpg', 'whut-eval-dev', '校运会获奖照片.jpg', 'image/jpeg', 620000, 'sha256-file-0004', 1004, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:15:00', '2026-05-10 10:15:00'),
+(13005, 'FILE-0005', 'attachments/2026/05/paper-index.png', 'whut-eval-dev', '论文检索截图.png', 'image/png', 480000, 'sha256-file-0005', 1005, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:20:00', '2026-05-10 10:20:00'),
+(13006, 'FILE-0006', 'attachments/2026/05/labor-practice.pdf', 'whut-eval-dev', '社会实践报告.pdf', 'application/pdf', 310000, 'sha256-file-0006', 1006, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:25:00', '2026-05-10 10:25:00'),
+(13007, 'FILE-0007', 'attachments/2026/05/class-monitor.docx', 'whut-eval-dev', '班级活动总结.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 102000, 'sha256-file-0007', 1002, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:30:00', '2026-05-10 10:30:00'),
+(13008, 'FILE-0008', 'attachments/2026/05/guide-template.pdf', 'whut-eval-dev', '综测申请模板.pdf', 'application/pdf', 142000, 'sha256-file-0008', 1012, 'ADMIN', 'ADMIN_UPLOAD', 'ACTIVE', '2026-05-10 10:35:00', '2026-05-10 10:35:00'),
+(13009, 'FILE-0009', 'attachments/2026/05/review-spec.docx', 'whut-eval-dev', '审核口径说明.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 94000, 'sha256-file-0009', 1011, 'ADMIN', 'ADMIN_UPLOAD', 'ACTIVE', '2026-05-10 10:40:00', '2026-05-10 10:40:00'),
+(13010, 'FILE-0010', 'attachments/2026/05/public-photo.zip', 'whut-eval-dev', '公共素材包.zip', 'application/zip', 804000, 'sha256-file-0010', 1012, 'ADMIN', 'ADMIN_UPLOAD', 'ACTIVE', '2026-05-10 10:45:00', '2026-05-10 10:45:00'),
+(13011, 'FILE-0011', 'attachments/2026/05/old-template.pdf', 'whut-eval-dev', '旧版模板.pdf', 'application/pdf', 156000, 'sha256-file-0011', 1012, 'SYSTEM', 'SYSTEM_IMPORT', 'ARCHIVED', '2026-05-10 10:50:00', '2026-05-10 10:50:00'),
+(13012, 'FILE-0012', 'attachments/2026/05/poster.png', 'whut-eval-dev', '活动海报.png', 'image/png', 512000, 'sha256-file-0012', 1007, 'USER', 'SELF_UPLOAD', 'ACTIVE', '2026-05-10 10:55:00', '2026-05-10 10:55:00');
 
 INSERT INTO `public_attachment_entry` (`id`, `file_id`, `display_name`, `description`, `category_code`, `scope_type`, `scope_value`, `status`, `published_by`, `published_at`, `sort_no`, `created_at`) VALUES
 (14001, 'FILE-0008', '综测申请模板', '学生申请材料填写模板', 'INTELLECTUAL', 'ALL', NULL, 'PUBLISHED', 1012, '2026-05-11 09:00:00', 10, '2026-05-11 09:00:00'),

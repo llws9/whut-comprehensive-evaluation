@@ -1,5 +1,9 @@
 # A 组需求文档：身份认证与用户权限
 
+> 当前状态：`CURRENT_IMPLEMENTED`
+>
+> 身份认证、用户管理、角色模板、角色分配、范围规则、权限字典、组织树和服务端会话闭环已按当前 Java 实现落地；本文档中的接口示例应以当前权限码和分离式 scope rule 接口为准。
+
 ## 1. 模块背景
 
 A 组负责整个 rewrite 项目的身份底座，范围覆盖：登录、刷新 token、当前用户上下文、用户主数据、角色模板、角色分配、数据范围规则。
@@ -80,7 +84,7 @@ flowchart LR
 
 ## 3. 数据依赖
 
-A 组应优先依赖并落地以下表：
+A 组应优先依赖并落地以下 IAM 表：
 
 - `iam_user`
 - `org_unit`
@@ -91,8 +95,8 @@ A 组应优先依赖并落地以下表：
 - `iam_user_role_assignment`
 - `iam_scope_rule`
 - `iam_session`
-- `evaluation_category`
-- `evaluation_item`
+
+A 组只读消费 E 组维护的 `evaluation_category`、`evaluation_item`，不负责创建或维护这两张表。
 
 ## 4. 统一响应约定
 
@@ -695,7 +699,7 @@ A 组应优先依赖并落地以下表：
   "data": [
     {
       "scopeRuleId": 81001,
-      "permissionCode": "manage.review.view",
+      "permissionCode": "application.review",
       "scopeType": "ORG_SUBTREE",
       "orgUnitId": 2002,
       "orgUnitName": "计算机与人工智能学院",
@@ -707,7 +711,7 @@ A 组应优先依赖并落地以下表：
     },
     {
       "scopeRuleId": 81002,
-      "permissionCode": "manage.review.view",
+      "permissionCode": "application.review",
       "scopeType": "CATEGORY",
       "orgUnitId": null,
       "orgUnitName": null,
@@ -719,7 +723,7 @@ A 组应优先依赖并落地以下表：
     },
     {
       "scopeRuleId": 81003,
-      "permissionCode": "manage.students.view",
+      "permissionCode": "application.view.assigned",
       "scopeType": "ORG_SUBTREE",
       "orgUnitId": 2002,
       "orgUnitName": "计算机与人工智能学院",
@@ -764,7 +768,7 @@ A 组应优先依赖并落地以下表：
 
 ```json
 {
-  "permissionCode": "manage.review.view",
+  "permissionCode": "application.review",
   "scopeType": "ORG_SUBTREE",
   "orgUnitId": 2002,
   "priority": 100
@@ -775,7 +779,7 @@ A 组应优先依赖并落地以下表：
 
 ```json
 {
-  "permissionCode": "manage.review.view",
+  "permissionCode": "application.review",
   "scopeType": "CATEGORY",
   "categoryCode": "MORAL",
   "priority": 90
@@ -794,7 +798,7 @@ A 组应优先依赖并落地以下表：
   "data": {
     "scopeRuleId": 81004,
     "assignmentId": 70021,
-    "permissionCode": "manage.review.view",
+    "permissionCode": "application.review",
     "scopeType": "CATEGORY",
     "orgUnitId": null,
     "categoryCode": "MORAL",

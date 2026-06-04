@@ -19,6 +19,14 @@
 | `delivery-master-checklist.md` | 全局总控清单 | 合并数据库责任矩阵、接口依赖矩阵、交付顺序与最小交付项 |
 | `foundation-capabilities-guide.md` | 全局底座说明 | 认证、仓储调用、文件上传、配置、日志、异常、开发规范 |
 
+
+## 当前实现状态标识
+
+- `CURRENT_IMPLEMENTED`：已与当前 Java Controller / Mapper / Service 对齐，可作为当前联调契约。
+- `PARTIAL_IMPLEMENTED`：已有部分接口或表结构落地，但文档仍包含目标态内容，未实现部分不得直接作为联调契约。
+- `TARGET_BLUEPRINT`：交付设计目标，不代表当前代码已经实现。
+- `SQL_NEEDS_SYNC`：脚本曾发现与运行代码不一致，使用前必须先跑一致性校验。
+
 ## 推荐阅读顺序
 
 1. 项目负责人先读 `delivery-master-checklist.md`，把数据库责任、接口依赖和交付顺序整体过一遍。
@@ -30,7 +38,7 @@
 
 ## 统一约定
 
-- 这些文档描述的是“目标实现接口”，允许与旧系统接口不同。
+- 这些文档描述的是“目标实现接口”，允许与旧系统接口不同；是否已落地以各文档的当前实现状态标识为准。
 - 如果文档写的是“建议冻结”，默认表示项目层面应优先按该方案落地，除非负责人另行拍板。
 - HTTP 成功响应统一采用 `ApiResponse<T>`：`success/code/message/data`。
 - HTTP 异常响应统一由 `GlobalExceptionHandler` 映射，常见错误码包括：`VAL-4001`、`AUTH-4010`、`AUTH-4030`、`RES-4040`、`BIZ-4090`、`CFG-5031`、`EXT-5033`、`SYS-5000`。

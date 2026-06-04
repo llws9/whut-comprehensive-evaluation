@@ -27,7 +27,7 @@
 ### 1. A-5 分页查询用户改为真实查库
 - **状态**：[x]
 - **目标**：`/api/admin/users` 返回真实分页结果，支持 `pageNo/pageSize/keyword/status/orgUnitId`。
-- **当前问题**：应用层仍为占位实现，固定空页。
+- **历史问题**：应用层曾为占位实现并返回固定空页；当前已完成真实查库。
 - **关键文件**：
   - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/UserAdminController.java`
   - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/UserAdminApplicationService.java`
@@ -51,7 +51,7 @@
 ### 2. A-8 批量导入用户改为真实导入
 - **状态**：[x]
 - **目标**：`/api/admin/users/import` 完成 Excel 解析及导入。
-- **当前问题**：仅参数校验，返回固定 `0/0/0`。
+- **历史问题**：导入链路曾仅做参数校验并返回固定 `0/0/0`；当前已完成真实解析、校验和落库统计。
 - **关键文件**：
   - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/UserAdminApplicationService.java`
   - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/UserImportParser.java`
@@ -83,7 +83,7 @@
 ### 3. A-6 创建用户补齐 primaryOrgUnitId 落库
 - **状态**：[x]
 - **目标**：创建用户时若传 `primaryOrgUnitId`，同步写入 `org_membership` 主组织归属。
-- **当前问题**：字段已接收，业务未使用。
+- **历史问题**：字段曾已接收但业务未使用；当前已按完成说明落库。
 - **关键文件**：
   - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/iam/request/CreateUserRequest.java`
   - `whut-eval-application/src/main/java/edu/whut/eval/application/iam/service/UserAdminApplicationService.java`

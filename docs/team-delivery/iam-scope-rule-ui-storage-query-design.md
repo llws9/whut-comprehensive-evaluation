@@ -1,5 +1,7 @@
 # 管理端权限分配与范围过滤方案
 
+> 当前实现说明：A 组后端当前采用“角色分配”和“范围规则”分离接口。角色分配创建使用 `roleCode/orgUnitId/effectiveFrom/effectiveTo/sourceType`；范围规则通过 `POST /api/admin/role-assignments/{assignmentId}/scope-rules` 单独新增。本文中的整包提交体属于管理端产品形态建议，不代表当前后端已提供整包保存接口。
+
 ## 1. 文档目标
 
 本文档用于把以下 3 件事一次性讲清楚：
@@ -46,13 +48,12 @@
 | `userId` | `number` | 是 | 被分配用户 | `iam_user_role_assignment.user_id` |
 | `userNo` | `string` | 否 | 展示字段，便于检索 | 不单独落库 |
 | `userName` | `string` | 否 | 展示字段 | 不单独落库 |
-| `roleId` | `number` | 是 | 角色模板 | `iam_user_role_assignment.role_id` |
-| `roleCode` | `string` | 否 | 展示字段 | 不单独落库 |
-| `mountOrgUnitId` | `number` | 是 | 角色挂载组织节点 | `iam_user_role_assignment.org_unit_id` |
+| `roleCode` | `string` | 是 | 当前实现按角色编码选择角色模板，后端解析为 role_id | `iam_user_role_assignment.role_id` |
+| `orgUnitId` | `number` | 是 | 角色挂载组织节点 | `iam_user_role_assignment.org_unit_id` |
 | `sourceType` | `enum` | 是 | `MANUAL/SYSTEM/IMPORT` | `iam_user_role_assignment.source_type` |
 | `effectiveFrom` | `datetime` | 是 | 生效时间 | `iam_user_role_assignment.effective_from` |
 | `effectiveTo` | `datetime` | 否 | 失效时间 | `iam_user_role_assignment.effective_to` |
-| `assignmentStatus` | `enum` | 是 | `ACTIVE/INACTIVE` | `iam_user_role_assignment.status` |
+| `status` | `enum` | 否 | 创建时当前后端固定为 `ACTIVE`；更新接口才允许 `ACTIVE/INACTIVE` | `iam_user_role_assignment.status` |
 | `assignedBy` | `number` | 否 | 当前操作人 | `iam_user_role_assignment.assigned_by` |
 
 ### 4.3 范围规则配置字段
@@ -63,7 +64,7 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `permissionCode` | `string` | 是 | 例如 `manage.review.view` |
+| `permissionCode` | `string` | 是 | 例如 `application.review` |
 | `scopePreset` | `enum` | 是 | 受控预设，供页面选择 |
 | `orgUnitId` | `number` | 条件必填 | 组织范围节点 |
 | `categoryCode` | `string` | 条件必填 | 申请大类 |
@@ -95,7 +96,7 @@
 - 当 `scopePreset=本人/本部门/本部门及下级/全部` 时，隐藏类别和子项选择
 - 当 `scopePreset=指定类别` 时，只显示 `categoryCode`
 - 当 `scopePreset=指定子项` 时，先选 `categoryCode`，再联动 `itemCode`
-- 当 `scopePreset=本部门 + 指定类别` 或 `本部门及下级 + 指定类别` 时，`orgUnitId` 默认使用 `mountOrgUnitId`
+- 当 `scopePreset=本部门 + 指定类别` 或 `本部门及下级 + 指定类别` 时，scope rule 的 `orgUnitId` 默认使用角色分配的 `orgUnitId`
 - 当角色的 `role_scope=SELF` 时，前端只能选 `本人`
 - 当角色的 `role_scope=ALL` 时，可以允许选 `全部`，也可降级配置更小范围
 
@@ -131,7 +132,7 @@
 
 ```json
 {
-  "permissionCode": "manage.review.view",
+  "permissionCode": "application.review",
   "scopePreset": "SELF"
 }
 ```
@@ -149,7 +150,7 @@ item_code = null
 
 ```json
 {
-  "permissionCode": "manage.review.view",
+  "permissionCode": "application.review",
   "scopePreset": "ORG_UNIT"
 }
 ```
@@ -167,7 +168,7 @@ item_code = null
 
 ```json
 {
-  "permissionCode": "manage.review.view",
+  "permissionCode": "application.review",
   "scopePreset": "ORG_SUBTREE"
 }
 ```
@@ -185,7 +186,7 @@ item_code = null
 
 ```json
 {
-  "permissionCode": "manage.review.view",
+  "permissionCode": "application.review",
   "scopePreset": "CATEGORY",
   "categoryCode": "MORAL"
 }
@@ -202,7 +203,7 @@ category_code = MORAL
 
 ```json
 {
-  "permissionCode": "manage.review.view",
+  "permissionCode": "application.review",
   "scopePreset": "ITEM",
   "itemCode": "SPORTS_ART_CONTRIBUTION"
 }
@@ -295,29 +296,28 @@ category_code = SPORTS
 
 ### 6.1 页面提交体建议
 
-建议新增一个“角色分配 + 范围规则整包保存”请求体：
+目标态可新增一个“角色分配 + 范围规则整包保存”请求体；当前后端实现不提供该整包接口：
 
 ```json
 {
   "userId": 1010,
-  "roleId": 4003,
-  "mountOrgUnitId": 2002,
+  "roleCode": "COUNSELOR",
+  "orgUnitId": 2002,
   "sourceType": "MANUAL",
   "effectiveFrom": "2026-05-20T00:00:00",
   "effectiveTo": null,
-  "assignmentStatus": "ACTIVE",
   "scopeRules": [
     {
-      "permissionCode": "manage.review.view",
+      "permissionCode": "application.review",
       "scopePreset": "ORG_SUBTREE"
     },
     {
-      "permissionCode": "manage.review.view",
+      "permissionCode": "application.review",
       "scopePreset": "CATEGORY",
       "categoryCode": "MORAL"
     },
     {
-      "permissionCode": "manage.students.view",
+      "permissionCode": "application.view.assigned",
       "scopePreset": "ORG_SUBTREE"
     }
   ]
@@ -328,11 +328,10 @@ category_code = SPORTS
 
 建议固定为：
 
-1. 校验 `userId/roleId/mountOrgUnitId`
-2. 创建或更新 `iam_user_role_assignment`
-3. 逻辑删除或停用旧 `iam_scope_rule`
-4. 按新请求重建启用中的 `iam_scope_rule`
-5. 返回 assignment + scopeRules 快照
+1. 当前接口先校验 `userId/roleCode/orgUnitId` 并创建或更新 `iam_user_role_assignment`
+2. 当前接口再通过 `/scope-rules` 单独新增启用中的 `iam_scope_rule`
+3. 目标态整包接口若后续落地，应在一个应用服务事务内完成 assignment 与 scopeRules 的一致性保存
+4. 返回 assignment 或 scopeRules 快照
 
 ### 6.3 校验规则
 
@@ -641,7 +640,7 @@ public PageResult<ApplicationListRow> queryReviewPage(
 ) {
     ApplicationScopeQuery scopeQuery = buildScopeQuery(
             currentUserId,
-            "manage.review.view",
+            "application.review",
             assignmentId
     );
 

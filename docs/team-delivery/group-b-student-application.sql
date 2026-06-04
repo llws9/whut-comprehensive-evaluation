@@ -15,7 +15,7 @@ DROP TABLE IF EXISTS `application_fact`;
 DROP TABLE IF EXISTS `application_submission`;
 
 CREATE TABLE `application_submission` (
-  `id` BIGINT NOT NULL,
+  `application_id` BIGINT NOT NULL,
   `applicant_user_id` BIGINT NOT NULL,
   `org_unit_id` BIGINT NOT NULL,
   `category_code` VARCHAR(64) NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE `application_submission` (
   `created_at` DATETIME NOT NULL,
   `updated_at` DATETIME NOT NULL,
   `version` BIGINT NOT NULL,
-  PRIMARY KEY (`id`),
+  PRIMARY KEY (`application_id`),
   KEY `idx_application_submission_applicant_user_id` (`applicant_user_id`),
   KEY `idx_application_submission_org_unit_id` (`org_unit_id`),
   KEY `idx_application_submission_item_code` (`item_code`),
@@ -65,7 +65,7 @@ CREATE TABLE `application_attachment` (
   KEY `idx_application_attachment_file_id` (`file_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='申请附件绑定';
 
-INSERT INTO `application_submission` (`id`, `applicant_user_id`, `org_unit_id`, `category_code`, `item_code`, `academic_year`, `term`, `title`, `description`, `status`, `submitted_at`, `created_at`, `updated_at`, `version`) VALUES
+INSERT INTO `application_submission` (`application_id`, `applicant_user_id`, `org_unit_id`, `category_code`, `item_code`, `academic_year`, `term`, `title`, `description`, `status`, `submitted_at`, `created_at`, `updated_at`, `version`) VALUES
 (21001, 1001, 2010, 'INTELLECTUAL', 'INTELLECTUAL_COMPETITION', '2025-2026', '上学期', '全国大学生数学建模竞赛校赛一等奖', '参加数学建模校赛并获得一等奖，已提交证书与获奖通知。', 'APPROVED', '2026-05-12 09:00:00', '2026-05-11 18:00:00', '2026-05-16 10:00:00', 3),
 (21002, 1002, 2010, 'MORAL', 'MORAL_VOLUNTEER', '2025-2026', '上学期', '敬老院志愿服务项目', '参与社区敬老院志愿服务 24 小时，附服务证明。', 'SUBMITTED', '2026-05-13 10:00:00', '2026-05-13 09:20:00', '2026-05-13 10:00:00', 1),
 (21003, 1003, 2010, 'SPORTS', 'SPORTS_ART_CONTRIBUTION', '2025-2026', '上学期', '校园文化作品征稿录用', '摄影作品被校级媒体采用，需补充合作分工说明。', 'RETURNED', '2026-05-13 14:00:00', '2026-05-12 16:30:00', '2026-05-15 11:40:00', 2),
@@ -97,7 +97,7 @@ INSERT INTO `application_attachment` (`id`, `application_id`, `file_id`, `select
 (23001, 21001, 'FILE-0001', 'SELF_UPLOAD', 1, '数学建模校赛一等奖.pdf', 'application/pdf', 256000, 'attachments/2026/05/certificate-mcm.pdf', '2026-05-11 18:01:00'),
 (23002, 21001, 'FILE-0008', 'PUBLIC_POOL', 2, '综测申请模板.pdf', 'application/pdf', 142000, 'attachments/2026/05/guide-template.pdf', '2026-05-11 18:02:00'),
 (23003, 21002, 'FILE-0002', 'SELF_UPLOAD', 1, '志愿服务时长证明.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 88000, 'attachments/2026/05/volunteer-hours.docx', '2026-05-13 09:21:00'),
-(23004, 21002, 'FILE-0005', 'PUBLIC_POOL', 2, '志愿服务证明示例', 'application/pdf', 156000, 'attachments/2026/05/old-template.pdf', '2026-05-13 09:22:00'),
+(23004, 21002, 'FILE-0008', 'PUBLIC_POOL', 2, '综测申请模板.pdf', 'application/pdf', 142000, 'attachments/2026/05/guide-template.pdf', '2026-05-13 09:22:00'),
 (23005, 21003, 'FILE-0003', 'SELF_UPLOAD', 1, '征稿录用函.pdf', 'application/pdf', 198000, 'attachments/2026/05/essay-accepted.pdf', '2026-05-12 16:31:00'),
 (23006, 21003, 'FILE-0010', 'PUBLIC_POOL', 2, '公共素材包.zip', 'application/zip', 804000, 'attachments/2026/05/public-photo.zip', '2026-05-12 16:32:00'),
 (23007, 21004, 'FILE-0004', 'SELF_UPLOAD', 1, '校运会获奖照片.jpg', 'image/jpeg', 620000, 'attachments/2026/05/sports-award.jpg', '2026-05-10 20:11:00'),
