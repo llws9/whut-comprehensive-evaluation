@@ -11,6 +11,8 @@ import org.springframework.util.StringUtils;
 @Component
 public class JwtConfigurationValidator implements InitializingBean {
 
+    private static final String BUILT_IN_HS_PLACEHOLDER = "local-dev-jwt-secret-change-me-1234567890";
+
     private static final Logger log = LoggerFactory.getLogger(JwtConfigurationValidator.class);
 
     private final SecurityProperties securityProperties;
@@ -47,6 +49,7 @@ public class JwtConfigurationValidator implements InitializingBean {
         String algorithm = jwt.getAlgorithm().trim().toUpperCase();
         if (algorithm.startsWith("HS")) {
             validateNotBlank(jwt.getSecret(), "infra.security.jwt.secret");
+            validateNotPlaceholder(jwt.getSecret(), "infra.security.jwt.secret");
             validateMinimumSecretLength(jwt.getSecret(), "infra.security.jwt.secret", 32);
         } else if (algorithm.startsWith("RS")) {
             validateNotBlank(jwt.getPublicKey(), "infra.security.jwt.public-key");
@@ -75,6 +78,12 @@ public class JwtConfigurationValidator implements InitializingBean {
     private void validateMinimumSecretLength(String value, String propertyName, int minimumLength) {
         if (value.length() < minimumLength) {
             throw new ConfigLoadException(propertyName + " must be at least " + minimumLength + " characters for HS algorithms");
+        }
+    }
+
+    private void validateNotPlaceholder(String value, String propertyName) {
+        if (BUILT_IN_HS_PLACEHOLDER.equals(value)) {
+            throw new ConfigLoadException(propertyName + " must not use built-in placeholder secret");
         }
     }
 }

@@ -14,11 +14,24 @@ class JwtConfigurationValidatorTest {
     void shouldPassWhenHsConfigurationIsValid() {
         SecurityProperties properties = new SecurityProperties();
         properties.getJwt().setAlgorithm("HS256");
-        properties.getJwt().setSecret("local-dev-jwt-secret-change-me-1234567890");
+        properties.getJwt().setSecret("test-only-strong-jwt-secret-1234567890");
 
         JwtConfigurationValidator validator = new JwtConfigurationValidator(properties);
 
         assertThatCode(validator::afterPropertiesSet).doesNotThrowAnyException();
+    }
+
+    @Test
+    void shouldFailWhenHsSecretUsesBuiltInPlaceholder() {
+        SecurityProperties properties = new SecurityProperties();
+        properties.getJwt().setAlgorithm("HS256");
+        properties.getJwt().setSecret("local-dev-jwt-secret-change-me-1234567890");
+
+        JwtConfigurationValidator validator = new JwtConfigurationValidator(properties);
+
+        assertThatThrownBy(validator::afterPropertiesSet)
+                .isInstanceOf(ConfigLoadException.class)
+                .hasMessageContaining("must not use built-in placeholder");
     }
 
     @Test

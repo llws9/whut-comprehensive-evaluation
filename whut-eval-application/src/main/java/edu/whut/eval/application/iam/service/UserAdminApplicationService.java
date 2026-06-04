@@ -208,6 +208,7 @@ public class UserAdminApplicationService {
                 failedRows.add(new UserImportFailedRowView(row.rowNo(), "userNo 对应用户不存在或已被并发删除"));
                 continue;
             }
+            sessionRevocationService.revokeAllActiveSessions(existing.id(), "user_import_updated");
             successCount++;
         }
 

@@ -7,6 +7,7 @@ import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.iam.model.IamRoleAssignmentDetail;
 import edu.whut.eval.domain.iam.model.IamScopeRuleDetail;
+import edu.whut.eval.domain.iam.model.RoleAssignmentCurrentStatusResolver;
 import edu.whut.eval.domain.iam.repository.RoleAssignmentAdminRepository;
 import edu.whut.eval.domain.iam.repository.ScopeRuleAdminRepository;
 import edu.whut.eval.domain.org.model.OrgUnit;
@@ -14,6 +15,8 @@ import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -52,8 +55,10 @@ public class DefaultScopeRuleAdminApplicationService implements ScopeRuleAdminAp
     @Override
     @Transactional
     public ScopeRuleAdminView createScopeRule(Long assignmentId, CreateScopeRuleCommand command) {
-        requireAssignment(assignmentId);
+        IamRoleAssignmentDetail assignment = requireAssignment(assignmentId);
+        validateCurrentAssignmentActive(assignment);
         validateScopeCommand(command);
+        validateRoleOwnsPermission(assignmentId, command.permissionCode());
 
         OrgUnit orgUnit = resolveOrgUnitIfNeeded(command.orgUnitId());
         Integer priority = command.priority() == null ? 100 : command.priority();
@@ -124,6 +129,35 @@ public class DefaultScopeRuleAdminApplicationService implements ScopeRuleAdminAp
                 break;
             default:
                 throw new ValidationException("scopeType 不在允许范围内");
+        }
+    }
+
+    private void validateCurrentAssignmentActive(IamRoleAssignmentDetail assignment) {
+        String currentStatus = RoleAssignmentCurrentStatusResolver.resolve(
+                assignment.status(),
+                parseTime(assignment.effectiveFrom(), "effectiveFrom"),
+                parseTime(assignment.effectiveTo(), "effectiveTo"),
+                LocalDateTime.now()
+        );
+        if (!"ACTIVE".equals(currentStatus)) {
+            throw new ConflictException("仅 ACTIVE 状态的角色分配允许新增范围规则");
+        }
+    }
+
+    private void validateRoleOwnsPermission(Long assignmentId, String permissionCode) {
+        if (!scopeRuleAdminRepository.assignmentRoleOwnsPermission(assignmentId, permissionCode)) {
+            throw new ValidationException("角色未拥有权限码: " + permissionCode);
+        }
+    }
+
+    private LocalDateTime parseTime(String time, String field) {
+        if (time == null || time.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDateTime.parse(time);
+        } catch (DateTimeParseException ex) {
+            throw new ValidationException(field + " 时间格式非法");
         }
     }
 

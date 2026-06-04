@@ -17,6 +17,8 @@ public interface ScopeRuleAdminRepository {
                                     String itemCode,
                                     Map<String, Object> expressionJson);
 
+    boolean assignmentRoleOwnsPermission(Long assignmentId, String permissionCode);
+
     IamScopeRuleDetail create(Long assignmentId,
                               String permissionCode,
                               String scopeType,
