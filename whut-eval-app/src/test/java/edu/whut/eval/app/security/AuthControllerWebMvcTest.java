@@ -221,7 +221,7 @@ class AuthControllerWebMvcTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"refreshToken\":\"invalid-token\"}"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.code").value("AUTH-4010"));
+                .andExpect(jsonPath("$.code").value("AUTH-4012"));
     }
 
     @Test
@@ -232,8 +232,34 @@ class AuthControllerWebMvcTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"refreshToken\":\"" + accessToken + "\"}"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.code").value("AUTH-4010"))
+                .andExpect(jsonPath("$.code").value("AUTH-4012"))
                 .andExpect(jsonPath("$.message").value("refresh token 校验失败: JWT token type is not refresh"));
+    }
+
+    @Test
+    void shouldReturn4011WhenRefreshTokenIsExpired() throws Exception {
+        String refreshToken = createExpiredRefreshToken();
+
+        mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refreshToken\":\"" + refreshToken + "\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4011"));
+    }
+
+    @Test
+    void shouldReturn4012WhenRefreshSessionIsInvalid() throws Exception {
+        String refreshToken = createRefreshToken();
+        org.mockito.BDDMockito.willThrow(new AuthenticationFailedException("refresh token 会话不存在或已失效"))
+                .given(refreshSessionService)
+                .validateRefreshSession(any(RefreshSessionValidationCommand.class));
+
+        mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refreshToken\":\"" + refreshToken + "\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4012"))
+                .andExpect(jsonPath("$.message").value("refresh token 会话不存在或已失效"));
     }
 
     @Test
@@ -409,6 +435,24 @@ class AuthControllerWebMvcTest {
                 .claim("uno", "2024305999")
                 .claim("identity", "student")
                 .claim("sid", "session-no-123")
+                .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
+                .compact();
+    }
+
+    private String createExpiredRefreshToken() {
+        Instant now = Instant.now();
+        return Jwts.builder()
+                .id("expired-refresh-jti")
+                .subject("1001")
+                .issuer("whut-eval")
+                .audience().add("whut-eval-api").and()
+                .issuedAt(Date.from(now.minusSeconds(7200)))
+                .expiration(Date.from(now.minusSeconds(120)))
+                .claim("token_type", "refresh")
+                .claim("uid", 1001L)
+                .claim("uno", "2024305999")
+                .claim("identity", "student")
+                .claim("sid", "expired-session-no")
                 .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
                 .compact();
     }

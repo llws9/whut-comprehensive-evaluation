@@ -15,6 +15,7 @@ import edu.whut.eval.app.security.dto.LoginRequest;
 import edu.whut.eval.app.security.dto.RefreshTokenRequest;
 import edu.whut.eval.common.api.ApiResponse;
 import edu.whut.eval.common.error.CommonErrorCode;
+import edu.whut.eval.common.exception.AuthenticationFailedException;
 import edu.whut.eval.common.log.AppLog;
 import edu.whut.eval.infra.security.context.CurrentUser;
 import edu.whut.eval.infra.security.jwt.JwtAuthenticationException;
@@ -24,6 +25,7 @@ import edu.whut.eval.infra.security.jwt.JwtTokenPair;
 import edu.whut.eval.infra.security.jwt.RefreshTokenClaimsMapper;
 import edu.whut.eval.infra.security.jwt.RefreshTokenSubject;
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.ExpiredJwtException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -162,10 +164,35 @@ public class AuthController {
             AppLog.warn(log, "security.auth.refresh.token.invalid",
                     "tokenLength", tokenLength,
                     "reason", exception.getMessage());
-            return ResponseEntity.status(CommonErrorCode.AUTHENTICATION_FAILED.httpStatus())
-                    .body(ApiResponse.failure(CommonErrorCode.AUTHENTICATION_FAILED,
+            CommonErrorCode errorCode = resolveRefreshTokenErrorCode(exception);
+            return ResponseEntity.status(errorCode.httpStatus())
+                    .body(ApiResponse.failure(errorCode,
                             "refresh token 校验失败: " + exception.getMessage()));
+        } catch (AuthenticationFailedException exception) {
+            AppLog.warn(log, "security.auth.refresh.session.invalid",
+                    "tokenLength", tokenLength,
+                    "reason", exception.getMessage());
+            return ResponseEntity.status(CommonErrorCode.TOKEN_INVALID.httpStatus())
+                    .body(ApiResponse.failure(CommonErrorCode.TOKEN_INVALID, exception.getMessage()));
         }
+    }
+
+    private CommonErrorCode resolveRefreshTokenErrorCode(JwtAuthenticationException exception) {
+        if (hasCause(exception, ExpiredJwtException.class)) {
+            return CommonErrorCode.TOKEN_EXPIRED;
+        }
+        return CommonErrorCode.TOKEN_INVALID;
+    }
+
+    private boolean hasCause(Throwable throwable, Class<? extends Throwable> causeType) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (causeType.isInstance(current)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     @PostMapping("/logout")
