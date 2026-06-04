@@ -96,6 +96,27 @@ class MybatisPlusUserMembershipAdminRepositoryIntegrationTest {
     }
 
     @Test
+    void shouldCreatePrimaryMembershipForUser() {
+        repository.createPrimaryMembership(1010L, 2011L, "2026-06-03T10:00:00");
+
+        Map<String, Object> created = jdbcTemplate.queryForMap(
+                "SELECT user_id, org_unit_id, membership_type, is_primary, status, joined_at, left_at, created_at " +
+                        "FROM org_membership WHERE user_id = ? AND org_unit_id = ? AND status = 'ACTIVE'",
+                1010L,
+                2011L
+        );
+
+        assertThat(created.get("user_id")).isEqualTo(1010L);
+        assertThat(created.get("org_unit_id")).isEqualTo(2011L);
+        assertThat(created.get("membership_type")).isEqualTo("MANUAL");
+        assertThat(created.get("is_primary")).isIn(true, 1);
+        assertThat(created.get("status")).isEqualTo("ACTIVE");
+        assertThat(created.get("joined_at")).isEqualTo(Timestamp.valueOf("2026-06-03 10:00:00"));
+        assertThat(created.get("created_at")).isEqualTo(Timestamp.valueOf("2026-06-03 10:00:00"));
+        assertThat(created.get("left_at")).isNull();
+    }
+
+    @Test
     void shouldReplaceMembershipSetByPreservingTypeAndMarkingRemovedInactive() {
         repository.replaceMemberships(
                 1010L,

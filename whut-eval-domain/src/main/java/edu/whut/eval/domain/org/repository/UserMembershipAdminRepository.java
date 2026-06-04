@@ -11,4 +11,6 @@ public interface UserMembershipAdminRepository {
     List<OrgMembership> findActiveMembershipsByUserId(Long userId);
 
     void replaceMemberships(Long userId, List<OrgMembership> activeMemberships, List<OrgMembership> inactiveMemberships);
+
+    void createPrimaryMembership(Long userId, Long orgUnitId, String joinedAt);
 }
