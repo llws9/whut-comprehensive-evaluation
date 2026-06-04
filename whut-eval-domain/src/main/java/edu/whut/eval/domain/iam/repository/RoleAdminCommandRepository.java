@@ -2,6 +2,7 @@ package edu.whut.eval.domain.iam.repository;
 
 import edu.whut.eval.domain.iam.model.IamRoleDetail;
 
+import java.util.List;
 import java.util.Optional;
 
 public interface RoleAdminCommandRepository {
@@ -19,4 +20,6 @@ public interface RoleAdminCommandRepository {
                                String snapshotRoleName,
                                String snapshotRoleScope,
                                String snapshotStatus);
+
+    void replacePermissions(Long roleId, List<String> permissionCodes);
 }

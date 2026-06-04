@@ -1,6 +1,7 @@
 package edu.whut.eval.interfaces.iam;
 
 import edu.whut.eval.application.iam.command.CreateRoleCommand;
+import edu.whut.eval.application.iam.command.ReplaceRolePermissionsCommand;
 import edu.whut.eval.application.iam.query.RoleAdminPageItemView;
 import edu.whut.eval.application.iam.query.RoleAdminPageQuery;
 import edu.whut.eval.application.iam.command.UpdateRoleCommand;
@@ -10,6 +11,7 @@ import edu.whut.eval.application.iam.service.RoleAdminQueryApplicationService;
 import edu.whut.eval.common.api.ApiResponse;
 import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.interfaces.iam.request.CreateRoleRequest;
+import edu.whut.eval.interfaces.iam.request.ReplaceRolePermissionsRequest;
 import edu.whut.eval.interfaces.iam.request.UpdateRoleRequest;
 import edu.whut.eval.interfaces.iam.response.RoleAdminPageItemResponse;
 import edu.whut.eval.interfaces.iam.response.RoleCreatedResponse;
@@ -80,6 +82,18 @@ public class RoleAdminController {
                 request.getSnapshotRoleName(),
                 request.getSnapshotRoleScope(),
                 request.getSnapshotStatus()
+        ));
+        return ApiResponse.success(null);
+    }
+
+
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).PERMISSION_MANAGE)")
+    @PostMapping("/{roleId}/permissions")
+    public ApiResponse<Void> replacePermissions(@PathVariable Long roleId,
+                                                @Valid @RequestBody ReplaceRolePermissionsRequest request) {
+        roleAdminApplicationService.replacePermissions(roleId, new ReplaceRolePermissionsCommand(
+                request.getPermissionCodes(),
+                request.getReplaceAll()
         ));
         return ApiResponse.success(null);
     }

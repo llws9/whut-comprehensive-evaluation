@@ -19,6 +19,7 @@ public class JwtProperties {
     private String rolesClaim = "roles";
     private String authoritiesClaim = "authorities";
     private String tokenTypeClaim = "token_type";
+    private String sessionIdClaim = "sid";
     private String accessTokenType = "access";
     private String refreshTokenType = "refresh";
 
@@ -152,6 +153,14 @@ public class JwtProperties {
 
     public String getTokenTypeClaim() {
         return tokenTypeClaim;
+    }
+
+    public String getSessionIdClaim() {
+        return sessionIdClaim;
+    }
+
+    public void setSessionIdClaim(String sessionIdClaim) {
+        this.sessionIdClaim = sessionIdClaim;
     }
 
     public void setTokenTypeClaim(String tokenTypeClaim) {

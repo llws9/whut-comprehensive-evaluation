@@ -1,10 +1,14 @@
 package edu.whut.eval.infra.security.jwt;
 
+import edu.whut.eval.application.auth.model.AccessSessionValidationCommand;
+import edu.whut.eval.application.auth.service.AccessSessionService;
+import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
+import edu.whut.eval.common.exception.AuthenticationFailedException;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContextLoadRequest;
-import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
 import edu.whut.eval.common.log.AppLog;
 import edu.whut.eval.infra.security.context.CurrentUser;
+import edu.whut.eval.infra.security.config.SecurityProperties;
 import edu.whut.eval.infra.security.web.RestAuthenticationEntryPoint;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
@@ -32,18 +36,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtClaimsParser jwtClaimsParser;
     private final JwtClaimsToCurrentUserMapper jwtClaimsToCurrentUserMapper;
     private final UserAuthorizationContextLoader userAuthorizationContextLoader;
+    private final AccessSessionService accessSessionService;
     private final RestAuthenticationEntryPoint authenticationEntryPoint;
+    private final SecurityProperties securityProperties;
 
     public JwtAuthenticationFilter(JwtTokenResolver jwtTokenResolver,
                                    JwtClaimsParser jwtClaimsParser,
                                    JwtClaimsToCurrentUserMapper jwtClaimsToCurrentUserMapper,
                                    UserAuthorizationContextLoader userAuthorizationContextLoader,
-                                   RestAuthenticationEntryPoint authenticationEntryPoint) {
+                                   AccessSessionService accessSessionService,
+                                   RestAuthenticationEntryPoint authenticationEntryPoint,
+                                   SecurityProperties securityProperties) {
         this.jwtTokenResolver = jwtTokenResolver;
         this.jwtClaimsParser = jwtClaimsParser;
         this.jwtClaimsToCurrentUserMapper = jwtClaimsToCurrentUserMapper;
         this.userAuthorizationContextLoader = userAuthorizationContextLoader;
+        this.accessSessionService = accessSessionService;
         this.authenticationEntryPoint = authenticationEntryPoint;
+        this.securityProperties = securityProperties;
     }
 
     @Override
@@ -71,6 +81,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
             Claims claims = jwtClaimsParser.parse(resolvedToken.getToken(), resolvedToken.getSource());
             CurrentUser tokenUser = jwtClaimsToCurrentUserMapper.map(claims);
+            accessSessionService.validateAccessSession(new AccessSessionValidationCommand(
+                    tokenUser.getUserId(),
+                    readSessionNo(claims),
+                    readTokenId(claims)
+            ));
             UserAuthorizationContext authorizationContext = userAuthorizationContextLoader.load(
                     new UserAuthorizationContextLoadRequest(
                             tokenUser.getUserId(),
@@ -99,6 +114,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     "scopeRuleCount", currentUser.getScopeRules().size());
 
             filterChain.doFilter(request, response);
+        } catch (AuthenticationFailedException exception) {
+            SecurityContextHolder.clearContext();
+            AppLog.warn(log, "security.jwt.filter.session-invalid",
+                    "path", request.getRequestURI(),
+                    "method", request.getMethod(),
+                    "reason", exception.getMessage());
+            authenticationEntryPoint.commence(request, response,
+                    new JwtAuthenticationException(exception.getMessage(), exception));
         } catch (JwtAuthenticationException exception) {
             SecurityContextHolder.clearContext();
             AppLog.warn(log, "security.jwt.filter.authentication-failed",
@@ -107,6 +130,22 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     "reason", exception.getMessage());
             authenticationEntryPoint.commence(request, response, exception);
         }
+    }
+
+    private String readSessionNo(Claims claims) {
+        String claimName = securityProperties.getJwt().getSessionIdClaim();
+        Object value = claims.get(claimName);
+        if (value == null || !org.springframework.util.StringUtils.hasText(String.valueOf(value))) {
+            throw new JwtAuthenticationException("Required JWT claim is missing: " + claimName);
+        }
+        return String.valueOf(value).trim();
+    }
+
+    private String readTokenId(Claims claims) {
+        if (!org.springframework.util.StringUtils.hasText(claims.getId())) {
+            throw new JwtAuthenticationException("Required JWT id is missing");
+        }
+        return claims.getId().trim();
     }
 
     private List<GrantedAuthority> toGrantedAuthorities(CurrentUser currentUser) {

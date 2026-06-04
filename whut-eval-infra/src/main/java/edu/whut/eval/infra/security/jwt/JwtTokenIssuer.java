@@ -19,6 +19,7 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Date;
+import java.util.UUID;
 
 @Component
 public class JwtTokenIssuer {
@@ -32,12 +33,18 @@ public class JwtTokenIssuer {
     }
 
     public JwtTokenPair issueTokenPair(CurrentUser currentUser) {
+        return issueTokenPair(currentUser, generateSessionNo());
+    }
+
+    public JwtTokenPair issueTokenPair(CurrentUser currentUser, String sessionNo) {
         Instant issuedAt = Instant.now();
         Instant accessExpiresAt = issuedAt.plusSeconds(securityProperties.getJwt().getAccessTokenTtlSeconds());
         Instant refreshExpiresAt = issuedAt.plusSeconds(securityProperties.getJwt().getRefreshTokenTtlSeconds());
+        String accessTokenId = generateJti();
+        String refreshTokenId = generateJti();
 
-        String accessToken = issueAccessToken(currentUser, issuedAt, accessExpiresAt);
-        String refreshToken = issueRefreshToken(currentUser, issuedAt, refreshExpiresAt);
+        String accessToken = issueAccessToken(currentUser, issuedAt, accessExpiresAt, sessionNo, accessTokenId);
+        String refreshToken = issueRefreshToken(currentUser, issuedAt, refreshExpiresAt, sessionNo, refreshTokenId);
 
         AppLog.info(log, "security.jwt.issue.token-pair",
                 "userId", currentUser.getUserId(),
@@ -46,8 +53,10 @@ public class JwtTokenIssuer {
                 "roleCount", currentUser.getRoles().size(),
                 "authorityCount", currentUser.getAuthorities().size(),
                 "accessExpiresAt", accessExpiresAt,
-                "refreshExpiresAt", refreshExpiresAt);
-        return new JwtTokenPair(accessToken, accessExpiresAt, refreshToken, refreshExpiresAt);
+                "refreshExpiresAt", refreshExpiresAt,
+                "sessionNo", sessionNo);
+        return new JwtTokenPair(accessToken, accessExpiresAt, refreshToken, refreshExpiresAt,
+                sessionNo, accessTokenId, refreshTokenId);
     }
 
     public String issueAccessToken(CurrentUser currentUser) {
@@ -65,9 +74,12 @@ public class JwtTokenIssuer {
     }
 
     String issueAccessToken(CurrentUser currentUser, Instant issuedAt, Instant expiresAt) {
+        return issueAccessToken(currentUser, issuedAt, expiresAt, generateSessionNo(), generateJti());
+    }
+
+    String issueAccessToken(CurrentUser currentUser, Instant issuedAt, Instant expiresAt, String sessionNo, String jti) {
         JwtProperties jwt = securityProperties.getJwt();
         try {
-            String jti = generateJti();
             JwtBuilder builder = Jwts.builder()
                     .id(jti)
                     .subject(String.valueOf(currentUser.getUserId()))
@@ -76,6 +88,7 @@ public class JwtTokenIssuer {
                     .issuedAt(Date.from(issuedAt))
                     .expiration(Date.from(expiresAt))
                     .claim(jwt.getTokenTypeClaim(), jwt.getAccessTokenType())
+                    .claim(jwt.getSessionIdClaim(), sessionNo)
                     .claim(jwt.getUserIdClaim(), currentUser.getUserId())
                     .claim(jwt.getUserNoClaim(), currentUser.getUserNo())
                     .claim(jwt.getUserNameClaim(), currentUser.getUserName())
@@ -88,6 +101,7 @@ public class JwtTokenIssuer {
                     "userNo", currentUser.getUserNo(),
                     "identity", currentUser.getIdentity(),
                     "jti", jti,
+                    "sessionNo", sessionNo,
                     "expiresAt", expiresAt);
             return token;
         } catch (Exception exception) {
@@ -99,9 +113,12 @@ public class JwtTokenIssuer {
     }
 
     String issueRefreshToken(CurrentUser currentUser, Instant issuedAt, Instant expiresAt) {
+        return issueRefreshToken(currentUser, issuedAt, expiresAt, generateSessionNo(), generateJti());
+    }
+
+    String issueRefreshToken(CurrentUser currentUser, Instant issuedAt, Instant expiresAt, String sessionNo, String jti) {
         JwtProperties jwt = securityProperties.getJwt();
         try {
-            String jti = generateJti();
             JwtBuilder builder = Jwts.builder()
                     .id(jti)
                     .subject(String.valueOf(currentUser.getUserId()))
@@ -110,6 +127,7 @@ public class JwtTokenIssuer {
                     .issuedAt(Date.from(issuedAt))
                     .expiration(Date.from(expiresAt))
                     .claim(jwt.getTokenTypeClaim(), jwt.getRefreshTokenType())
+                    .claim(jwt.getSessionIdClaim(), sessionNo)
                     .claim(jwt.getUserIdClaim(), currentUser.getUserId())
                     .claim(jwt.getUserNoClaim(), currentUser.getUserNo())
                     .claim(jwt.getIdentityClaim(), currentUser.getIdentity());
@@ -119,6 +137,7 @@ public class JwtTokenIssuer {
                     "userNo", currentUser.getUserNo(),
                     "identity", currentUser.getIdentity(),
                     "jti", jti,
+                    "sessionNo", sessionNo,
                     "expiresAt", expiresAt);
             return token;
         } catch (Exception exception) {
@@ -189,6 +208,10 @@ public class JwtTokenIssuer {
     }
 
     private String generateJti() {
-        return java.util.UUID.randomUUID().toString();
+        return UUID.randomUUID().toString();
+    }
+
+    private String generateSessionNo() {
+        return UUID.randomUUID().toString();
     }
 }

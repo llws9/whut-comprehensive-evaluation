@@ -23,6 +23,23 @@ public class MybatisPlusIamSessionRepository implements IamSessionRepository {
     }
 
     @Override
+    public void create(IamSession session) {
+        IamSessionDO entity = new IamSessionDO();
+        entity.setSessionNo(session.getSessionNo());
+        entity.setUserId(session.getUserId());
+        entity.setAccessTokenId(session.getAccessTokenId());
+        entity.setRefreshTokenId(session.getRefreshTokenId());
+        entity.setDeviceType(session.getDeviceType());
+        entity.setClientIp(session.getClientIp());
+        entity.setExpiredAt(session.getExpiredAt());
+        entity.setRevokedAt(session.getRevokedAt());
+        entity.setStatus(session.getStatus().name());
+        entity.setCreatedAt(session.getCreatedAt());
+        entity.setUpdatedAt(LocalDateTime.now());
+        sessionMapper.insert(entity);
+    }
+
+    @Override
     public List<IamSession> findActiveByUserId(Long userId) {
         List<IamSessionDO> entities = sessionMapper.selectActiveByUserId(userId);
         return entities.stream()
@@ -58,6 +75,26 @@ public class MybatisPlusIamSessionRepository implements IamSessionRepository {
                         .eq(IamSessionDO::getRefreshTokenId, refreshTokenId)
         );
         return entity != null ? toDomain(entity) : null;
+    }
+
+
+    @Override
+    public boolean continueRefreshSession(String sessionNo,
+                                          String oldRefreshTokenId,
+                                          String newAccessTokenId,
+                                          String newRefreshTokenId,
+                                          LocalDateTime expiredAt) {
+        IamSessionDO update = new IamSessionDO();
+        update.setAccessTokenId(newAccessTokenId);
+        update.setRefreshTokenId(newRefreshTokenId);
+        update.setExpiredAt(expiredAt);
+        update.setUpdatedAt(LocalDateTime.now());
+        return sessionMapper.update(update,
+                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<IamSessionDO>()
+                        .eq(IamSessionDO::getSessionNo, sessionNo)
+                        .eq(IamSessionDO::getRefreshTokenId, oldRefreshTokenId)
+                        .eq(IamSessionDO::getStatus, "ACTIVE")
+                        .gt(IamSessionDO::getExpiredAt, LocalDateTime.now())) > 0;
     }
 
     private IamSession toDomain(IamSessionDO entity) {

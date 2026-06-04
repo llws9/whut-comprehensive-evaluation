@@ -1,9 +1,14 @@
 package edu.whut.eval.app.security;
 
 import edu.whut.eval.application.auth.model.AuthenticatedUserSnapshot;
+import edu.whut.eval.application.auth.model.RefreshSessionContinueCommand;
+import edu.whut.eval.application.auth.model.RefreshSessionValidationCommand;
 import edu.whut.eval.application.auth.model.RefreshTokenReloadContext;
+import edu.whut.eval.application.auth.model.LoginSessionCreateCommand;
 import edu.whut.eval.application.auth.service.LoginAuthenticationService;
+import edu.whut.eval.application.auth.service.LoginSessionService;
 import edu.whut.eval.application.auth.service.LogoutService;
+import edu.whut.eval.application.auth.service.RefreshSessionService;
 import edu.whut.eval.application.auth.service.RefreshTokenCurrentUserLoader;
 import edu.whut.eval.app.security.dto.AuthTokenResponse;
 import edu.whut.eval.app.security.dto.LoginRequest;
@@ -19,6 +24,7 @@ import edu.whut.eval.infra.security.jwt.JwtTokenPair;
 import edu.whut.eval.infra.security.jwt.RefreshTokenClaimsMapper;
 import edu.whut.eval.infra.security.jwt.RefreshTokenSubject;
 import io.jsonwebtoken.Claims;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +48,8 @@ public class AuthController {
     private final JwtTokenIssuer jwtTokenIssuer;
     private final AuthTokenResponseAssembler authTokenResponseAssembler;
     private final LogoutService logoutService;
+    private final LoginSessionService loginSessionService;
+    private final RefreshSessionService refreshSessionService;
 
     public AuthController(LoginAuthenticationService loginAuthenticationService,
                           JwtClaimsParser jwtClaimsParser,
@@ -49,7 +57,9 @@ public class AuthController {
                           RefreshTokenCurrentUserLoader refreshTokenCurrentUserLoader,
                           JwtTokenIssuer jwtTokenIssuer,
                           AuthTokenResponseAssembler authTokenResponseAssembler,
-                          LogoutService logoutService) {
+                          LogoutService logoutService,
+                          LoginSessionService loginSessionService,
+                          RefreshSessionService refreshSessionService) {
         this.loginAuthenticationService = loginAuthenticationService;
         this.jwtClaimsParser = jwtClaimsParser;
         this.refreshTokenClaimsMapper = refreshTokenClaimsMapper;
@@ -57,10 +67,13 @@ public class AuthController {
         this.jwtTokenIssuer = jwtTokenIssuer;
         this.authTokenResponseAssembler = authTokenResponseAssembler;
         this.logoutService = logoutService;
+        this.loginSessionService = loginSessionService;
+        this.refreshSessionService = refreshSessionService;
     }
 
     @PostMapping("/login")
-    public ResponseEntity<ApiResponse<?>> login(@Valid @RequestBody LoginRequest request) {
+    public ResponseEntity<ApiResponse<?>> login(@Valid @RequestBody LoginRequest request,
+                                                 HttpServletRequest servletRequest) {
         AppLog.info(log, "security.auth.login.request.received",
                 "credential", request.getCredential(),
                 "passwordPresent", request.getPassword() != null && !request.getPassword().isBlank());
@@ -78,6 +91,15 @@ public class AuthController {
                 snapshot.scopeRules()
         );
         JwtTokenPair tokenPair = jwtTokenIssuer.issueTokenPair(currentUser);
+        loginSessionService.createLoginSession(new LoginSessionCreateCommand(
+                currentUser.getUserId(),
+                tokenPair.getSessionNo(),
+                tokenPair.getAccessTokenId(),
+                tokenPair.getRefreshTokenId(),
+                tokenPair.getRefreshTokenExpiresAt(),
+                servletRequest.getRemoteAddr(),
+                servletRequest.getHeader("User-Agent")
+        ));
         AuthTokenResponse response = authTokenResponseAssembler.toResponse(tokenPair);
         AppLog.info(log, "security.auth.login.completed",
                 "userId", currentUser.getUserId(),
@@ -97,10 +119,16 @@ public class AuthController {
         try {
             Claims claims = jwtClaimsParser.parse(request.getRefreshToken(), "refresh-endpoint");
             RefreshTokenSubject subject = refreshTokenClaimsMapper.map(claims);
+            refreshSessionService.validateRefreshSession(new RefreshSessionValidationCommand(
+                    subject.getUserId(),
+                    subject.getSessionNo(),
+                    subject.getRefreshTokenId()
+            ));
             AppLog.info(log, "security.auth.refresh.token.validated",
                     "userId", subject.getUserId(),
                     "userNo", subject.getUserNo(),
-                    "identity", subject.getIdentity());
+                    "identity", subject.getIdentity(),
+                    "sessionNo", subject.getSessionNo());
             AuthenticatedUserSnapshot snapshot = refreshTokenCurrentUserLoader.load(
                     new RefreshTokenReloadContext(subject.getUserId(), subject.getUserNo(), subject.getIdentity())
             );
@@ -113,7 +141,14 @@ public class AuthController {
                     snapshot.authorities(),
                     snapshot.scopeRules()
             );
-            JwtTokenPair tokenPair = jwtTokenIssuer.issueTokenPair(currentUser);
+            JwtTokenPair tokenPair = jwtTokenIssuer.issueTokenPair(currentUser, subject.getSessionNo());
+            refreshSessionService.continueRefreshSession(new RefreshSessionContinueCommand(
+                    subject.getSessionNo(),
+                    subject.getRefreshTokenId(),
+                    tokenPair.getAccessTokenId(),
+                    tokenPair.getRefreshTokenId(),
+                    tokenPair.getRefreshTokenExpiresAt()
+            ));
             AuthTokenResponse response = authTokenResponseAssembler.toResponse(tokenPair);
             AppLog.info(log, "security.auth.refresh.completed",
                     "userId", currentUser.getUserId(),
@@ -168,6 +203,11 @@ public class AuthController {
             AppLog.info(log, "security.auth.logout.completed",
                     "accessTokenId", accessTokenId,
                     "revoked", revoked);
+
+            if (!revoked) {
+                return ResponseEntity.status(CommonErrorCode.TOKEN_INVALID.httpStatus())
+                        .body(ApiResponse.failure(CommonErrorCode.TOKEN_INVALID, "访问令牌会话不存在或已失效"));
+            }
 
             return ResponseEntity.ok(ApiResponse.success(null));
         } catch (JwtAuthenticationException exception) {

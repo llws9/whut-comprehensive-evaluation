@@ -39,6 +39,14 @@ public class DefaultLogoutService implements LogoutService {
             return false;
         }
 
+        if (!session.isActive()) {
+            AppLog.warn(log, "security.auth.logout.session.inactive",
+                    "accessTokenId", accessTokenId,
+                    "sessionId", session.getId(),
+                    "status", session.getStatus());
+            return false;
+        }
+
         boolean revoked = sessionRevocationService.revokeSession(session.getId(), "logout");
         if (revoked) {
             AppLog.info(log, "security.auth.logout.by-access-token.completed",

@@ -1,6 +1,7 @@
 package edu.whut.eval.application.iam.service;
 
 import edu.whut.eval.application.iam.command.CreateRoleCommand;
+import edu.whut.eval.application.iam.command.ReplaceRolePermissionsCommand;
 import edu.whut.eval.application.iam.command.UpdateRoleCommand;
 import edu.whut.eval.application.iam.query.RoleCreatedView;
 import edu.whut.eval.common.exception.ConflictException;
@@ -11,6 +12,8 @@ import edu.whut.eval.domain.iam.repository.RoleAdminCommandRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 
 @Service
@@ -82,6 +85,37 @@ public class DefaultRoleAdminApplicationService implements RoleAdminApplicationS
         if (!updated) {
             throw new ConflictException("角色模板已被更新，请刷新后重试");
         }
+    }
+
+
+    @Override
+    @Transactional
+    public void replacePermissions(Long roleId, ReplaceRolePermissionsCommand command) {
+        if (roleId == null) {
+            throw new ValidationException("roleId 不能为空");
+        }
+        if (!Boolean.TRUE.equals(command.replaceAll())) {
+            throw new ValidationException("当前仅支持 replaceAll=true 的整集合替换");
+        }
+        if (command.permissionCodes() == null) {
+            throw new ValidationException("permissionCodes 不能为空");
+        }
+        if (roleAdminCommandRepository.findById(roleId).isEmpty()) {
+            throw new ResourceNotFoundException("角色不存在: " + roleId);
+        }
+        roleAdminCommandRepository.replacePermissions(roleId, normalizePermissionCodes(command.permissionCodes()));
+    }
+
+    private List<String> normalizePermissionCodes(List<String> permissionCodes) {
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        for (String permissionCode : permissionCodes) {
+            String value = normalize(permissionCode);
+            if (value == null || value.isBlank()) {
+                throw new ValidationException("permissionCode 不能为空");
+            }
+            normalized.add(value);
+        }
+        return List.copyOf(normalized);
     }
 
     private String normalize(String value) {

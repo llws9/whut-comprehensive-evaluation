@@ -69,7 +69,9 @@ class MybatisPlusRoleAssignmentAdminRepositoryIntegrationTest {
                         "id BIGINT PRIMARY KEY, " +
                         "role_code VARCHAR(64) NOT NULL, " +
                         "role_name VARCHAR(64) NOT NULL, " +
-                        "status VARCHAR(32) NOT NULL)"
+                        "role_scope VARCHAR(32) NOT NULL, " +
+                        "status VARCHAR(32) NOT NULL, " +
+                        "created_at TIMESTAMP NULL)"
         );
         jdbcTemplate.execute(
                 "CREATE TABLE org_unit (" +
@@ -97,7 +99,7 @@ class MybatisPlusRoleAssignmentAdminRepositoryIntegrationTest {
         jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, email, phone, password_hash, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 1010L, "2024305001", "王老师", "w@example.com", "13800000000", "hash", "ACTIVE",
                 java.sql.Timestamp.valueOf("2026-05-01 00:00:00"), java.sql.Timestamp.valueOf("2026-05-18 00:00:00"));
-        jdbcTemplate.update("INSERT INTO iam_role (id, role_code, role_name, status) VALUES (?,?,?,?)", 21L, "COUNSELOR", "辅导员", "ACTIVE");
+        jdbcTemplate.update("INSERT INTO iam_role (id, role_code, role_name, role_scope, status, created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)", 21L, "COUNSELOR", "辅导员", "ORG_SUBTREE", "ACTIVE");
         jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (?,?,?,?,?,?,?)",
                 2002L, 1L, "COLLEGE", "CS", "计算机与人工智能学院", "/1/2002/", "ACTIVE");
     }
