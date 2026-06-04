@@ -12,6 +12,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AdminQueryControllerSecurityAnnotationTest {
 
     @Test
+    void shouldExposeRoleManagePermissionConstant() {
+        assertThat(AuthorizationPermissionCodes.ROLE_MANAGE).isEqualTo("role.manage");
+    }
+
+    @Test
     void shouldDeclareApplicationQueryPermissionOnApplicationsEndpoint() throws NoSuchMethodException {
         Method method = AdminQueryController.class.getMethod(
                 "pageApplications",

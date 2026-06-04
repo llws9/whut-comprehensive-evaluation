@@ -53,6 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -287,6 +288,30 @@ class AuthControllerWebMvcTest {
                         .content("{\"refreshToken\":\"" + refreshToken + "\"}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("AUTH-4012"));
+    }
+
+    @Test
+    void shouldReturn4010WhenRefreshReloadAuthenticationFails() throws Exception {
+        String refreshToken = createRefreshToken();
+        given(refreshTokenCurrentUserLoader.load(argThat(context ->
+                context != null && "sid-1001".equals(context.sessionId())
+        ))).willThrow(new AuthenticationFailedException("refresh token 对应用户已失效"));
+
+        mockMvc.perform(post("/api/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refreshToken\":\"" + refreshToken + "\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4010"))
+                .andExpect(jsonPath("$.message").value("refresh token 对应用户已失效"));
+    }
+
+    @Test
+    void shouldReturn4010WhenLogoutWithoutAuthentication() throws Exception {
+        mockMvc.perform(post("/api/auth/logout"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH-4010"));
+
+        verify(logoutSessionCommandService, never()).logout(any());
     }
 
     @Test

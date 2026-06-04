@@ -123,12 +123,13 @@ A 组应优先依赖并落地以下表：
 | 错误码 | HTTP 状态码 | 场景 |
 |---|---:|---|
 | `VAL-4001` | `400` | 请求参数不合法 |
-| `AUTH-4010` | `401` | 用户名密码错误或认证失败 |
-| `AUTH-4011` | `401` | token 已过期 |
-| `AUTH-4012` | `401` | token 非法 |
+| `AUTH-4010` | `401` | 凭证认证失败，或 token 通过基础校验后查库阶段发现用户主体不一致 / 用户状态不是 `ACTIVE` |
+| `AUTH-4011` | `401` | 错误码保留；当前 login / refresh / filter / logout 链路不直接返回 |
+| `AUTH-4012` | `401` | JWT / session 非法，包括签名错误、缺少 `sid`、JWT 过期、会话不存在 / 已撤销 / 已过期 |
 | `AUTH-4030` | `403` | 无权限访问 |
 | `RES-4040` | `404` | 用户、角色、分配、组织不存在 |
 | `BIZ-4090` | `409` | 重复用户、重复角色、重复分配、状态冲突 |
+| `EXT-5033` | `503` | 文件解析或外部依赖异常 |
 | `SYS-5000` | `500` | 未知系统错误 |
 
 ## 5. 接口清单总表
@@ -179,10 +180,10 @@ A 组应优先依赖并落地以下表：
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `accessToken` | `string` | 访问 token |
-| `accessTokenType` | `string` | 固定为 `Bearer` |
+| `accessTokenType` | `string` | 返回当前配置值；默认是 `access` |
 | `accessTokenExpiresAt` | `string` | 过期时间 |
 | `refreshToken` | `string` | 刷新 token |
-| `refreshTokenType` | `string` | 固定为 `Bearer` |
+| `refreshTokenType` | `string` | 返回当前配置值；默认是 `refresh` |
 | `refreshTokenExpiresAt` | `string` | 过期时间 |
 
 成功示例：
@@ -194,10 +195,10 @@ A 组应优先依赖并落地以下表：
   "message": "success",
   "data": {
     "accessToken": "eyJ...",
-    "accessTokenType": "Bearer",
+    "accessTokenType": "access",
     "accessTokenExpiresAt": "2026-05-20T10:00:00Z",
     "refreshToken": "eyJ...",
-    "refreshTokenType": "Bearer",
+    "refreshTokenType": "refresh",
     "refreshTokenExpiresAt": "2026-05-27T10:00:00Z"
   }
 }
@@ -230,9 +231,12 @@ A 组应优先依赖并落地以下表：
 | 场景 | HTTP | 错误码 | 说明 |
 |---|---:|---|---|
 | refresh token 缺失 | `400` | `VAL-4001` | 参数缺失 |
-| refresh token 过期 | `401` | `AUTH-4011` | 无法刷新 |
-| refresh token 非法 | `401` | `AUTH-4012` | 签名或类型错误 |
-| 用户状态不可刷新 | `401` | `AUTH-4010` | 查库后账号状态为 `DISABLED` 或 `LOCKED`，统一视为非 `ACTIVE` |
+| token 签名错误、格式非法、issuer/audience 不匹配 | `401` | `AUTH-4012` | JWT 校验失败 |
+| token 已过期 | `401` | `AUTH-4012` | 当前实现将 JWT 过期统一归入 token 非法 |
+| `token_type` 不是 `refresh` | `401` | `AUTH-4012` | Access Token 不能调用 refresh |
+| token 缺少 `sid` 或其他必填 claims | `401` | `AUTH-4012` | 旧 token 或不完整 token 被拒绝 |
+| 会话不存在、已撤销或已过期 | `401` | `AUTH-4012` | 会话无效统一走 `TOKEN_INVALID` |
+| 用户状态不可刷新 | `401` | `AUTH-4010` | token 通过基础校验后，查库阶段发现用户状态不是 `ACTIVE` 或主体不一致 |
 
 ### A-3 查询当前认证上下文
 
@@ -248,6 +252,7 @@ A 组应优先依赖并落地以下表：
 | `userNo` | `string` | 学号/工号 |
 | `userName` | `string` | 姓名 |
 | `identity` | `string` | 当前主身份快照 |
+| `sessionId` | `string` | 当前会话标识；用于定位 `sid` 对应的服务端会话 |
 | `roles` | `string[]` | 当前角色编码集合 |
 | `authorities` | `string[]` | 当前权限码集合 |
 | `scopeRules` | `object[]` | 当前范围规则集合 |
@@ -257,7 +262,7 @@ A 组应优先依赖并落地以下表：
 ### A-4 查询 IAM 身份
 
 - 路由：`GET /api/iam/users/{userNo}/identity`
-- 鉴权：`user.manage`
+- 鉴权：需要登录态
 - 目的：按用户编号查询用户资料、角色分配、组织归属，供后台管理页和联调用
 
 路径参数：
@@ -279,7 +284,7 @@ A 组应优先依赖并落地以下表：
 | 场景 | HTTP | 错误码 | 说明 |
 |---|---:|---|---|
 | 用户不存在 | `404` | `RES-4040` | `userNo` 无效 |
-| 无权限访问 | `403` | `AUTH-4030` | 当前用户无查询身份权限 |
+| 未登录或 token 无效 | `401` | `AUTH-4010` / `AUTH-4012` | 当前请求没有可用认证主体，或 JWT / session 非法 |
 
 ### A-5 分页查询用户
 
@@ -438,6 +443,15 @@ A 组应优先依赖并落地以下表：
 - 鉴权：`role.manage`
 - 允许修改：`roleName/roleScope/status`
 - 编辑链路约束：当前版本直接复用 A-9 列表返回的 `roleScope` 回填编辑表单，不新增角色详情接口
+- 并发保护：服务端先读取当前角色模板快照，再以旧值作为更新条件做冲突检测；客户端只提交目标值，不额外提交快照字段
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `roleName` | `string` | 是 | 角色名称 |
+| `roleScope` | `string` | 是 | `SELF` / `ORG_UNIT` / `ORG_SUBTREE` / `ALL` |
+| `status` | `string` | 是 | `ACTIVE` / `DISABLED` |
 
 成功返回：`data = null`
 
@@ -532,7 +546,7 @@ A 组应优先依赖并落地以下表：
 |---|---|---|---|
 | `userId` | `long` | 是 | 用户 ID |
 | `roleCode` | `string` | 是 | 角色编码 |
-| `orgUnitId` | `long` | 否 | 角色挂载组织 |
+| `orgUnitId` | `long` | 是 | 角色挂载组织 |
 | `effectiveFrom` | `string` | 否 | 生效时间 |
 | `effectiveTo` | `string` | 否 | 失效时间 |
 | `sourceType` | `string` | 否 | `MANUAL` / `IMPORT` |
@@ -556,7 +570,7 @@ A 组应优先依赖并落地以下表：
 - 当前版本不支持创建未来生效的 `PENDING` 状态；若 `effectiveFrom` 晚于当前时间，按请求非法处理。
 - `EXPIRED` 只能由系统依据 `effectiveTo` 自动判定，不能通过创建接口直接指定。
 
-成功返回 `data`：`assignmentId/userId/roleCode/status/effectiveFrom/effectiveTo`
+成功返回 `data`：`assignmentId/userId/roleCode/roleName/orgUnitId/orgUnitName/status/effectiveFrom/effectiveTo/sourceType/updatedAt`
 
 成功响应示例：
 
@@ -575,7 +589,8 @@ A 组应优先依赖并落地以下表：
     "status": "ACTIVE",
     "effectiveFrom": "2026-05-20T00:00:00",
     "effectiveTo": "2027-07-01T00:00:00",
-    "sourceType": "MANUAL"
+    "sourceType": "MANUAL",
+    "updatedAt": "2026-05-20T10:20:30"
   }
 }
 ```
@@ -674,7 +689,7 @@ A 组应优先依赖并落地以下表：
 
 - 路由：`GET /api/admin/role-assignments/{assignmentId}/scope-rules`
 - 鉴权：`assignment.manage`
-- 返回字段：`scopeRuleId/permissionCode/scopeType/orgUnitId/categoryCode/itemCode/priority/status`
+- 返回字段：`scopeRuleId/assignmentId/permissionCode/scopeType/orgUnitId/orgUnitName/categoryCode/itemCode/expressionJson/priority/status/createdAt`
 - 接口层 DTO：
   - 响应：`edu.whut.eval.interfaces.iam.response.ScopeRuleResponse`
 
@@ -688,6 +703,7 @@ A 组应优先依赖并落地以下表：
   "data": [
     {
       "scopeRuleId": 81001,
+      "assignmentId": 70021,
       "permissionCode": "manage.review.view",
       "scopeType": "ORG_SUBTREE",
       "orgUnitId": 2002,
@@ -696,10 +712,12 @@ A 组应优先依赖并落地以下表：
       "itemCode": null,
       "expressionJson": null,
       "priority": 100,
-      "status": "ACTIVE"
+      "status": "ACTIVE",
+      "createdAt": "2026-05-20T10:40:00"
     },
     {
       "scopeRuleId": 81002,
+      "assignmentId": 70021,
       "permissionCode": "manage.review.view",
       "scopeType": "CATEGORY",
       "orgUnitId": null,
@@ -708,10 +726,12 @@ A 组应优先依赖并落地以下表：
       "itemCode": null,
       "expressionJson": null,
       "priority": 90,
-      "status": "ACTIVE"
+      "status": "ACTIVE",
+      "createdAt": "2026-05-20T10:41:00"
     },
     {
       "scopeRuleId": 81003,
+      "assignmentId": 70021,
       "permissionCode": "manage.students.view",
       "scopeType": "ORG_SUBTREE",
       "orgUnitId": 2002,
@@ -720,7 +740,8 @@ A 组应优先依赖并落地以下表：
       "itemCode": null,
       "expressionJson": null,
       "priority": 100,
-      "status": "ACTIVE"
+      "status": "ACTIVE",
+      "createdAt": "2026-05-20T10:42:00"
     }
   ]
 }
@@ -730,7 +751,7 @@ A 组应优先依赖并落地以下表：
 
 | 场景 | HTTP | 错误码 | 说明 |
 |---|---:|---|---|
-| assignment 不存在 | `404` | `RES-4040` | 目标分配不存在 |
+| 角色分配不存在 | `404` | `RES-4040` | 目标分配不存在 |
 | 无权限访问 | `403` | `AUTH-4030` | 当前用户无范围规则查询权限 |
 
 ### A-18 新增范围规则
@@ -804,7 +825,7 @@ A 组应优先依赖并落地以下表：
 
 | 场景 | HTTP | 错误码 | 说明 |
 |---|---:|---|---|
-| assignment 不存在 | `404` | `RES-4040` | 目标分配不存在 |
+| 角色分配不存在 | `404` | `RES-4040` | 目标分配不存在 |
 | 范围规则字段冲突 | `400` | `VAL-4001` | `scopeType` 与字段不匹配 |
 | 重复规则 | `409` | `BIZ-4090` | 相同语义已存在 |
 
@@ -812,18 +833,24 @@ A 组应优先依赖并落地以下表：
 
 - 路由：`POST /api/auth/logout`
 - 鉴权：需要登录态
-- 目的：使当前 Access Token 对应会话失效，同时撤销当前 Refresh Token
+- 目的：仅撤销当前 `sid` 对应会话，使当前会话下的 Access Token / Refresh Token 立即失效；不影响同一用户其他会话
 
 请求体：无
 
 成功返回：`data = null`
 
+补充说明：
+
+- 服务端通过把当前 `iam_session` 标记为 `REVOKED` 并写入 `revokedAt` 实现会话撤销。
+- 当前实现是“当前会话登出”，不是“全端登出”或“按用户撤销全部 token”。
+
 异常返回：
 
 | 场景 | HTTP | 错误码 | 说明 |
 |---|---:|---|---|
-| 未携带 token | `401` | `AUTH-4012` | 请求头缺失或 token 非法 |
-| 会话不存在或已失效 | `401` | `AUTH-4012` | token 已撤销或会话已失效 |
+| 未登录或未携带 Bearer Token | `401` | `AUTH-4010` | 当前请求没有可用认证主体 |
+| token 非法、缺少 `sid` | `401` | `AUTH-4012` | JWT / claims 校验失败 |
+| 会话不存在、已撤销或已过期 | `401` | `AUTH-4012` | 当前 `sid` 对应会话无效 |
 
 ### A-20 查询权限字典
 
