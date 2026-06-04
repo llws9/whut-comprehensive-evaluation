@@ -60,6 +60,11 @@ public class MybatisPlusScopeRuleAdminRepository implements ScopeRuleAdminReposi
     }
 
     @Override
+    public boolean assignmentRoleOwnsPermission(Long assignmentId, String permissionCode) {
+        return iamScopeRuleMapper.countAssignmentRolePermission(assignmentId, permissionCode) > 0;
+    }
+
+    @Override
     public IamScopeRuleDetail create(Long assignmentId,
                                      String permissionCode,
                                      String scopeType,

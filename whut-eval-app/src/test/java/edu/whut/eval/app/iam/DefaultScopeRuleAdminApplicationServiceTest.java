@@ -84,6 +84,7 @@ class DefaultScopeRuleAdminApplicationServiceTest {
     @Test
     void shouldCreateCategoryScopeRuleWhenCommandIsValid() {
         given(roleAssignmentAdminRepository.findDetailById(70021L)).willReturn(Optional.of(activeAssignment()));
+        given(scopeRuleAdminRepository.assignmentRoleOwnsPermission(70021L, "manage.review.view")).willReturn(true);
         given(scopeRuleAdminRepository.existsSemanticDuplicate(70021L, "manage.review.view", "CATEGORY", null, "MORAL", null, null))
                 .willReturn(false);
         willReturn(new IamScopeRuleDetail(
@@ -144,8 +145,44 @@ class DefaultScopeRuleAdminApplicationServiceTest {
     }
 
     @Test
+    void shouldRejectCreateScopeRuleWhenAssignmentIsNotCurrentlyActive() {
+        given(roleAssignmentAdminRepository.findDetailById(70021L)).willReturn(Optional.of(inactiveAssignment()));
+
+        assertThatThrownBy(() -> service.createScopeRule(70021L, new CreateScopeRuleCommand(
+                "manage.review.view",
+                "CATEGORY",
+                null,
+                "MORAL",
+                null,
+                null,
+                90
+        )))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("仅 ACTIVE 状态的角色分配允许新增范围规则");
+    }
+
+    @Test
+    void shouldRejectCreateScopeRuleWhenRoleDoesNotOwnPermission() {
+        given(roleAssignmentAdminRepository.findDetailById(70021L)).willReturn(Optional.of(activeAssignment()));
+        given(scopeRuleAdminRepository.assignmentRoleOwnsPermission(70021L, "manage.review.export")).willReturn(false);
+
+        assertThatThrownBy(() -> service.createScopeRule(70021L, new CreateScopeRuleCommand(
+                "manage.review.export",
+                "CATEGORY",
+                null,
+                "MORAL",
+                null,
+                null,
+                90
+        )))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("角色未拥有权限码: manage.review.export");
+    }
+
+    @Test
     void shouldRejectCreateScopeRuleWhenSemanticDuplicateExists() {
         given(roleAssignmentAdminRepository.findDetailById(70021L)).willReturn(Optional.of(activeAssignment()));
+        given(scopeRuleAdminRepository.assignmentRoleOwnsPermission(70021L, "manage.review.view")).willReturn(true);
         given(orgUnitLookupRepository.findById(2002L)).willReturn(Optional.of(
                 new OrgUnit(2002L, 1L, "COLLEGE", "CS", "计算机与人工智能学院", "/1/2002/", "ACTIVE")
         ));
@@ -180,6 +217,22 @@ class DefaultScopeRuleAdminApplicationServiceTest {
         )))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("CUSTOM_EXPRESSION 范围必须指定 expressionJson");
+    }
+
+    private IamRoleAssignmentDetail inactiveAssignment() {
+        return new IamRoleAssignmentDetail(
+                70021L,
+                1010L,
+                "COUNSELOR",
+                "辅导员",
+                2002L,
+                "计算机与人工智能学院",
+                "INACTIVE",
+                "2026-05-20T00:00:00",
+                "2027-07-01T00:00:00",
+                "MANUAL",
+                null
+        );
     }
 
     private IamRoleAssignmentDetail activeAssignment() {

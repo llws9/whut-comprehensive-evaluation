@@ -29,4 +29,14 @@ public interface IamScopeRuleMapper extends BaseMapper<IamScopeRuleDO> {
             "WHERE sr.assignment_id = #{assignmentId} " +
             "ORDER BY sr.priority ASC, sr.id ASC")
     List<IamScopeRuleAdminRow> selectAdminRowsByAssignmentId(@Param("assignmentId") Long assignmentId);
+
+    @Select("SELECT COUNT(1) " +
+            "FROM iam_user_role_assignment a " +
+            "INNER JOIN iam_role_permission rp ON rp.role_id = a.role_id " +
+            "INNER JOIN iam_permission p ON p.id = rp.permission_id " +
+            "WHERE a.id = #{assignmentId} " +
+            "  AND p.permission_code = #{permissionCode} " +
+            "  AND p.status = 'ACTIVE'")
+    long countAssignmentRolePermission(@Param("assignmentId") Long assignmentId,
+                                       @Param("permissionCode") String permissionCode);
 }

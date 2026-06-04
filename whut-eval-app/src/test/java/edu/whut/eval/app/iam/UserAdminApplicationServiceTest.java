@@ -108,6 +108,7 @@ class UserAdminApplicationServiceTest {
         assertThat(result.failedRows()).containsExactly(new UserImportFailedRowView(3L, "userNo 不能为空"));
 
         verify(commandRepository).updateForImportByUserNo(any(), any(), any(), any(), any());
+        verify(revocationService).revokeAllActiveSessions(1010L, "user_import_updated");
         verify(commandRepository).createUser(any(), any(), any(), any(), any());
     }
 
