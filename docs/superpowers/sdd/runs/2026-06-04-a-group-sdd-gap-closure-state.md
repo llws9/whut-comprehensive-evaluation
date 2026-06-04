@@ -6,6 +6,8 @@
 - plan: docs/superpowers/plans/2026-06-04-a-group-sdd-gap-closure.md
 - source_requirements: docs/team-delivery/group-a-identity-user-admin.md
 - note: repo lacks docs/superpowers/sdd/RUNBOOK.md, state-template.md, and scripts/sdd_run.py; this file is the manual SSOT for this run.
+- completed_at: 2026-06-05
+- final_commit: 72e9803 feat(iam): close group a auth and role admin gaps
 
 ## Task Status
 | Task | Status | Owner | Dependencies | Verification |
@@ -24,9 +26,9 @@
 - 2026-06-04: T0 full verification command `mvn -q -pl whut-eval-app -am test` reached test execution and failed with remaining non-T0 issues: `SecurityProbeControllerWebMvcTest.shouldReturn401WhenTokenIsInvalid` expected `AUTH-4010` but got `AUTH-4012`; role assignment integration tests fail on H2 schema missing `iam_role.role_scope`.
 
 ## Risks
-- Existing dirty changes were brought into this worktree by user choice; they may represent partial work and must be reviewed before completion.
-- SDD bootstrap script is absent, so state management is manual in this file.
-- Full `whut-eval-app` regression is not green after T0; remaining failures belong to security error-code alignment and SQL/schema alignment, likely T2/T3 scope.
+- SDD bootstrap script is absent, so state management was manual in this file.
+- No open implementation risks remain for T0/T1/T2/T3 after final full regression.
+- Integration risk is limited to merging this isolated worktree back to the target branch and resolving any unrelated mainline drift.
 
 - 2026-06-04: T1 RED added controller/service/repository tests for `POST /api/admin/roles`, `PATCH /api/admin/roles/{roleId}`, and `POST /api/admin/roles/{roleId}/permissions`; initial command failed at testCompile due missing command/service/repository/DTO classes.
 - 2026-06-04: T1 GREEN added `RoleAdminApplicationService`, role command DTOs, role write repository, permission lookup mapper, request DTOs, and controller routes.
@@ -73,3 +75,12 @@
 - 2026-06-05: Review-fix RED added `JwtAuthenticationFilterSessionClaimTest` and active-session seed semantic check in `GroupAIdentitySqlSeedConsistencyTest`; targeted command failed with expected 401 for custom `session_id` claim and 10 expired ACTIVE seed sessions.
 - 2026-06-05: Review-fix GREEN injected `SecurityProperties` into `JwtAuthenticationFilter`, read session claim via `jwt.sessionIdClaim`, and moved ACTIVE `iam_session` seed expirations to future dates while keeping explicit EXPIRED/REVOKED rows.
 - 2026-06-05: Review-fix verification passed: `mvn -q -pl whut-eval-app -am -Dtest=JwtAuthenticationFilterSessionClaimTest,GroupAIdentitySqlSeedConsistencyTest -Dsurefire.failIfNoSpecifiedTests=false test` and full `mvn -q -pl whut-eval-app -am test` exited 0; VS Code diagnostics returned no diagnostics.
+
+
+## Completion Summary
+- status: completed
+- final_commit: `72e9803 feat(iam): close group a auth and role admin gaps`
+- completed_tasks: T0 Restore test compile baseline; T1 Implement A-10/A-11/A-12; T2 Close session lifecycle; T3 Align SQL and permission seed; post-review fixes.
+- final_verification: `mvn -q -pl whut-eval-app -am test` exited 0; VS Code diagnostics returned `[]`.
+- deliverables: role admin write endpoints, server-side JWT session lifecycle, SQL permission/session seed consistency checks, SDD state/plan/spec documentation, regression tests.
+- next_step: merge or cherry-pick commit `72e9803` from `chore/a-group-sdd-gap-closure` after target-branch review.
