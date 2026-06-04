@@ -76,8 +76,7 @@ public class AuthController {
     @PostMapping("/login")
     public ResponseEntity<ApiResponse<?>> login(@Valid @RequestBody LoginRequest request,
                                                  HttpServletRequest servletRequest) {
-        AppLog.info(log, "security.auth.login.request.received",
-                "passwordPresent", request.getPassword() != null && !request.getPassword().isBlank());
+        AppLog.info(log, "security.auth.login.request.received");
         AuthenticatedUserSnapshot snapshot = loginAuthenticationService.authenticate(
                 request.getCredential(),
                 request.getPassword()

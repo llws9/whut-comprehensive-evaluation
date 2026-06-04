@@ -10,14 +10,18 @@ import edu.whut.eval.application.iam.query.UserCreatedView;
 import edu.whut.eval.application.iam.query.UserImportFailedRowView;
 import edu.whut.eval.application.iam.query.UserImportResultView;
 import edu.whut.eval.application.iam.query.UserImportRowView;
+import edu.whut.eval.common.exception.SystemException;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
+import edu.whut.eval.common.log.AppLog;
 import edu.whut.eval.domain.iam.model.IamUser;
 import edu.whut.eval.domain.iam.repository.IamUserCommandRepository;
 import edu.whut.eval.domain.iam.repository.IamUserQueryRepository;
 import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
 import edu.whut.eval.domain.org.repository.UserMembershipAdminRepository;
 import edu.whut.eval.domain.shared.PageResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,6 +37,7 @@ import java.util.Set;
 @Service
 public class UserAdminApplicationService {
 
+    private static final Logger log = LoggerFactory.getLogger(UserAdminApplicationService.class);
     private static final Set<String> ALLOWED_IMPORT_MODE = Set.of("UPSERT", "INSERT_ONLY");
     private static final String INSERT_ONLY_CONFLICT_PREFIX = "INSERT_ONLY 模式存在重复 userNo: ";
 
@@ -208,7 +213,7 @@ public class UserAdminApplicationService {
                 failedRows.add(new UserImportFailedRowView(row.rowNo(), "userNo 对应用户不存在或已被并发删除"));
                 continue;
             }
-            sessionRevocationService.revokeAllActiveSessions(existing.id(), "user_import_updated");
+            revokeImportedUserSessions(existing, userNo, row.rowNo());
             successCount++;
         }
 
@@ -226,6 +231,18 @@ public class UserAdminApplicationService {
             return HexFormat.of().formatHex(hashed);
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 algorithm is not available", exception);
+        }
+    }
+
+    private void revokeImportedUserSessions(IamUser existing, String userNo, Long rowNo) {
+        try {
+            sessionRevocationService.revokeAllActiveSessions(existing.id(), "user_import_updated");
+        } catch (RuntimeException exception) {
+            AppLog.error(log, exception, "iam.user.import.session_revocation.failed",
+                    "userId", existing.id(),
+                    "userNo", userNo,
+                    "rowNo", rowNo);
+            throw new SystemException("用户导入更新后撤销会话失败: " + userNo, exception);
         }
     }
 }

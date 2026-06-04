@@ -13,6 +13,7 @@ import edu.whut.eval.application.iam.service.UserAdminApplicationService;
 import edu.whut.eval.application.iam.service.UserImportParser;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
+import edu.whut.eval.common.exception.SystemException;
 import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.iam.model.IamUser;
 import edu.whut.eval.domain.iam.query.UserPageQuery;
@@ -28,6 +29,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.mock;
@@ -35,6 +37,7 @@ import static org.mockito.BDDMockito.never;
 import static org.mockito.BDDMockito.times;
 import static org.mockito.BDDMockito.verify;
 import static org.mockito.BDDMockito.when;
+import static org.mockito.BDDMockito.willThrow;
 
 class UserAdminApplicationServiceTest {
 
@@ -110,6 +113,41 @@ class UserAdminApplicationServiceTest {
         verify(commandRepository).updateForImportByUserNo(any(), any(), any(), any(), any());
         verify(revocationService).revokeAllActiveSessions(1010L, "user_import_updated");
         verify(commandRepository).createUser(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void shouldFailClosedWhenImportUpdateSessionRevocationFails() {
+        IamUserQueryRepository queryRepository = mock(IamUserQueryRepository.class);
+        IamUserCommandRepository commandRepository = mock(IamUserCommandRepository.class);
+        SessionRevocationService revocationService = mock(SessionRevocationService.class);
+        UserImportParser userImportParser = mock(UserImportParser.class);
+        OrgUnitLookupRepository orgUnitLookupRepository = mock(OrgUnitLookupRepository.class);
+        UserMembershipAdminRepository userMembershipAdminRepository = mock(UserMembershipAdminRepository.class);
+
+        UserAdminApplicationService service = new UserAdminApplicationService(
+                queryRepository,
+                commandRepository,
+                revocationService,
+                userImportParser,
+                orgUnitLookupRepository,
+                userMembershipAdminRepository
+        );
+
+        when(userImportParser.parse(any())).thenReturn(List.of(
+                new UserImportRowView(2L, "2024305001", "王老师", "pwd123", "w@example.com", "13800000000")
+        ));
+        when(queryRepository.findByUserNo("2024305001"))
+                .thenReturn(Optional.of(new IamUser(1010L, "2024305001", "王老师", "w@example.com", "13800000000", "ACTIVE")));
+        when(commandRepository.updateForImportByUserNo(any(), any(), any(), any(), any()))
+                .thenReturn(true);
+        willThrow(new IllegalStateException("revocation store down"))
+                .given(revocationService)
+                .revokeAllActiveSessions(1010L, "user_import_updated");
+
+        assertThatThrownBy(() -> service.importUsers(new ImportUsersCommand("ok".getBytes(), "UPSERT")))
+                .isInstanceOf(SystemException.class)
+                .hasMessageContaining("用户导入更新后撤销会话失败")
+                .hasRootCauseMessage("revocation store down");
     }
 
     @Test

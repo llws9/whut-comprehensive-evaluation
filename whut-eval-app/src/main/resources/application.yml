@@ -30,7 +30,7 @@ infra:
       access-token-ttl-seconds: 7200
       refresh-token-ttl-seconds: 604800
       clock-skew-seconds: 60
-      secret: ${WHUT_EVAL_JWT_SECRET:}
+      secret: ${WHUT_EVAL_JWT_SECRET:REQUIRED_NOT_SET}
       public-key: ${WHUT_EVAL_JWT_PUBLIC_KEY:}
       private-key: ${WHUT_EVAL_JWT_PRIVATE_KEY:}
       user-id-claim: uid

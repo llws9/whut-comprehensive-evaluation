@@ -5,6 +5,11 @@ import edu.whut.eval.infra.security.config.JwtConfigurationValidator;
 import edu.whut.eval.infra.security.config.SecurityProperties;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -31,7 +36,28 @@ class JwtConfigurationValidatorTest {
 
         assertThatThrownBy(validator::afterPropertiesSet)
                 .isInstanceOf(ConfigLoadException.class)
-                .hasMessageContaining("must not use built-in placeholder");
+                .hasMessageContaining("must not use placeholder secret");
+    }
+
+    @Test
+    void shouldFailWhenHsSecretUsesRequiredNotSetPlaceholder() {
+        SecurityProperties properties = new SecurityProperties();
+        properties.getJwt().setAlgorithm("HS256");
+        properties.getJwt().setSecret("REQUIRED_NOT_SET");
+
+        JwtConfigurationValidator validator = new JwtConfigurationValidator(properties);
+
+        assertThatThrownBy(validator::afterPropertiesSet)
+                .isInstanceOf(ConfigLoadException.class)
+                .hasMessageContaining("must not use placeholder secret");
+    }
+
+    @Test
+    void shouldUseExplicitRequiredNotSetPlaceholderInDefaultApplicationConfig() throws IOException {
+        String applicationYaml = Files.readString(Path.of("src/main/resources/application.yml"));
+
+        assertThat(applicationYaml)
+                .contains("secret: ${WHUT_EVAL_JWT_SECRET:REQUIRED_NOT_SET}");
     }
 
     @Test

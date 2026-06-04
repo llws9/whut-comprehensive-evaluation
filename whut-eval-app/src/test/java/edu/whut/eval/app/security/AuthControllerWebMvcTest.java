@@ -33,6 +33,8 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
@@ -41,6 +43,7 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -60,6 +63,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(controllers = AuthController.class)
 @ContextConfiguration(classes = AuthControllerWebMvcTest.TestApplication.class)
+@ExtendWith(OutputCaptureExtension.class)
 @Import({
         AuthController.class,
         AuthTokenResponseAssembler.class,
@@ -162,6 +166,27 @@ class AuthControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.refreshToken").isString())
                 .andExpect(jsonPath("$.data.accessTokenType").value("access"))
                 .andExpect(jsonPath("$.data.refreshTokenType").value("refresh"));
+    }
+
+    @Test
+    void shouldNotLogPasswordPresenceOnLogin(CapturedOutput output) throws Exception {
+        given(loginAuthenticationService.authenticate(eq("2024305999"), eq("secret")))
+                .willReturn(new AuthenticatedUserSnapshot(
+                        1001L,
+                        "2024305999",
+                        "Test User",
+                        "student",
+                        Set.of("student"),
+                        Set.of("application.view.self"),
+                        List.of()
+                ));
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"credential\":\"2024305999\",\"password\":\"secret\"}"))
+                .andExpect(status().isOk());
+
+        assertThat(output).doesNotContain("passwordPresent");
     }
 
     @Test

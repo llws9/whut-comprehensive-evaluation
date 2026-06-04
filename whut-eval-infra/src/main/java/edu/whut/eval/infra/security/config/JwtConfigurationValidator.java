@@ -12,6 +12,7 @@ import org.springframework.util.StringUtils;
 public class JwtConfigurationValidator implements InitializingBean {
 
     private static final String BUILT_IN_HS_PLACEHOLDER = "local-dev-jwt-secret-change-me-1234567890";
+    private static final String REQUIRED_NOT_SET_PLACEHOLDER = "REQUIRED_NOT_SET";
 
     private static final Logger log = LoggerFactory.getLogger(JwtConfigurationValidator.class);
 
@@ -82,8 +83,9 @@ public class JwtConfigurationValidator implements InitializingBean {
     }
 
     private void validateNotPlaceholder(String value, String propertyName) {
-        if (BUILT_IN_HS_PLACEHOLDER.equals(value)) {
-            throw new ConfigLoadException(propertyName + " must not use built-in placeholder secret");
+        String normalized = value == null ? null : value.trim();
+        if (BUILT_IN_HS_PLACEHOLDER.equals(normalized) || REQUIRED_NOT_SET_PLACEHOLDER.equals(normalized)) {
+            throw new ConfigLoadException(propertyName + " must not use placeholder secret");
         }
     }
 }
