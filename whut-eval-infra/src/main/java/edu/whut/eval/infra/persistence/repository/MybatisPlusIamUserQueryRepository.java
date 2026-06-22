@@ -12,6 +12,9 @@ import edu.whut.eval.infra.persistence.entity.IamUserDO;
 import edu.whut.eval.infra.persistence.mapper.IamUserMapper;
 import org.springframework.stereotype.Repository;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Repository
@@ -73,6 +76,30 @@ public class MybatisPlusIamUserQueryRepository implements IamUserQueryRepository
         return new PageResult<>(result.getTotal(), result.getRecords().stream().map(this::toDomain).toList());
     }
 
+    @Override
+    public Map<Long, List<String>> findActiveOrgUnitNamesByUserIds(List<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, List<String>> result = new LinkedHashMap<>();
+        iamUserMapper.selectActiveOrgUnitNamesByUserIds(userIds).forEach(row ->
+                result.computeIfAbsent(row.userId(), ignored -> new java.util.ArrayList<>()).add(row.orgUnitName())
+        );
+        return result;
+    }
+
+    @Override
+    public Map<Long, List<String>> findActiveRoleCodesByUserIds(List<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, List<String>> result = new LinkedHashMap<>();
+        iamUserMapper.selectActiveRoleCodesByUserIds(userIds).forEach(row ->
+                result.computeIfAbsent(row.userId(), ignored -> new java.util.ArrayList<>()).add(row.roleCode())
+        );
+        return result;
+    }
+
     private IamUser toDomain(IamUserDO userDO) {
         return new IamUser(
                 userDO.getId(),
@@ -80,7 +107,8 @@ public class MybatisPlusIamUserQueryRepository implements IamUserQueryRepository
                 userDO.getUserName(),
                 userDO.getEmail(),
                 userDO.getPhone(),
-                userDO.getStatus()
+                userDO.getStatus(),
+                userDO.getCreatedAt() == null ? null : userDO.getCreatedAt().toString()
         );
     }
 

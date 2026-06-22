@@ -198,6 +198,18 @@ class RoleAdminQueryControllerWebMvcTest {
                 .andExpect(jsonPath("$.code").value("BIZ-4090"));
     }
 
+    @Test
+    void shouldReturn400WhenReplaceAllIsMissingOnReplacePermissions() throws Exception {
+        mockMvc.perform(post("/api/admin/roles/21/permissions")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {"permissionCodes":["user.manage"]}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"));
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     static class TestApplication {

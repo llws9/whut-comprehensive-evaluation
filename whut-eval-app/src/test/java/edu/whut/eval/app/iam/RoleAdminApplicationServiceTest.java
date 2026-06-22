@@ -1,6 +1,7 @@
 package edu.whut.eval.app.iam;
 
 import edu.whut.eval.application.iam.command.CreateRoleCommand;
+import edu.whut.eval.application.iam.command.ReplaceRolePermissionsCommand;
 import edu.whut.eval.application.iam.command.UpdateRoleCommand;
 import edu.whut.eval.application.iam.service.DefaultRoleAdminApplicationService;
 import edu.whut.eval.common.exception.ConflictException;
@@ -14,6 +15,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -114,6 +116,27 @@ class RoleAdminApplicationServiceTest {
         assertThatThrownBy(() -> service.updateRole(21L, updateCommand()))
                 .isInstanceOf(ConflictException.class)
                 .hasMessage("角色模板已被更新，请刷新后重试");
+    }
+
+    @Test
+    void shouldRejectReplacePermissionsWhenReplaceAllIsFalse() {
+        assertThatThrownBy(() -> service.replacePermissions(21L,
+                new ReplaceRolePermissionsCommand(List.of("user.manage"), false)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("当前仅支持 replaceAll=true 的整集合替换");
+
+        verify(roleAdminCommandRepository, never()).replacePermissions(any(), any());
+    }
+
+    @Test
+    void shouldReplacePermissionsWhenReplaceAllIsTrue() {
+        given(roleAdminCommandRepository.findById(21L))
+                .willReturn(Optional.of(new IamRoleDetail(21L, "COUNSELOR", "辅导员", "ORG_SUBTREE", "ACTIVE")));
+
+        service.replacePermissions(21L,
+                new ReplaceRolePermissionsCommand(List.of(" user.manage ", "user.manage", "role.manage"), true));
+
+        verify(roleAdminCommandRepository).replacePermissions(21L, List.of("user.manage", "role.manage"));
     }
 
     private UpdateRoleCommand updateCommand() {

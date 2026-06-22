@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 
+import java.time.LocalDateTime;
+
 @TableName("iam_user")
 public class IamUserDO {
     @TableId
@@ -17,6 +19,8 @@ public class IamUserDO {
     @TableField("password_hash")
     private String passwordHash;
     private String status;
+    @TableField("created_at")
+    private LocalDateTime createdAt;
 
     public Long getId() {
         return id;
@@ -72,5 +76,13 @@ public class IamUserDO {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(LocalDateTime createdAt) {
+        this.createdAt = createdAt;
     }
 }

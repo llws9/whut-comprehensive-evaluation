@@ -7,7 +7,8 @@ import java.util.List;
 public class ReplaceRolePermissionsRequest {
     @NotNull
     private List<String> permissionCodes;
-    private Boolean replaceAll = true;
+    @NotNull
+    private Boolean replaceAll;
 
     public List<String> getPermissionCodes() { return permissionCodes; }
     public void setPermissionCodes(List<String> permissionCodes) { this.permissionCodes = permissionCodes; }

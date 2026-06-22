@@ -9,7 +9,7 @@ import edu.whut.eval.infra.persistence.mapper.IamPermissionLookupMapper;
 import edu.whut.eval.infra.persistence.mapper.IamRolePermissionMapper;
 import edu.whut.eval.infra.persistence.entity.IamRolePermissionDO;
 import edu.whut.eval.infra.persistence.repository.row.PermissionIdCodeRow;
-import edu.whut.eval.common.exception.ValidationException;
+import edu.whut.eval.common.exception.ResourceNotFoundException;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
@@ -85,9 +85,9 @@ public class MybatisPlusRoleAdminCommandRepository implements RoleAdminCommandRe
 
     @Override
     public void replacePermissions(Long roleId, List<String> permissionCodes) {
-        iamRolePermissionMapper.delete(new LambdaQueryWrapper<IamRolePermissionDO>()
-                .eq(IamRolePermissionDO::getRoleId, roleId));
         if (permissionCodes.isEmpty()) {
+            iamRolePermissionMapper.delete(new LambdaQueryWrapper<IamRolePermissionDO>()
+                    .eq(IamRolePermissionDO::getRoleId, roleId));
             return;
         }
 
@@ -100,8 +100,11 @@ public class MybatisPlusRoleAdminCommandRepository implements RoleAdminCommandRe
                 .filter(code -> !foundCodes.contains(code))
                 .toList();
         if (!missingCodes.isEmpty()) {
-            throw new ValidationException("权限码不存在: " + String.join(",", missingCodes));
+            throw new ResourceNotFoundException("权限码不存在: " + String.join(",", missingCodes));
         }
+
+        iamRolePermissionMapper.delete(new LambdaQueryWrapper<IamRolePermissionDO>()
+                .eq(IamRolePermissionDO::getRoleId, roleId));
 
         List<IamRolePermissionDO> rows = new ArrayList<>();
         for (PermissionIdCodeRow permissionRow : permissionRows) {

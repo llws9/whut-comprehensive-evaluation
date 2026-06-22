@@ -32,6 +32,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @Service
@@ -79,15 +80,18 @@ public class UserAdminApplicationService {
         domainQuery.setOrgUnitId(query.orgUnitId());
 
         PageResult<IamUser> page = userQueryRepository.pageUsers(domainQuery);
+        List<Long> userIds = page.records().stream().map(IamUser::id).toList();
+        Map<Long, List<String>> orgUnitsByUserId = userQueryRepository.findActiveOrgUnitNamesByUserIds(userIds);
+        Map<Long, List<String>> roleCodesByUserId = userQueryRepository.findActiveRoleCodesByUserIds(userIds);
         List<UserAdminPageItemView> views = page.records().stream()
                 .map(user -> new UserAdminPageItemView(
                         user.id(),
                         user.userNo(),
                         user.userName(),
                         user.status(),
-                        List.of(),
-                        List.of(),
-                        null
+                        orgUnitsByUserId.getOrDefault(user.id(), List.of()),
+                        roleCodesByUserId.getOrDefault(user.id(), List.of()),
+                        user.createdAt()
                 ))
                 .toList();
         return new PageResult<>(page.total(), views);

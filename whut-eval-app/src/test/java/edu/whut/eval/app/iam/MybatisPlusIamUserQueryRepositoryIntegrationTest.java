@@ -46,6 +46,9 @@ class MybatisPlusIamUserQueryRepositoryIntegrationTest {
 
     @BeforeEach
     void setUpSchemaAndData() {
+        jdbcTemplate.execute("DROP TABLE IF EXISTS iam_user_role_assignment");
+        jdbcTemplate.execute("DROP TABLE IF EXISTS iam_role");
+        jdbcTemplate.execute("DROP TABLE IF EXISTS org_unit");
         jdbcTemplate.execute("DROP TABLE IF EXISTS org_membership");
         jdbcTemplate.execute("DROP TABLE IF EXISTS iam_user");
         jdbcTemplate.execute(
@@ -61,6 +64,11 @@ class MybatisPlusIamUserQueryRepositoryIntegrationTest {
                         "updated_at TIMESTAMP NOT NULL)"
         );
         jdbcTemplate.execute(
+                "CREATE TABLE org_unit (" +
+                        "id BIGINT PRIMARY KEY, " +
+                        "unit_name VARCHAR(128) NOT NULL)"
+        );
+        jdbcTemplate.execute(
                 "CREATE TABLE org_membership (" +
                         "id BIGINT AUTO_INCREMENT PRIMARY KEY, " +
                         "user_id BIGINT NOT NULL, " +
@@ -71,6 +79,20 @@ class MybatisPlusIamUserQueryRepositoryIntegrationTest {
                         "joined_at TIMESTAMP NOT NULL, " +
                         "left_at TIMESTAMP NULL, " +
                         "created_at TIMESTAMP NOT NULL)"
+        );
+        jdbcTemplate.execute(
+                "CREATE TABLE iam_role (" +
+                        "id BIGINT PRIMARY KEY, " +
+                        "role_code VARCHAR(64) NOT NULL)"
+        );
+        jdbcTemplate.execute(
+                "CREATE TABLE iam_user_role_assignment (" +
+                        "id BIGINT AUTO_INCREMENT PRIMARY KEY, " +
+                        "user_id BIGINT NOT NULL, " +
+                        "role_id BIGINT NOT NULL, " +
+                        "effective_from TIMESTAMP NOT NULL, " +
+                        "effective_to TIMESTAMP NULL, " +
+                        "status VARCHAR(32) NOT NULL)"
         );
 
         jdbcTemplate.update(
@@ -85,6 +107,14 @@ class MybatisPlusIamUserQueryRepositoryIntegrationTest {
         );
 
         jdbcTemplate.update(
+                "INSERT INTO org_unit (id, unit_name) VALUES (?, ?)",
+                2002L, "计算机与人工智能学院"
+        );
+        jdbcTemplate.update(
+                "INSERT INTO org_unit (id, unit_name) VALUES (?, ?)",
+                2009L, "计算机学院研工办"
+        );
+        jdbcTemplate.update(
                 "INSERT INTO org_membership (user_id, org_unit_id, membership_type, is_primary, status, joined_at, left_at, created_at) VALUES (?,?,?,?,?,?,?,?)",
                 1010L, 2002L, "IMPORT", 1, "ACTIVE",
                 Timestamp.valueOf("2024-01-01 00:00:00"), null, Timestamp.valueOf("2024-01-01 00:00:00")
@@ -93,6 +123,26 @@ class MybatisPlusIamUserQueryRepositoryIntegrationTest {
                 "INSERT INTO org_membership (user_id, org_unit_id, membership_type, is_primary, status, joined_at, left_at, created_at) VALUES (?,?,?,?,?,?,?,?)",
                 1011L, 2009L, "IMPORT", 1, "ACTIVE",
                 Timestamp.valueOf("2024-01-02 00:00:00"), null, Timestamp.valueOf("2024-01-02 00:00:00")
+        );
+        jdbcTemplate.update("INSERT INTO iam_role (id, role_code) VALUES (?, ?)", 4003L, "COUNSELOR");
+        jdbcTemplate.update("INSERT INTO iam_role (id, role_code) VALUES (?, ?)", 4006L, "PLATFORM_ADMIN");
+        jdbcTemplate.update("INSERT INTO iam_role (id, role_code) VALUES (?, ?)", 4007L, "FUTURE_ROLE");
+        jdbcTemplate.update("INSERT INTO iam_role (id, role_code) VALUES (?, ?)", 4008L, "EXPIRED_ROLE");
+        jdbcTemplate.update(
+                "INSERT INTO iam_user_role_assignment (user_id, role_id, effective_from, effective_to, status) VALUES (?, ?, ?, ?, ?)",
+                1010L, 4003L, Timestamp.valueOf("2024-01-01 00:00:00"), null, "ACTIVE"
+        );
+        jdbcTemplate.update(
+                "INSERT INTO iam_user_role_assignment (user_id, role_id, effective_from, effective_to, status) VALUES (?, ?, ?, ?, ?)",
+                1010L, 4007L, Timestamp.valueOf("2099-01-01 00:00:00"), null, "ACTIVE"
+        );
+        jdbcTemplate.update(
+                "INSERT INTO iam_user_role_assignment (user_id, role_id, effective_from, effective_to, status) VALUES (?, ?, ?, ?, ?)",
+                1010L, 4008L, Timestamp.valueOf("2024-01-01 00:00:00"), Timestamp.valueOf("2024-01-02 00:00:00"), "ACTIVE"
+        );
+        jdbcTemplate.update(
+                "INSERT INTO iam_user_role_assignment (user_id, role_id, effective_from, effective_to, status) VALUES (?, ?, ?, ?, ?)",
+                1011L, 4006L, Timestamp.valueOf("2024-01-01 00:00:00"), null, "ACTIVE"
         );
     }
 
@@ -132,7 +182,22 @@ class MybatisPlusIamUserQueryRepositoryIntegrationTest {
         assertThat(page.total()).isEqualTo(1L);
         assertThat(page.records()).hasSize(1);
         assertThat(page.records().getFirst().id()).isEqualTo(1010L);
+        assertThat(page.records().getFirst().createdAt()).isEqualTo("2024-01-01T00:00");
         assertThat(page.records()).allMatch(user -> "ACTIVE".equals(user.status()));
+    }
+
+    @Test
+    void shouldLoadActiveOrgUnitNamesAndRoleCodesByUserIds() {
+        assertThat(repository.findActiveOrgUnitNamesByUserIds(java.util.List.of(1010L)))
+                .containsEntry(1010L, java.util.List.of("计算机与人工智能学院"));
+        assertThat(repository.findActiveRoleCodesByUserIds(java.util.List.of(1010L)))
+                .containsEntry(1010L, java.util.List.of("COUNSELOR"));
+    }
+
+    @Test
+    void shouldExcludeFutureAndExpiredRoleAssignmentsFromActiveRoleCodes() {
+        assertThat(repository.findActiveRoleCodesByUserIds(java.util.List.of(1010L)).get(1010L))
+                .containsExactly("COUNSELOR");
     }
 
     @Configuration

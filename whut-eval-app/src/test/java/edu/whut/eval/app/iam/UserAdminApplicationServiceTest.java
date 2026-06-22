@@ -26,6 +26,7 @@ import edu.whut.eval.domain.shared.PageResult;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -60,8 +61,12 @@ class UserAdminApplicationServiceTest {
         );
 
         when(queryRepository.pageUsers(any(UserPageQuery.class))).thenReturn(new PageResult<>(1L, List.of(
-                new IamUser(1010L, "2024305001", "王老师", "w@example.com", "13800000000", "ACTIVE")
+                new IamUser(1010L, "2024305001", "王老师", "w@example.com", "13800000000", "ACTIVE", "2026-05-20T10:00:00")
         )));
+        when(queryRepository.findActiveOrgUnitNamesByUserIds(List.of(1010L)))
+                .thenReturn(Map.of(1010L, List.of("计算机与人工智能学院")));
+        when(queryRepository.findActiveRoleCodesByUserIds(List.of(1010L)))
+                .thenReturn(Map.of(1010L, List.of("COUNSELOR")));
 
         PageResult<UserAdminPageItemView> result = service.pageUsers(
                 new UserAdminPageQuery(1, 20, "王", "ACTIVE", 2002L)
@@ -70,6 +75,9 @@ class UserAdminApplicationServiceTest {
         assertThat(result.total()).isEqualTo(1L);
         assertThat(result.records()).hasSize(1);
         assertThat(result.records().getFirst().userNo()).isEqualTo("2024305001");
+        assertThat(result.records().getFirst().orgUnits()).containsExactly("计算机与人工智能学院");
+        assertThat(result.records().getFirst().roles()).containsExactly("COUNSELOR");
+        assertThat(result.records().getFirst().createdAt()).isEqualTo("2026-05-20T10:00:00");
         verify(queryRepository).pageUsers(any(UserPageQuery.class));
     }
 

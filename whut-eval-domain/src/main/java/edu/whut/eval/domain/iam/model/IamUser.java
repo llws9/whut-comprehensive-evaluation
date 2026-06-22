@@ -8,6 +8,10 @@ public record IamUser(
         String userName,
         String email,
         String phone,
-        String status
+        String status,
+        String createdAt
 ) implements Serializable {
+    public IamUser(Long id, String userNo, String userName, String email, String phone, String status) {
+        this(id, userNo, userName, email, phone, status, null);
+    }
 }
