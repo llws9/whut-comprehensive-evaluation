@@ -63,12 +63,13 @@ class FileUploadControllerWebMvcTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.fileId").value("file_01testupload"))
-                .andExpect(jsonPath("$.data.bucket").value("whut-eval-dev"))
-                .andExpect(jsonPath("$.data.objectKey").value("uploads/dev/profile/20260514/uuid-avatar.png"))
-                .andExpect(jsonPath("$.data.publicUrl").value("https://cdn.whut.example.com/uploads/dev/profile/20260514/uuid-avatar.png"))
                 .andExpect(jsonPath("$.data.originalFilename").value("avatar.png"))
                 .andExpect(jsonPath("$.data.contentType").value("image/png"))
-                .andExpect(jsonPath("$.data.size").value(5));
+                .andExpect(jsonPath("$.data.size").value(5))
+                .andExpect(jsonPath("$.data.bucket").doesNotExist())
+                .andExpect(jsonPath("$.data.objectKey").doesNotExist())
+                .andExpect(jsonPath("$.data.storageKey").doesNotExist())
+                .andExpect(jsonPath("$.data.publicUrl").doesNotExist());
 
         verify(fileUploadApplicationService).upload(argThat(command ->
                 command.getInputStream() != null

@@ -1,23 +1,24 @@
-package edu.whut.eval.interfaces.file.view;
+package edu.whut.eval.application.file.query;
 
-/**
- * 文件上传接口返回视图。
- */
-public class StoredFileDescriptorView {
+import java.time.LocalDateTime;
+
+public class FileMetadataResponse {
 
     private final String fileId;
     private final String originalFilename;
     private final String contentType;
     private final long size;
+    private final String status;
+    private final LocalDateTime createdAt;
 
-    public StoredFileDescriptorView(String fileId,
-                                    String originalFilename,
-                                    String contentType,
-                                    long size) {
+    public FileMetadataResponse(String fileId, String originalFilename, String contentType, long size,
+                                String status, LocalDateTime createdAt) {
         this.fileId = fileId;
         this.originalFilename = originalFilename;
         this.contentType = contentType;
         this.size = size;
+        this.status = status;
+        this.createdAt = createdAt;
     }
 
     public String getFileId() {
@@ -34,5 +35,13 @@ public class StoredFileDescriptorView {
 
     public long getSize() {
         return size;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
     }
 }

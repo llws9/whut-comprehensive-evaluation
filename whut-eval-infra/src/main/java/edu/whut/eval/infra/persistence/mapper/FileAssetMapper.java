@@ -25,4 +25,13 @@ public interface FileAssetMapper {
             "</script>"
     })
     List<FileAssetDO> selectByFileIds(@Param("fileIds") List<String> fileIds);
+
+    @Select("""
+            SELECT id, file_id, storage_key, bucket, original_filename, content_type, size, sha256,
+                   uploader_user_id, uploader_type, upload_channel, status, created_at, updated_at
+            FROM file_asset
+            WHERE file_id = #{fileId}
+              AND status = 'ACTIVE'
+            """)
+    FileAssetDO selectActiveByFileId(@Param("fileId") String fileId);
 }

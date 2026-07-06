@@ -115,9 +115,6 @@ public class FileUploadController {
     private StoredFileDescriptorView toView(StoredFileDescriptor descriptor) {
         return new StoredFileDescriptorView(
                 descriptor.getFileId(),
-                descriptor.getBucket(),
-                descriptor.getObjectKey(),
-                descriptor.getPublicUrl(),
                 descriptor.getOriginalFilename(),
                 descriptor.getContentType(),
                 descriptor.getSize()

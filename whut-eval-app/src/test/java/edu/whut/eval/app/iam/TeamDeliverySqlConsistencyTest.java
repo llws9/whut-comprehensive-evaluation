@@ -2,6 +2,8 @@ package edu.whut.eval.app.iam;
 
 import org.junit.jupiter.api.Test;
 
+import java.sql.Connection;
+import java.sql.DriverManager;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashSet;
@@ -16,6 +18,7 @@ class TeamDeliverySqlConsistencyTest {
     private static final Path ROOT = Path.of(System.getProperty("user.dir")).getParent();
     private static final Path TEAM_DELIVERY = ROOT.resolve("docs/team-delivery");
     private static final Path IAM_RESOURCE_SQL = ROOT.resolve("whut-eval-app/src/main/resources/sql/iam");
+    private static final Path E_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-e-platform-governance-attachment-ai.safe-init.sql");
 
     @Test
     void shouldKeepStudentSelfResourceSqlAlignedWithGroupASchema() throws Exception {
@@ -55,6 +58,51 @@ class TeamDeliverySqlConsistencyTest {
     }
 
     @Test
+    void shouldProvideNonDestructiveEGroupSafeInitSql() throws Exception {
+        String sql = Files.readString(E_GROUP_SAFE_INIT_SQL);
+
+        assertThat(sql).contains("CREATE TABLE IF NOT EXISTS `evaluation_category`");
+        assertThat(sql).contains("CREATE TABLE IF NOT EXISTS `evaluation_item`");
+        assertThat(sql).contains("CREATE TABLE IF NOT EXISTS `file_asset`");
+        assertThat(sql).contains("CREATE TABLE IF NOT EXISTS `public_attachment_entry`");
+        assertThat(sql).doesNotContain("DROP TABLE");
+        assertThat(sql).doesNotContain("ENGINE=");
+        assertThat(sql).doesNotContain("CHARSET");
+        assertThat(sql).doesNotContain("COLLATE");
+        assertThat(sql).doesNotContain("COMMENT=");
+        assertThat(sql).contains("`id` BIGINT NOT NULL AUTO_INCREMENT");
+        assertThat(extractCreateTableBlock(sql, "public_attachment_entry")).contains("`updated_at` DATETIME NOT NULL");
+        assertThat(extractInsertColumns(sql, "public_attachment_entry")).contains("updated_at");
+    }
+
+    @Test
+    void shouldRerunEGroupSafeInitSqlWithoutOverwritingRuntimeFileRows() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:e_group_safe_init;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")) {
+            executeStatements(connection, Files.readString(E_GROUP_SAFE_INIT_SQL));
+
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO file_asset (file_id, storage_key, bucket, original_filename, content_type, size, sha256,
+                        uploader_user_id, uploader_type, upload_channel, status, created_at, updated_at)
+                    VALUES ('file_runtime_001', 'runtime/original.pdf', 'runtime-bucket', 'runtime.pdf', 'application/pdf',
+                        4096, 'runtime-sha256', 9001, 'USER', 'SELF_UPLOAD', 'ACTIVE',
+                        '2026-07-06 10:00:00', '2026-07-06 10:00:00')
+                    """);
+
+            executeStatements(connection, Files.readString(E_GROUP_SAFE_INIT_SQL));
+
+            assertThat(countRows(connection, "file_asset", "file_id = 'file_runtime_001'")).isEqualTo(1);
+            assertThat(singleString(connection, "SELECT storage_key FROM file_asset WHERE file_id = 'file_runtime_001'"))
+                    .isEqualTo("runtime/original.pdf");
+            assertThat(singleLong(connection, "SELECT uploader_user_id FROM file_asset WHERE file_id = 'file_runtime_001'"))
+                    .isEqualTo(9001L);
+            assertThat(singleString(connection, "SELECT status FROM file_asset WHERE file_id = 'file_runtime_001'"))
+                    .isEqualTo("ACTIVE");
+            assertThat(countRows(connection, "file_asset", "file_id = 'FILE-0008'")).isEqualTo(1);
+            assertThat(countRows(connection, "public_attachment_entry", "id = 14001")).isEqualTo(1);
+        }
+    }
+
+    @Test
     void shouldOnlyReferenceApprovedApplicationsInDGroupApplicationScores() throws Exception {
         String bSql = Files.readString(TEAM_DELIVERY.resolve("group-b-student-application.sql"));
         String dSql = Files.readString(TEAM_DELIVERY.resolve("group-d-score-finalization-import-export.sql"));
@@ -63,6 +111,37 @@ class TeamDeliverySqlConsistencyTest {
         Set<String> applicationScoreRefs = extractFinalComponentApplicationRefs(dSql);
 
         assertThat(applicationScoreRefs).isSubsetOf(approvedApplicationIds);
+    }
+
+    private static void executeStatements(Connection connection, String sql) throws Exception {
+        for (String statement : sql.split(";")) {
+            String trimmed = statement.trim();
+            if (!trimmed.isBlank()) {
+                connection.createStatement().execute(trimmed);
+            }
+        }
+    }
+
+    private static int countRows(Connection connection, String tableName, String condition) throws Exception {
+        try (var resultSet = connection.createStatement()
+                .executeQuery("SELECT COUNT(*) FROM " + tableName + " WHERE " + condition)) {
+            assertThat(resultSet.next()).isTrue();
+            return resultSet.getInt(1);
+        }
+    }
+
+    private static String singleString(Connection connection, String sql) throws Exception {
+        try (var resultSet = connection.createStatement().executeQuery(sql)) {
+            assertThat(resultSet.next()).isTrue();
+            return resultSet.getString(1);
+        }
+    }
+
+    private static long singleLong(Connection connection, String sql) throws Exception {
+        try (var resultSet = connection.createStatement().executeQuery(sql)) {
+            assertThat(resultSet.next()).isTrue();
+            return resultSet.getLong(1);
+        }
     }
 
     private static Set<String> extractApplicationIdsByStatus(String sql, String status) {
@@ -86,7 +165,7 @@ class TeamDeliverySqlConsistencyTest {
     }
 
     private static Set<String> extractInsertColumns(String sql, String tableName) {
-        Matcher matcher = Pattern.compile("INSERT INTO `" + tableName + "` \\(([^)]*)\\) VALUES", Pattern.DOTALL)
+        Matcher matcher = Pattern.compile("INSERT INTO `" + tableName + "` \\(([^)]*)\\)", Pattern.DOTALL)
                 .matcher(sql);
         assertThat(matcher.find()).as("insert block for %s", tableName).isTrue();
         Set<String> columns = new LinkedHashSet<>();
@@ -100,6 +179,13 @@ class TeamDeliverySqlConsistencyTest {
         Matcher matcher = Pattern.compile("INSERT INTO `" + tableName + "`[\\s\\S]*?;", Pattern.DOTALL)
                 .matcher(sql);
         assertThat(matcher.find()).as("insert block for %s", tableName).isTrue();
+        return matcher.group();
+    }
+
+    private static String extractCreateTableBlock(String sql, String tableName) {
+        Matcher matcher = Pattern.compile("CREATE TABLE IF NOT EXISTS `" + tableName + "`[\\s\\S]*?;", Pattern.DOTALL)
+                .matcher(sql);
+        assertThat(matcher.find()).as("create table block for %s", tableName).isTrue();
         return matcher.group();
     }
 }

@@ -9,6 +9,8 @@ public class PlatformRuleConfig {
     private boolean studentApplyEnabled;
     private boolean finalSubmitEnabled;
     private int maxReviewBatchSize;
+    private String studentApplyDeadline;
+    private String finalSubmitDeadline;
 
     public boolean isStudentApplyEnabled() {
         return studentApplyEnabled;
@@ -32,5 +34,21 @@ public class PlatformRuleConfig {
 
     public void setMaxReviewBatchSize(int maxReviewBatchSize) {
         this.maxReviewBatchSize = maxReviewBatchSize;
+    }
+
+    public String getStudentApplyDeadline() {
+        return studentApplyDeadline;
+    }
+
+    public void setStudentApplyDeadline(String studentApplyDeadline) {
+        this.studentApplyDeadline = studentApplyDeadline;
+    }
+
+    public String getFinalSubmitDeadline() {
+        return finalSubmitDeadline;
+    }
+
+    public void setFinalSubmitDeadline(String finalSubmitDeadline) {
+        this.finalSubmitDeadline = finalSubmitDeadline;
     }
 }

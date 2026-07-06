@@ -51,6 +51,8 @@ class PlatformRuleConfigProviderTest {
                         studentApplyEnabled: true
                         finalSubmitEnabled: false
                         maxReviewBatchSize: 100
+                        studentApplyDeadline: "2026-09-30T23:59:59+08:00"
+                        finalSubmitDeadline: "2026-10-15T23:59:59+08:00"
                         """,
                         "unit-test",
                         Instant.parse("2026-05-14T09:35:00Z")
@@ -61,6 +63,8 @@ class PlatformRuleConfigProviderTest {
         assertThat(config.isStudentApplyEnabled()).isTrue();
         assertThat(config.isFinalSubmitEnabled()).isFalse();
         assertThat(config.getMaxReviewBatchSize()).isEqualTo(100);
+        assertThat(config.getStudentApplyDeadline()).isEqualTo("2026-09-30T23:59:59+08:00");
+        assertThat(config.getFinalSubmitDeadline()).isEqualTo("2026-10-15T23:59:59+08:00");
     }
 
     @Test
