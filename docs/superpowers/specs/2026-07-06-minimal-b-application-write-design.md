@@ -10,7 +10,7 @@ The target is not the full B-group final state. The target is a stable contract 
 - uploading or choosing file IDs through E-owned file APIs;
 - creating and updating an application draft;
 - submitting and withdrawing the current student's own application;
-- listing and, if needed, reading the current student's own application data for the application page.
+- listing and reading the current student's own application data for the application page.
 
 ## 2. Current Baseline
 
@@ -53,8 +53,8 @@ This spec covers the next B-group implementation round:
   - `application_submission.application_id` must support generated keys.
   - `application_attachment.id` must support generated keys.
   - runtime `application_attachment` columns must match `ApplicationAttachmentMapper` and `ApplicationAttachmentDO`.
-- Add a non-destructive safe-init SQL for B-owned tables if current frozen SQL is not safe for runtime initialization.
-- Add or standardize a student-owned application detail endpoint if the frontend cannot reconstruct the edit page from list data plus write responses.
+- Add a non-destructive safe-init SQL for B-owned tables.
+- Add a student-owned application detail endpoint so edit pages can reload the current version and attachment list.
 - Keep `attachmentFileIds` as the only file-binding input.
 - Preserve optimistic locking for update, submit, and withdraw.
 - Add focused tests for write security, DDL safety, mapper alignment, and B/E integration contract.
@@ -70,7 +70,7 @@ This spec covers the next B-group implementation round:
 - AI report generation.
 - Replacing Nacos item/option config with database-backed governance.
 
-## 4. Recommended Approach
+## 4. Chosen Approach
 
 Use the existing B write model as the base and close the gaps around security, persistence compatibility, and frontend-read contract.
 
@@ -107,7 +107,7 @@ POST /api/student/applications/drafts
 Auth:
 
 - authenticated user;
-- must have `application.submit` or the project-approved student write authority used by A-group seeds;
+- must have `application.submit`;
 - service must still load current user from `UserAuthorizationContextAssembler`.
 
 Request:
@@ -145,7 +145,7 @@ Response data:
 Behavior:
 
 - applicant is always the current authenticated user;
-- `attachmentFileIds` are deduplicated while preserving order;
+- `attachmentFileIds` are processed in request order;
 - duplicate file IDs in one request fail with `409 BIZ-4090`;
 - missing/blank file ID fails with `400 VAL-4001`;
 - file binding accepts only current user's active uploaded file or `PUBLISHED + ALL` public file;
@@ -206,9 +206,9 @@ Behavior:
 - when custom points are allowed for the option, B can use `appliedPoints`;
 - when computed/applied points exceed `calculateMaxPoints`, submission still succeeds and returns warning fields.
 
-Open implementation question for the execution plan:
+Scoring fact persistence decision:
 
-- The current service returns calculated `appliedPoints` and warning fields but does not persist submitted score facts into `application_fact`. The next plan should decide whether Minimal B must persist a first `application_fact` row at submit time, or defer score fact persistence to C/D review. For frontend write-loop closure, returning the computed values may be sufficient; for database completeness, persisting `application_fact` is preferable.
+- Minimal B will not persist submitted score facts into `application_fact`. The submit response returns `appliedPoints`, `maxPoints`, `exceedsMaxPoints`, and `warningMessage` for immediate frontend feedback. `application_fact` remains part of B-owned runtime DDL, but score-fact persistence is deferred to the C/D review and finalization integration specs.
 
 ### 6.4 Withdraw
 
@@ -230,9 +230,9 @@ Request:
 Behavior:
 
 - only owner can withdraw;
-- current domain currently permits withdraw only from student-editable states because it reuses `assertEditable()`;
-- target B flow in the team document expects student withdrawal from `SUBMITTED`;
-- the execution plan must explicitly fix or confirm this state rule. Recommended Minimal B behavior: allow withdrawal from `SUBMITTED` only, and keep draft edits for `DRAFT`/`RETURNED`.
+- Minimal B must allow `SUBMITTED -> WITHDRAWN`;
+- `DRAFT` and `RETURNED` remain editable through update, not withdraw;
+- `APPROVED`, `REJECTED`, and `WITHDRAWN` cannot be withdrawn again.
 
 ### 6.5 List Own Applications
 
@@ -259,16 +259,11 @@ Current response is narrow:
 }
 ```
 
-For the application page, Minimal B should either:
-
-- extend list rows to include `status`, `title`, `academicYear`, `term`, `version`, `submittedAt`, and `updatedAt`; or
-- add a detail endpoint for a single owned application.
-
-Recommended direction: add a detail endpoint because edit pages need attachment IDs and current version, while list pages should stay compact.
+For the application page, Minimal B adds a detail endpoint for a single owned application. List rows stay compact.
 
 ### 6.6 Get Own Application Detail
 
-Recommended new endpoint:
+New endpoint:
 
 ```http
 GET /api/student/applications/{applicationId}
@@ -316,7 +311,7 @@ B-owned runtime tables:
 
 The frozen B SQL contains destructive `DROP TABLE IF EXISTS` and MySQL-specific DDL decorations. Runtime initialization must not blindly run it against a database that may contain submitted applications.
 
-Recommended artifact:
+Required artifact:
 
 ```text
 docs/team-delivery/group-b-student-application.safe-init.sql
@@ -331,7 +326,7 @@ Requirements:
 - set `application_attachment.id BIGINT NOT NULL AUTO_INCREMENT`;
 - align `application_attachment` columns with `ApplicationAttachmentMapper`:
   - current mapper writes `storage_key`, `original_filename`, `content_type`, `size`, `uploaded_by`, `sort_no`;
-  - frozen SQL uses `selected_source`, `snapshot_*`; the execution plan must either adapt runtime DDL to current mapper or change mapper/domain to frozen names. Recommended Minimal B choice: preserve current mapper names for runtime and document frozen SQL divergence.
+  - frozen SQL uses `selected_source`, `snapshot_*`; Minimal B preserves current mapper names for runtime and documents this as a deliberate divergence from the frozen target-state SQL.
 - preserve existing runtime rows on rerun;
 - use guarded seed inserts if seed rows are included.
 
@@ -339,13 +334,15 @@ Requirements:
 
 Write endpoints should express their permission requirements explicitly. Global `anyRequest().authenticated()` is not enough evidence for B write authorization.
 
-Recommended annotations:
+Required annotations:
 
 - create draft: `@PreAuthorize("hasAuthority(T(...AuthorizationPermissionCodes).APPLICATION_SUBMIT)")`
 - update draft: `@PreAuthorize("hasAuthority(T(...AuthorizationPermissionCodes).APPLICATION_UPDATE)")`
 - submit: `@PreAuthorize("hasAuthority(T(...AuthorizationPermissionCodes).APPLICATION_SUBMIT)")`
-- withdraw: either `APPLICATION_UPDATE` or `APPLICATION_SUBMIT`; pick one in the execution plan and test it.
+- withdraw: `@PreAuthorize("hasAuthority(T(...AuthorizationPermissionCodes).APPLICATION_UPDATE)")`
 - detail/list own applications: `APPLICATION_VIEW_SELF`
+
+The implementation plan must verify the active IAM initialization path gives normal student accounts all three authorities required by this spec: `application.submit`, `application.update`, and `application.view.self`. The frozen A-group SQL already assigns these to the `STUDENT` role; if a runtime bootstrap path omits one, Minimal B must update that bootstrap path or document that deployments must run the full A-group seed first.
 
 Security tests must run with filters enabled. `standaloneSetup` and `@AutoConfigureMockMvc(addFilters = false)` are mapping tests only, not security evidence.
 
@@ -358,14 +355,14 @@ Use existing common error codes:
 | invalid request body | 400 | `VAL-4001` |
 | unauthenticated | 401 | `AUTH-4010` or token-specific auth code |
 | missing authority | 403 | `AUTH-4030` |
-| non-owner operation | 403 preferred; current code uses validation | `AUTH-4030` preferred |
+| non-owner operation | 403 | `AUTH-4030` |
 | application not found | 404 | `RES-4040` |
 | duplicate active application | 409 | `BIZ-4090` |
 | duplicate attachment fileId | 409 | `BIZ-4090` |
 | version mismatch | 409 | `BIZ-4090` |
-| application window closed | 409 preferred; current code uses validation | `BIZ-4091` preferred |
+| application window closed | 409 | `BIZ-4091` |
 
-Execution should avoid changing broad global exception mapping unless required. If preserving current `ValidationException` behavior for some branches, tests must document the accepted code.
+Execution should avoid changing broad global exception mapping unless required. Branch-specific service exceptions should use existing exception classes that map to the target codes above.
 
 ## 10. Acceptance Criteria
 
@@ -374,10 +371,11 @@ The implementation plan is complete when these are true:
 - B safe-init SQL can be rerun without dropping or overwriting runtime application rows.
 - `application_submission` and `application_attachment` runtime DDL match current generated-key mapper behavior.
 - Student write endpoints require authenticated users and appropriate student write authorities with filters enabled.
+- Runtime IAM seed coverage is verified for `application.submit`, `application.update`, and `application.view.self`.
 - Create draft binds current user as applicant and accepts only owner active or public `PUBLISHED + ALL` file IDs.
 - Update draft replaces attachment bindings and requires the expected version.
 - Submit enforces window-open and non-empty application content.
-- Withdraw state rule is corrected or explicitly preserved and tested.
+- Withdraw supports `SUBMITTED -> WITHDRAWN` and rejects `DRAFT`, `RETURNED`, `APPROVED`, `REJECTED`, and `WITHDRAWN`.
 - Student can retrieve enough owned application data to reopen an edit page without storage internals.
 - Focused tests cover controller contract, service state rules, repository persistence, SQL idempotency, and security filters.
 
@@ -392,6 +390,8 @@ Add or update focused tests:
   - anonymous rejected;
   - authenticated student with proper authorities allowed;
   - authenticated user lacking authority rejected.
+- IAM seed consistency test
+  - effective student login context contains `application.submit`, `application.update`, and `application.view.self`.
 - `ApplicationSubmissionCommandApplicationServiceTest`
   - owner checks;
   - duplicate active application;
@@ -435,8 +435,8 @@ Follow-up specs should handle:
 - B write APIs continue to pass only `attachmentFileIds`.
 - Storage internals stay out of B-facing responses.
 - The current implementation baseline is acknowledged instead of overwritten.
-- The largest known ambiguity is withdraw semantics; the execution plan must resolve it before coding.
-- The largest persistence risk is frozen B SQL diverging from current runtime mapper column names; the execution plan must choose a runtime-safe direction and test it.
+- Withdraw semantics are fixed as `SUBMITTED -> WITHDRAWN` for Minimal B.
+- The largest persistence risk is frozen B SQL diverging from current runtime mapper column names; this spec chooses current mapper names for runtime and requires tests documenting the divergence.
 
 ---
 
