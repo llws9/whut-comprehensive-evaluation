@@ -85,10 +85,11 @@ The B frontend should use this sequence:
 3. Client calls `GET /api/platform/menu/deadline`.
 4. Client calls `GET /api/platform/evaluation-items?categoryCode=...`.
 5. Client calls `GET /api/config/evaluation/options/{itemCode}` when the selected item has `optionsKey`.
-6. User uploads personal evidence with `POST /api/files/upload`, or selects public material from `GET /api/files/public-attachments`.
-7. Client submits only `attachmentFileIds` to B write APIs.
-8. B validates file binding through owner-active or `PUBLISHED + ALL` public file semantics.
-9. Client uses `GET /api/files/{fileId}` and `GET /api/files/{fileId}/access-url` for preview/download, not B write responses.
+6. Client resolves the current student's primary `orgUnitId` from A-group current-user or identity context before creating a draft. If no current endpoint exposes primary membership cleanly, Minimal B must add a B-facing read helper or extend the existing current-user response in the execution plan.
+7. User uploads personal evidence with `POST /api/files/upload`, or selects public material from `GET /api/files/public-attachments`.
+8. Client submits only `attachmentFileIds` to B write APIs.
+9. B validates file binding through owner-active or `PUBLISHED + ALL` public file semantics.
+10. Client uses `GET /api/files/{fileId}` and `GET /api/files/{fileId}/access-url` for preview/download, not B write responses.
 
 The frontend must not send or store `storageKey`, `bucket`, `objectKey`, or raw upload `publicUrl`.
 
@@ -149,7 +150,8 @@ Behavior:
 - duplicate file IDs in one request fail with `409 BIZ-4090`;
 - missing/blank file ID fails with `400 VAL-4001`;
 - file binding accepts only current user's active uploaded file or `PUBLISHED + ALL` public file;
-- same student, item, academic year, and term cannot have another active `DRAFT`, `SUBMITTED`, or `RETURNED` application.
+- same student, item, academic year, and term cannot have another `DRAFT`, `SUBMITTED`, `RETURNED`, or `APPROVED` application;
+- `REJECTED` and `WITHDRAWN` do not block a new application for the same student, item, academic year, and term because they no longer represent an active or awarded claim.
 
 ### 6.2 Update Draft
 
@@ -204,11 +206,13 @@ Behavior:
 - application window must be open;
 - when `optionCode` is supplied, B calculates points through `RuleEngineService.calculatePoints`;
 - when custom points are allowed for the option, B can use `appliedPoints`;
+- when `optionCode` is absent, submit is valid only for items without configured options. In that case B does not calculate option points and returns `appliedPoints=null`, `maxPoints=<calculated or null>`, `exceedsMaxPoints=false`, and `warningMessage=null`;
+- when the selected item has options and `optionCode` is absent, submit fails with `400 VAL-4001`;
 - when computed/applied points exceed `calculateMaxPoints`, submission still succeeds and returns warning fields.
 
 Scoring fact persistence decision:
 
-- Minimal B will not persist submitted score facts into `application_fact`. The submit response returns `appliedPoints`, `maxPoints`, `exceedsMaxPoints`, and `warningMessage` for immediate frontend feedback. `application_fact` remains part of B-owned runtime DDL, but score-fact persistence is deferred to the C/D review and finalization integration specs.
+- Minimal B persists the submit-time scoring snapshot in `application_fact` so the application detail page and later review flow can show the same values even if Nacos scoring rules change. The submit path writes one `application_fact` row per application submission and replaces that row on resubmission from `RETURNED`. The B-facing detail response must include the persisted `optionCode`, `appliedPoints`, `maxPoints`, `exceedsMaxPoints`, and `warningMessage` fields.
 
 ### 6.4 Withdraw
 
@@ -246,16 +250,21 @@ Auth:
 
 - authenticated user with `application.view.self`.
 
-Current response is narrow:
+Minimal B keeps this endpoint paged as `ApiResponse<PageResult<ApplicationRecordView>>`. The target compact row shape is:
 
 ```json
 {
-  "applicationId": 21001,
-  "applicantUserId": 1001,
-  "orgUnitId": 2010,
-  "orgPath": "...",
-  "categoryCode": "INTELLECTUAL",
-  "itemCode": "INTELLECTUAL_PAPER"
+  "total": 1,
+  "records": [
+    {
+      "applicationId": 21001,
+      "applicantUserId": 1001,
+      "orgUnitId": 2010,
+      "orgPath": "/WHUT/CS/CS2022/CS2201",
+      "categoryCode": "INTELLECTUAL",
+      "itemCode": "INTELLECTUAL_PAPER"
+    }
+  ]
 }
 ```
 
@@ -287,6 +296,11 @@ Response data:
   "createdAt": "2026-07-06T10:00:00",
   "updatedAt": "2026-07-06T10:00:00",
   "version": 0,
+  "optionCode": "PAPER_CORE_FIRST_AUTHOR",
+  "appliedPoints": 2.00,
+  "maxPoints": 6.00,
+  "exceedsMaxPoints": false,
+  "warningMessage": null,
   "attachments": [
     {
       "fileId": "file_xxx",
@@ -310,6 +324,13 @@ B-owned runtime tables:
 - `application_fact`
 
 The frozen B SQL contains destructive `DROP TABLE IF EXISTS` and MySQL-specific DDL decorations. Runtime initialization must not blindly run it against a database that may contain submitted applications.
+
+Write operations must be transactional:
+
+- create draft writes `application_submission` and all `application_attachment` rows in one transaction;
+- update draft updates the submission row and replaces all attachment rows in one transaction;
+- submit updates the submission status and writes or replaces the submit-time `application_fact` snapshot in one transaction;
+- withdraw updates status/version in one transaction.
 
 Required artifact:
 
@@ -360,9 +381,10 @@ Use existing common error codes:
 | duplicate active application | 409 | `BIZ-4090` |
 | duplicate attachment fileId | 409 | `BIZ-4090` |
 | version mismatch | 409 | `BIZ-4090` |
+| state does not allow operation | 409 | `BIZ-4090` |
 | application window closed | 409 | `BIZ-4091` |
 
-Execution should avoid changing broad global exception mapping unless required. Branch-specific service exceptions should use existing exception classes that map to the target codes above.
+Execution should avoid changing broad global exception mapping unless required. Branch-specific service exceptions should use existing exception classes that map to the target codes above. Because the current shared error enum has only one generic conflict code, clients that need different conflict handling must key off the HTTP status plus `message` until a future common-error-code expansion is specified.
 
 ## 10. Acceptance Criteria
 
@@ -375,6 +397,7 @@ The implementation plan is complete when these are true:
 - Create draft binds current user as applicant and accepts only owner active or public `PUBLISHED + ALL` file IDs.
 - Update draft replaces attachment bindings and requires the expected version.
 - Submit enforces window-open and non-empty application content.
+- Submit persists and later reloads `optionCode`, `appliedPoints`, `maxPoints`, `exceedsMaxPoints`, and `warningMessage` through the detail endpoint.
 - Withdraw supports `SUBMITTED -> WITHDRAWN` and rejects `DRAFT`, `RETURNED`, `APPROVED`, `REJECTED`, and `WITHDRAWN`.
 - Student can retrieve enough owned application data to reopen an edit page without storage internals.
 - Focused tests cover controller contract, service state rules, repository persistence, SQL idempotency, and security filters.
@@ -405,6 +428,10 @@ Add or update focused tests:
   - public `PUBLISHED + ALL` file;
   - non-owner private file rejected;
   - update replaces attachments.
+- `MybatisPlusApplicationSubmissionRepositoryIntegrationTest`
+  - generated keys for `application_submission` and `application_attachment`;
+  - full attachment replacement on update;
+  - persisted submit-time `application_fact` snapshot can be reloaded into detail response support types once implemented.
 - `TeamDeliverySqlConsistencyTest`
   - B safe-init exists;
   - no `DROP TABLE`;
