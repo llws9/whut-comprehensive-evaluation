@@ -94,7 +94,7 @@
 - Create: `docs/team-delivery/group-c-review-workflow.safe-init.sql`
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/iam/TeamDeliverySqlConsistencyTest.java`
 
-- [ ] **Step 1: Write failing SQL consistency tests**
+- [x] **Step 1: Write failing SQL consistency tests**
 
 Add this constant near the existing `B_GROUP_SAFE_INIT_SQL` and `E_GROUP_SAFE_INIT_SQL` constants:
 
@@ -149,7 +149,7 @@ void shouldRerunCGroupSafeInitSqlWithoutOverwritingRuntimeReviewLogs() throws Ex
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -159,7 +159,7 @@ mvn -pl whut-eval-app -Dtest=TeamDeliverySqlConsistencyTest#shouldProvideNonDest
 
 Expected: FAIL because `docs/team-delivery/group-c-review-workflow.safe-init.sql` does not exist.
 
-- [ ] **Step 3: Add safe-init SQL**
+- [x] **Step 3: Add safe-init SQL**
 
 Create `docs/team-delivery/group-c-review-workflow.safe-init.sql` with exactly:
 
@@ -178,7 +178,7 @@ CREATE TABLE IF NOT EXISTS `application_review_log` (
 );
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run:
 
@@ -188,7 +188,7 @@ mvn -pl whut-eval-app -Dtest=TeamDeliverySqlConsistencyTest#shouldProvideNonDest
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/team-delivery/group-c-review-workflow.safe-init.sql whut-eval-app/src/test/java/edu/whut/eval/app/iam/TeamDeliverySqlConsistencyTest.java
@@ -203,7 +203,7 @@ git commit -m "test: add c review log safe init checks"
 - Modify: `whut-eval-domain/src/main/java/edu/whut/eval/domain/application/model/ApplicationSubmission.java`
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/application/ApplicationSubmissionStateMachineTest.java`
 
-- [ ] **Step 1: Write failing state-machine tests**
+- [x] **Step 1: Write failing state-machine tests**
 
 Add imports:
 
@@ -296,7 +296,7 @@ private ApplicationSubmission applicationWithStatus(ApplicationSubmissionStatus 
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -306,7 +306,7 @@ mvn -pl whut-eval-app -Dtest=ApplicationSubmissionStateMachineTest -Dsurefire.fa
 
 Expected: FAIL with missing methods `approve`, `returnForFix`, and `reject`.
 
-- [ ] **Step 3: Implement aggregate transitions**
+- [x] **Step 3: Implement aggregate transitions**
 
 In `ApplicationSubmission.java`, add these methods after `withdraw`:
 
@@ -370,7 +370,7 @@ private void assertReviewable() {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run:
 
@@ -380,7 +380,7 @@ mvn -pl whut-eval-app -Dtest=ApplicationSubmissionStateMachineTest -Dsurefire.fa
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add whut-eval-domain/src/main/java/edu/whut/eval/domain/application/model/ApplicationSubmission.java whut-eval-app/src/test/java/edu/whut/eval/app/application/ApplicationSubmissionStateMachineTest.java
@@ -400,7 +400,7 @@ git commit -m "feat: add application review transitions"
 - Create: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusApplicationReviewLogRepository.java`
 - Create: `whut-eval-app/src/test/java/edu/whut/eval/app/review/ApplicationReviewLogRepositoryIntegrationTest.java`
 
-- [ ] **Step 1: Write failing repository integration test**
+- [x] **Step 1: Write failing repository integration test**
 
 Create `whut-eval-app/src/test/java/edu/whut/eval/app/review/ApplicationReviewLogRepositoryIntegrationTest.java`:
 
@@ -543,7 +543,7 @@ class ApplicationReviewLogRepositoryIntegrationTest {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -553,7 +553,7 @@ mvn -pl whut-eval-app -Dtest=ApplicationReviewLogRepositoryIntegrationTest -Dsur
 
 Expected: FAIL because review log domain and mapper classes do not exist.
 
-- [ ] **Step 3: Add domain model and repository interface**
+- [x] **Step 3: Add domain model and repository interface**
 
 Create `ApplicationReviewAction.java`:
 
@@ -647,7 +647,7 @@ public interface ApplicationReviewLogRepository {
 }
 ```
 
-- [ ] **Step 4: Add mapper and repository implementation**
+- [x] **Step 4: Add mapper and repository implementation**
 
 Create `ApplicationReviewLogDO.java`:
 
@@ -824,7 +824,7 @@ public class MybatisPlusApplicationReviewLogRepository implements ApplicationRev
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run:
 
@@ -834,7 +834,7 @@ mvn -pl whut-eval-app -Dtest=ApplicationReviewLogRepositoryIntegrationTest -Dsur
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add whut-eval-domain/src/main/java/edu/whut/eval/domain/application/model/ApplicationReviewAction.java whut-eval-domain/src/main/java/edu/whut/eval/domain/application/model/ApplicationReviewLog.java whut-eval-domain/src/main/java/edu/whut/eval/domain/application/repository/ApplicationReviewLogRepository.java whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/dataobject/ApplicationReviewLogDO.java whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/ApplicationReviewLogMapper.java whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusApplicationReviewLogRepository.java whut-eval-app/src/test/java/edu/whut/eval/app/review/ApplicationReviewLogRepositoryIntegrationTest.java
@@ -855,7 +855,7 @@ git commit -m "feat: persist application review logs"
 - Create: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusReviewApplicationQueryRepository.java`
 - Create: `whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationQueryRepositoryIntegrationTest.java`
 
-- [ ] **Step 1: Write failing query repository integration test**
+- [x] **Step 1: Write failing query repository integration test**
 
 Create `ReviewApplicationQueryRepositoryIntegrationTest.java` with this complete class:
 
@@ -1093,7 +1093,7 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1103,7 +1103,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationQueryRepositoryIntegrationTest -Ds
 
 Expected: FAIL because review query repository classes do not exist.
 
-- [ ] **Step 3: Add query object and repository interface**
+- [x] **Step 3: Add query object and repository interface**
 
 Create `ReviewApplicationPageQuery.java`:
 
@@ -1205,7 +1205,7 @@ public interface ReviewApplicationQueryRepository {
 }
 ```
 
-- [ ] **Step 4: Add query row classes**
+- [x] **Step 4: Add query row classes**
 
 Create `ReviewApplicationAttachmentRow.java`:
 
@@ -1499,7 +1499,7 @@ public class ReviewApplicationQueryRow {
 }
 ```
 
-- [ ] **Step 5: Add mapper and SQL provider**
+- [x] **Step 5: Add mapper and SQL provider**
 
 Create `ReviewApplicationQueryMapper.java`:
 
@@ -1673,7 +1673,7 @@ public class ReviewApplicationQuerySqlProvider {
 
 The SQL intentionally projects an inner `review_base` relation with column names matching `ApplicationScopeSqlTranslator` (`application_id`, `applicant_user_id`, `org_unit_id`, `org_path`, `category_code`, `item_code`). Keep scope expressions and business filters on these unqualified outer column names; do not reference `s.`/`u.`/`o.` aliases in the outer `WHERE`. It also selects `extra_json AS extraJson` instead of using MySQL JSON functions. Parse `optionCode`, `maxPoints`, and `exceedsMaxPoints` in the repository so the same code works in MySQL and H2 MySQL-mode tests.
 
-- [ ] **Step 6: Add repository implementation**
+- [x] **Step 6: Add repository implementation**
 
 Create `MybatisPlusReviewApplicationQueryRepository.java`:
 
@@ -1786,7 +1786,7 @@ public class MybatisPlusReviewApplicationQueryRepository implements ReviewApplic
 }
 ```
 
-- [ ] **Step 7: Run test to verify it passes**
+- [x] **Step 7: Run test to verify it passes**
 
 Run:
 
@@ -1796,7 +1796,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationQueryRepositoryIntegrationTest -Ds
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add whut-eval-domain/src/main/java/edu/whut/eval/domain/application/query/ReviewApplicationPageQuery.java whut-eval-application/src/main/java/edu/whut/eval/application/application/repository/ReviewApplicationQueryRepository.java whut-eval-application/src/main/java/edu/whut/eval/application/application/query/ReviewApplicationQueryRow.java whut-eval-application/src/main/java/edu/whut/eval/application/application/query/ReviewApplicationAttachmentRow.java whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/ReviewApplicationQueryMapper.java whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/ReviewApplicationQuerySqlProvider.java whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusReviewApplicationQueryRepository.java whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationQueryRepositoryIntegrationTest.java
@@ -1811,7 +1811,7 @@ git commit -m "feat: add review application query repository"
 - Create: `whut-eval-application/src/main/java/edu/whut/eval/application/application/service/ReviewApplicationAccessValidator.java`
 - Create: `whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationAccessValidatorTest.java`
 
-- [ ] **Step 1: Write failing validator tests**
+- [x] **Step 1: Write failing validator tests**
 
 Create `ReviewApplicationAccessValidatorTest.java`:
 
@@ -1906,7 +1906,7 @@ class ReviewApplicationAccessValidatorTest {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1916,7 +1916,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationAccessValidatorTest -Dsurefire.fai
 
 Expected: FAIL because `ReviewApplicationAccessValidator` does not exist.
 
-- [ ] **Step 3: Implement validator**
+- [x] **Step 3: Implement validator**
 
 Create `ReviewApplicationAccessValidator.java`:
 
@@ -1961,7 +1961,7 @@ public class ReviewApplicationAccessValidator {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run:
 
@@ -1971,7 +1971,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationAccessValidatorTest -Dsurefire.fai
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add whut-eval-application/src/main/java/edu/whut/eval/application/application/service/ReviewApplicationAccessValidator.java whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationAccessValidatorTest.java
@@ -1990,7 +1990,7 @@ git commit -m "feat: validate review application scope"
 - Create: `whut-eval-application/src/main/java/edu/whut/eval/application/application/service/ReviewApplicationCommandApplicationService.java`
 - Create: `whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationCommandApplicationServiceTest.java`
 
-- [ ] **Step 1: Write failing command service tests**
+- [x] **Step 1: Write failing command service tests**
 
 Create `ReviewApplicationCommandApplicationServiceTest.java`:
 
@@ -2157,7 +2157,7 @@ private ApplicationSubmission submittedApplication() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -2167,7 +2167,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationCommandApplicationServiceTest -Dsu
 
 Expected: FAIL because command service classes do not exist.
 
-- [ ] **Step 3: Add command and result classes**
+- [x] **Step 3: Add command and result classes**
 
 Create `ApproveReviewCommand.java`:
 
@@ -2213,7 +2213,7 @@ public record ReviewActionResultView(Long applicationId,
 }
 ```
 
-- [ ] **Step 4: Implement command service**
+- [x] **Step 4: Implement command service**
 
 Create `ReviewApplicationCommandApplicationService.java`:
 
@@ -2357,7 +2357,7 @@ public class ReviewApplicationCommandApplicationService {
 }
 ```
 
-- [ ] **Step 5: Run command service tests**
+- [x] **Step 5: Run command service tests**
 
 Run:
 
@@ -2367,7 +2367,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationCommandApplicationServiceTest -Dsu
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add whut-eval-application/src/main/java/edu/whut/eval/application/application/command/ApproveReviewCommand.java whut-eval-application/src/main/java/edu/whut/eval/application/application/command/ReturnReviewCommand.java whut-eval-application/src/main/java/edu/whut/eval/application/application/command/RejectReviewCommand.java whut-eval-application/src/main/java/edu/whut/eval/application/application/query/ReviewActionResultView.java whut-eval-application/src/main/java/edu/whut/eval/application/application/service/ReviewApplicationCommandApplicationService.java whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationCommandApplicationServiceTest.java
@@ -2388,7 +2388,7 @@ git commit -m "feat: add review action service"
 - Create `whut-eval-application/src/main/java/edu/whut/eval/application/application/service/ReviewApplicationQueryApplicationService.java`
 - Create tests inside `whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationQueryApplicationServiceTest.java`
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 Create `ReviewApplicationQueryApplicationServiceTest.java`:
 
@@ -2553,7 +2553,7 @@ private edu.whut.eval.application.application.query.ReviewApplicationAttachmentR
 
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -2563,7 +2563,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationQueryApplicationServiceTest -Dsure
 
 Expected: FAIL because query service and view classes do not exist.
 
-- [ ] **Step 3: Add view records**
+- [x] **Step 3: Add view records**
 
 Use records for stable JSON property names:
 
@@ -2671,7 +2671,7 @@ public record ReviewLogView(Long reviewLogId,
 }
 ```
 
-- [ ] **Step 4: Implement query application service**
+- [x] **Step 4: Implement query application service**
 
 Create `ReviewApplicationQueryApplicationService.java`:
 
@@ -2845,7 +2845,7 @@ public class ReviewApplicationQueryApplicationService {
 }
 ```
 
-- [ ] **Step 5: Run service tests**
+- [x] **Step 5: Run service tests**
 
 Run:
 
@@ -2855,7 +2855,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationQueryApplicationServiceTest -Dsure
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add whut-eval-application/src/main/java/edu/whut/eval/application/application/query/ReviewActionResultView.java whut-eval-application/src/main/java/edu/whut/eval/application/application/query/ReviewApplicationListItemView.java whut-eval-application/src/main/java/edu/whut/eval/application/application/query/ReviewApplicationDetailView.java whut-eval-application/src/main/java/edu/whut/eval/application/application/query/ReviewApplicationSummaryView.java whut-eval-application/src/main/java/edu/whut/eval/application/application/query/ReviewApplicantView.java whut-eval-application/src/main/java/edu/whut/eval/application/application/query/ReviewScoringSnapshotView.java whut-eval-application/src/main/java/edu/whut/eval/application/application/query/ReviewLogView.java whut-eval-application/src/main/java/edu/whut/eval/application/application/service/ReviewApplicationQueryApplicationService.java whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationQueryApplicationServiceTest.java
@@ -2874,7 +2874,7 @@ git commit -m "feat: map review application read views"
 - Create: `whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationControllerWebMvcTest.java`
 - Create: `whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationControllerSecurityAnnotationTest.java`
 
-- [ ] **Step 1: Write failing WebMvc and annotation tests**
+- [x] **Step 1: Write failing WebMvc and annotation tests**
 
 Create `ReviewApplicationControllerWebMvcTest.java`:
 
@@ -3092,7 +3092,7 @@ class ReviewApplicationControllerSecurityAnnotationTest {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run:
 
@@ -3102,7 +3102,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationControllerWebMvcTest,ReviewApplica
 
 Expected: FAIL because controller and request classes do not exist.
 
-- [ ] **Step 3: Add request classes**
+- [x] **Step 3: Add request classes**
 
 Create `ApproveReviewRequest.java`:
 
@@ -3200,7 +3200,7 @@ public class RejectReviewRequest {
 }
 ```
 
-- [ ] **Step 4: Add controller**
+- [x] **Step 4: Add controller**
 
 Create `ReviewApplicationController.java`:
 
@@ -3296,7 +3296,7 @@ public class ReviewApplicationController {
 }
 ```
 
-- [ ] **Step 5: Run controller tests**
+- [x] **Step 5: Run controller tests**
 
 Run:
 
@@ -3306,7 +3306,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationControllerWebMvcTest,ReviewApplica
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/review whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationControllerWebMvcTest.java whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationControllerSecurityAnnotationTest.java
@@ -3320,7 +3320,7 @@ git commit -m "feat: expose review application endpoints"
 **Files:**
 - Create: `whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationSecurityIntegrationTest.java`
 
-- [ ] **Step 1: Write failing security integration test**
+- [x] **Step 1: Write failing security integration test**
 
 Create `ReviewApplicationSecurityIntegrationTest.java`:
 
@@ -3534,7 +3534,7 @@ static class TestApplication {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -3544,7 +3544,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationSecurityIntegrationTest -Dsurefire
 
 Expected: FAIL because the review controller and services do not exist yet.
 
-- [ ] **Step 3: Run security integration test**
+- [x] **Step 3: Run security integration test**
 
 Run:
 
@@ -3554,7 +3554,7 @@ mvn -pl whut-eval-app -Dtest=ReviewApplicationSecurityIntegrationTest -Dsurefire
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add whut-eval-app/src/test/java/edu/whut/eval/app/review/ReviewApplicationSecurityIntegrationTest.java
@@ -3568,7 +3568,7 @@ git commit -m "test: cover review endpoint security filters"
 **Files:**
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/student/MybatisPlusApplicationSubmissionRepositoryIntegrationTest.java`
 
-- [ ] **Step 1: Write failing scoring snapshot preservation test**
+- [x] **Step 1: Write failing scoring snapshot preservation test**
 
 Add this test after `shouldSaveAndReloadScoringSnapshot`:
 
@@ -3596,7 +3596,7 @@ void shouldPreserveApplicationFactWhenApprovingSubmittedApplication() {
 }
 ```
 
-- [ ] **Step 2: Run test**
+- [x] **Step 2: Run test**
 
 Run:
 
@@ -3606,7 +3606,7 @@ mvn -pl whut-eval-app -Dtest=MybatisPlusApplicationSubmissionRepositoryIntegrati
 
 Expected: PASS if Task 2 preserved `scoringSnapshot`; FAIL if the transition dropped it.
 
-- [ ] **Step 3: Run focused Minimal C regression set**
+- [x] **Step 3: Run focused Minimal C regression set**
 
 Run:
 
@@ -3616,7 +3616,7 @@ mvn -pl whut-eval-app -Dtest=TeamDeliverySqlConsistencyTest,ApplicationSubmissio
 
 Expected: PASS.
 
-- [ ] **Step 4: Run existing Minimal B application tests**
+- [x] **Step 4: Run existing Minimal B application tests**
 
 Run:
 
@@ -3626,7 +3626,7 @@ mvn -pl whut-eval-app -Dtest=ApplicationSubmissionCommandApplicationServiceTest,
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add whut-eval-app/src/test/java/edu/whut/eval/app/student/MybatisPlusApplicationSubmissionRepositoryIntegrationTest.java
@@ -3640,7 +3640,7 @@ git commit -m "test: preserve scoring snapshot during review"
 **Files:**
 - Read the Maven test output and `git status`; do not create new source files in this task.
 
-- [ ] **Step 1: Run full app module tests**
+- [x] **Step 1: Run full app module tests**
 
 Run:
 
@@ -3650,7 +3650,7 @@ mvn -pl whut-eval-app test
 
 Expected: PASS.
 
-- [ ] **Step 2: Run full Maven test suite if app module passes**
+- [x] **Step 2: Run full Maven test suite if app module passes**
 
 Run:
 
@@ -3660,7 +3660,7 @@ mvn test
 
 Expected: PASS. If modules without tests fail because no specified tests are present, rerun the focused commands with `-Dsurefire.failIfNoSpecifiedTests=false` and record the exact module error.
 
-- [ ] **Step 3: Inspect git status**
+- [x] **Step 3: Inspect git status**
 
 Run:
 
@@ -3670,7 +3670,7 @@ git status --short
 
 Expected: empty output because Tasks 1 through 10 each committed their own changes.
 
-- [ ] **Step 4: Inspect recent commits**
+- [x] **Step 4: Inspect recent commits**
 
 Run:
 
@@ -3706,3 +3706,29 @@ A final text scan found no unresolved planning markers, vague test directives, c
 - Response status values come from `ApplicationSubmissionStatus`.
 - Query repository returns `ReviewApplicationQueryRow`; application service maps it to `ReviewApplicationListItemView` and `ReviewApplicationDetailView`.
 - Single-resource validation uses `ReviewApplicationQueryRow.orgPath`, not the bare aggregate.
+
+## Completion Audit
+
+Audit time: 2026-07-07 Asia/Shanghai.
+
+Objective: execute this Minimal C plan, run code review automatically after implementation, fix confirmed findings, and merge the verified result into `main`.
+
+Prompt-to-artifact checklist:
+
+- Execute the plan: Tasks 1 through 11 are marked complete in this document. The implementation commits on `main` include safe SQL, aggregate transitions, review log persistence, query repository, scope validation, command/query services, controller endpoints, security coverage, and scoring snapshot regression coverage.
+- Review list/detail workflow: `ReviewApplicationController` exposes `GET /api/review/applications` and `GET /api/review/applications/{applicationId}`; `ReviewApplicationQueryApplicationService` maps dedicated C review DTOs.
+- Approve/return/reject workflow: `ReviewApplicationCommandApplicationService` orchestrates aggregate transitions, persistence, access validation, and review-log append in one transaction.
+- Immutable review logs: `ApplicationReviewLog`, `ApplicationReviewLogMapper`, and `MybatisPlusApplicationReviewLogRepository` persist generated-key review logs and list them by `reviewed_at ASC, id ASC`.
+- A-group review scope: list/detail use `ApplicationScopeSqlTranslator`-compatible query rows, and single-resource actions/detail run `ReviewApplicationAccessValidator` against `application.review`.
+- Storage internals hidden: review attachment response DTOs expose file metadata only; `storageKey` remains internal to query rows and repository mapping.
+- Scoring snapshot preserved: aggregate review transitions carry `submittedAt`, attachments, and `scoringSnapshot`; repository integration coverage asserts `application_fact` survives approve.
+- Code review and fix: post-implementation review found the out-of-scope detail/action semantic bug; commit `61b6fe3 fix: return forbidden for out-of-scope reviews` changed detail/action flows to load the existing resource unscoped, then return 403 through `ReviewApplicationAccessValidator`.
+- Merge to main: `main` contains the Minimal C implementation and review fix commits through `55969f9 docs: record minimal c review workflow plan`.
+
+Verification evidence recorded during execution:
+
+- Focused Minimal C regression command passed: `mvn -pl whut-eval-app -am -Dtest=TeamDeliverySqlConsistencyTest,ApplicationSubmissionStateMachineTest,ApplicationReviewLogRepositoryIntegrationTest,ReviewApplicationQueryRepositoryIntegrationTest,ReviewApplicationAccessValidatorTest,ReviewApplicationCommandApplicationServiceTest,ReviewApplicationQueryApplicationServiceTest,ReviewApplicationControllerWebMvcTest,ReviewApplicationControllerSecurityAnnotationTest,ReviewApplicationSecurityIntegrationTest,MybatisPlusApplicationSubmissionRepositoryIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test`.
+- App module with reactor passed: `mvn -pl whut-eval-app -am test`.
+- Full repository passed before merge: `mvn test`.
+- Full repository passed after merge on `main`: `mvn test`.
+- Final git check found `main` at `55969f9` with no uncommitted runtime implementation work.
