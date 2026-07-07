@@ -19,6 +19,7 @@ class TeamDeliverySqlConsistencyTest {
     private static final Path TEAM_DELIVERY = ROOT.resolve("docs/team-delivery");
     private static final Path IAM_RESOURCE_SQL = ROOT.resolve("whut-eval-app/src/main/resources/sql/iam");
     private static final Path B_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-b-student-application.safe-init.sql");
+    private static final Path C_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-c-review-workflow.safe-init.sql");
     private static final Path E_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-e-platform-governance-attachment-ai.safe-init.sql");
 
     @Test
@@ -166,6 +167,49 @@ class TeamDeliverySqlConsistencyTest {
                     .isEqualTo("ACTIVE");
             assertThat(countRows(connection, "file_asset", "file_id = 'FILE-0008'")).isEqualTo(1);
             assertThat(countRows(connection, "public_attachment_entry", "id = 14001")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void shouldProvideNonDestructiveCGroupSafeInitSql() throws Exception {
+        String sql = Files.readString(C_GROUP_SAFE_INIT_SQL);
+
+        assertThat(sql).contains("CREATE TABLE IF NOT EXISTS `application_review_log`");
+        assertThat(sql).doesNotContain("DROP TABLE");
+        assertThat(sql).doesNotContain("ENGINE=");
+        assertThat(sql).doesNotContain("CHARSET");
+        assertThat(sql).doesNotContain("COLLATE");
+        assertThat(sql).doesNotContain("COMMENT=");
+        assertThat(extractCreateTableBlock(sql, "application_review_log"))
+                .contains("`id` BIGINT NOT NULL AUTO_INCREMENT")
+                .contains("`application_id` BIGINT NOT NULL")
+                .contains("`action` VARCHAR(32) NOT NULL")
+                .contains("`reviewer_id` BIGINT NOT NULL")
+                .contains("`review_role` VARCHAR(64) NOT NULL")
+                .contains("`reason` VARCHAR(1000) DEFAULT NULL")
+                .contains("`reviewed_at` DATETIME NOT NULL")
+                .contains("KEY `idx_application_review_log_application_id` (`application_id`)")
+                .contains("KEY `idx_application_review_log_reviewer_id` (`reviewer_id`)");
+    }
+
+    @Test
+    void shouldRerunCGroupSafeInitSqlWithoutOverwritingRuntimeReviewLogs() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:c_group_safe_init;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")) {
+            executeStatements(connection, Files.readString(C_GROUP_SAFE_INIT_SQL));
+
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO application_review_log (application_id, action, reviewer_id, review_role, reason, reviewed_at)
+                    VALUES (21013, 'APPROVE', 1010, 'COUNSELOR', 'runtime approve', '2026-07-07 10:00:00')
+                    """);
+            long reviewLogId = singleLong(connection, "SELECT id FROM application_review_log WHERE reason = 'runtime approve'");
+
+            executeStatements(connection, Files.readString(C_GROUP_SAFE_INIT_SQL));
+
+            assertThat(countRows(connection, "application_review_log", "id = " + reviewLogId)).isEqualTo(1);
+            assertThat(singleString(connection, "SELECT action FROM application_review_log WHERE id = " + reviewLogId))
+                    .isEqualTo("APPROVE");
+            assertThat(singleString(connection, "SELECT reason FROM application_review_log WHERE id = " + reviewLogId))
+                    .isEqualTo("runtime approve");
         }
     }
 
