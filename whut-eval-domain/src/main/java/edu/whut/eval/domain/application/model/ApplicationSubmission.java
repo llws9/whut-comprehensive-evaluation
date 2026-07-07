@@ -26,6 +26,7 @@ public class ApplicationSubmission {
     private final Instant createdAt;
     private final Instant updatedAt;
     private final Long version;
+    private final ApplicationScoringSnapshot scoringSnapshot;
 
     public ApplicationSubmission(Long applicationId,
                                  Long applicantUserId,
@@ -42,6 +43,26 @@ public class ApplicationSubmission {
                                  Instant createdAt,
                                  Instant updatedAt,
                                  Long version) {
+        this(applicationId, applicantUserId, orgUnitId, categoryCode, itemCode, academicYear, term, title, description,
+                evidenceAttachments, status, submittedAt, createdAt, updatedAt, version, null);
+    }
+
+    public ApplicationSubmission(Long applicationId,
+                                 Long applicantUserId,
+                                 Long orgUnitId,
+                                 String categoryCode,
+                                 String itemCode,
+                                 String academicYear,
+                                 String term,
+                                 String title,
+                                 String description,
+                                 List<AttachmentRef> evidenceAttachments,
+                                 ApplicationSubmissionStatus status,
+                                 Instant submittedAt,
+                                 Instant createdAt,
+                                 Instant updatedAt,
+                                 Long version,
+                                 ApplicationScoringSnapshot scoringSnapshot) {
         this.applicationId = applicationId;
         this.applicantUserId = applicantUserId;
         this.orgUnitId = orgUnitId;
@@ -57,6 +78,7 @@ public class ApplicationSubmission {
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
         this.version = version;
+        this.scoringSnapshot = scoringSnapshot;
     }
 
     /**
@@ -115,7 +137,8 @@ public class ApplicationSubmission {
                 submittedAt,
                 createdAt,
                 Instant.now(),
-                version + 1
+                version + 1,
+                scoringSnapshot
         );
     }
 
@@ -175,7 +198,8 @@ public class ApplicationSubmission {
                 submittedAt,
                 createdAt,
                 Instant.now(),
-                version + 1
+                version + 1,
+                scoringSnapshot
         );
     }
 
@@ -249,5 +273,9 @@ public class ApplicationSubmission {
 
     public Long getVersion() {
         return version;
+    }
+
+    public ApplicationScoringSnapshot getScoringSnapshot() {
+        return scoringSnapshot;
     }
 }
