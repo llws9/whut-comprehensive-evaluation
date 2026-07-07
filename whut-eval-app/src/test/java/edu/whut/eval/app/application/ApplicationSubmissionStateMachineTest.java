@@ -3,9 +3,11 @@ package edu.whut.eval.app.application;
 import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.application.model.ApplicationSubmission;
 import edu.whut.eval.domain.application.model.ApplicationSubmissionStatus;
+import edu.whut.eval.domain.application.model.ApplicationScoringSnapshot;
 import edu.whut.eval.domain.application.model.AttachmentRef;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -18,7 +20,7 @@ class ApplicationSubmissionStateMachineTest {
         ApplicationSubmission draft = draft();
 
         ApplicationSubmission updated = draft.updateDraft("新标题", "新说明", draft.getEvidenceAttachments(), 0L);
-        ApplicationSubmission submitted = updated.submit(1L);
+        ApplicationSubmission submitted = updated.submit(1L, submittedSnapshot());
 
         assertThat(updated.getStatus()).isEqualTo(ApplicationSubmissionStatus.DRAFT);
         assertThat(updated.getVersion()).isEqualTo(1L);
@@ -28,7 +30,7 @@ class ApplicationSubmissionStateMachineTest {
 
     @Test
     void shouldRejectUpdateWhenStatusNotEditable() {
-        ApplicationSubmission submitted = draft().submit(0L);
+        ApplicationSubmission submitted = draft().submit(0L, submittedSnapshot());
 
         assertThatThrownBy(() -> submitted.updateDraft("新标题", "新说明", submitted.getEvidenceAttachments(), 1L))
                 .isInstanceOf(ValidationException.class)
@@ -49,9 +51,16 @@ class ApplicationSubmissionStateMachineTest {
                 List.of()
         );
 
-        assertThatThrownBy(() -> draft.submit(0L))
+        assertThatThrownBy(() -> draft.submit(0L, submittedSnapshot()))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("申请附件不能为空");
+    }
+
+    @Test
+    void shouldRejectSubmitWithoutScoringSnapshot() {
+        assertThatThrownBy(() -> draft().submit(0L))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("申请评分快照不能为空");
     }
 
     @Test
@@ -130,5 +139,9 @@ class ApplicationSubmissionStateMachineTest {
                 java.time.Instant.parse("2026-07-06T09:00:00Z"),
                 0L
         );
+    }
+
+    private ApplicationScoringSnapshot submittedSnapshot() {
+        return new ApplicationScoringSnapshot("OPTION_A", new BigDecimal("2.00"), new BigDecimal("6.00"), 1, false, null);
     }
 }

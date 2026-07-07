@@ -10,5 +10,7 @@ public interface RuleEngineService {
 
     boolean allowsCustomPoints(String itemCode, String optionCode);
 
+    boolean requiresOption(String itemCode);
+
     boolean evaluateEligibility(String categoryCode, StudentEvaluationSummary summary);
 }

@@ -1,5 +1,6 @@
 package edu.whut.eval.app.student;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
@@ -19,6 +20,7 @@ import edu.whut.eval.domain.config.StudentContext;
 import edu.whut.eval.domain.config.StudentEvaluationSummary;
 import edu.whut.eval.infra.config.MybatisPlusConfig;
 import edu.whut.eval.infra.persistence.mapper.ApplicationAttachmentMapper;
+import edu.whut.eval.infra.persistence.mapper.ApplicationFactMapper;
 import edu.whut.eval.infra.persistence.mapper.ApplicationSubmissionMapper;
 import edu.whut.eval.infra.persistence.mapper.FileAssetMapper;
 import edu.whut.eval.infra.persistence.mapper.PublicAttachmentEntryMapper;
@@ -65,6 +67,7 @@ class ApplicationSubmissionFileIdIntegrationTest {
     void setUpSchema() {
         jdbcTemplate.execute("DROP TABLE IF EXISTS public_attachment_entry");
         jdbcTemplate.execute("DROP TABLE IF EXISTS file_asset");
+        jdbcTemplate.execute("DROP TABLE IF EXISTS application_fact");
         jdbcTemplate.execute("DROP TABLE IF EXISTS application_attachment");
         jdbcTemplate.execute("DROP TABLE IF EXISTS application_submission");
         jdbcTemplate.execute(
@@ -128,6 +131,18 @@ class ApplicationSubmissionFileIdIntegrationTest {
                         "size BIGINT NOT NULL, " +
                         "uploaded_by BIGINT NOT NULL, " +
                         "sort_no INT NOT NULL)"
+        );
+        jdbcTemplate.execute(
+                "CREATE TABLE application_fact (" +
+                        "id BIGINT AUTO_INCREMENT PRIMARY KEY, " +
+                        "application_id BIGINT NOT NULL, " +
+                        "score_value DECIMAL(10,2) NULL, " +
+                        "display_text VARCHAR(1000) NULL, " +
+                        "evidence_count INT NOT NULL, " +
+                        "extra_json VARCHAR(2000) NULL, " +
+                        "created_at DATETIME NOT NULL, " +
+                        "updated_at DATETIME NOT NULL, " +
+                        "UNIQUE KEY uk_application_fact_application_id (application_id))"
         );
     }
 
@@ -216,6 +231,7 @@ class ApplicationSubmissionFileIdIntegrationTest {
     @MapperScan(basePackageClasses = {
             ApplicationSubmissionMapper.class,
             ApplicationAttachmentMapper.class,
+            ApplicationFactMapper.class,
             FileAssetMapper.class,
             PublicAttachmentEntryMapper.class
     })
@@ -264,6 +280,11 @@ class ApplicationSubmissionFileIdIntegrationTest {
         }
 
         @Bean
+        ObjectMapper objectMapper() {
+            return new ObjectMapper();
+        }
+
+        @Bean
         UserAuthorizationContextAssembler userAuthorizationContextAssembler() {
             return () -> Optional.of(new UserAuthorizationContext(
                     1001L,
@@ -306,6 +327,11 @@ class ApplicationSubmissionFileIdIntegrationTest {
 
                 @Override
                 public boolean allowsCustomPoints(String itemCode, String optionCode) {
+                    return false;
+                }
+
+                @Override
+                public boolean requiresOption(String itemCode) {
                     return false;
                 }
 

@@ -1,17 +1,26 @@
 package edu.whut.eval.infra.persistence.repository;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import edu.whut.eval.common.exception.SystemException;
 import edu.whut.eval.common.exception.ConflictException;
+import edu.whut.eval.domain.application.model.ApplicationScoringSnapshot;
 import edu.whut.eval.domain.application.model.ApplicationSubmission;
 import edu.whut.eval.domain.application.model.ApplicationSubmissionStatus;
 import edu.whut.eval.domain.application.model.AttachmentRef;
 import edu.whut.eval.domain.application.repository.ApplicationSubmissionRepository;
 import edu.whut.eval.infra.persistence.dataobject.ApplicationAttachmentDO;
+import edu.whut.eval.infra.persistence.dataobject.ApplicationFactDO;
 import edu.whut.eval.infra.persistence.dataobject.ApplicationSubmissionDO;
 import edu.whut.eval.infra.persistence.mapper.ApplicationAttachmentMapper;
+import edu.whut.eval.infra.persistence.mapper.ApplicationFactMapper;
 import edu.whut.eval.infra.persistence.mapper.ApplicationSubmissionMapper;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -24,13 +33,23 @@ import java.util.Optional;
 @Repository
 public class MybatisPlusApplicationSubmissionRepository implements ApplicationSubmissionRepository {
 
+    private static final String EXTRA_OPTION_CODE = "optionCode";
+    private static final String EXTRA_MAX_POINTS = "maxPoints";
+    private static final String EXTRA_EXCEEDS_MAX_POINTS = "exceedsMaxPoints";
+
     private final ApplicationSubmissionMapper applicationSubmissionMapper;
     private final ApplicationAttachmentMapper applicationAttachmentMapper;
+    private final ApplicationFactMapper applicationFactMapper;
+    private final ObjectMapper objectMapper;
 
     public MybatisPlusApplicationSubmissionRepository(ApplicationSubmissionMapper applicationSubmissionMapper,
-                                                      ApplicationAttachmentMapper applicationAttachmentMapper) {
+                                                      ApplicationAttachmentMapper applicationAttachmentMapper,
+                                                      ApplicationFactMapper applicationFactMapper,
+                                                      ObjectMapper objectMapper) {
         this.applicationSubmissionMapper = applicationSubmissionMapper;
         this.applicationAttachmentMapper = applicationAttachmentMapper;
+        this.applicationFactMapper = applicationFactMapper;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -40,7 +59,8 @@ public class MybatisPlusApplicationSubmissionRepository implements ApplicationSu
             return Optional.empty();
         }
         return Optional.of(toDomain(applicationSubmissionDO,
-                applicationAttachmentMapper.selectByApplicationId(applicationId)));
+                applicationAttachmentMapper.selectByApplicationId(applicationId),
+                applicationFactMapper.selectLatestByApplicationId(applicationId)));
     }
 
     @Override
@@ -58,8 +78,21 @@ public class MybatisPlusApplicationSubmissionRepository implements ApplicationSu
             applicationAttachmentMapper.deleteByApplicationId(applicationSubmission.getApplicationId());
         }
         replaceAttachments(applicationSubmissionDO.getApplicationId(), applicationSubmission.getEvidenceAttachments());
+        replaceScoringSnapshot(applicationSubmissionDO.getApplicationId(), applicationSubmission.getScoringSnapshot());
         return findById(applicationSubmissionDO.getApplicationId())
                 .orElseThrow(() -> new ConflictException("申请保存后读取失败"));
+    }
+
+    private void replaceScoringSnapshot(Long applicationId, ApplicationScoringSnapshot scoringSnapshot) {
+        applicationFactMapper.deleteByApplicationId(applicationId);
+        if (scoringSnapshot == null) {
+            return;
+        }
+        ApplicationFactDO fact = toApplicationFactDO(applicationId, scoringSnapshot);
+        LocalDateTime now = LocalDateTime.ofInstant(Instant.now(), ZoneOffset.UTC);
+        fact.setCreatedAt(now);
+        fact.setUpdatedAt(now);
+        applicationFactMapper.insert(fact);
     }
 
     private void replaceAttachments(Long applicationId, List<AttachmentRef> attachments) {
@@ -79,7 +112,8 @@ public class MybatisPlusApplicationSubmissionRepository implements ApplicationSu
     }
 
     private ApplicationSubmission toDomain(ApplicationSubmissionDO applicationSubmissionDO,
-                                           List<ApplicationAttachmentDO> attachmentDOS) {
+                                           List<ApplicationAttachmentDO> attachmentDOS,
+                                           ApplicationFactDO applicationFactDO) {
         return new ApplicationSubmission(
                 applicationSubmissionDO.getApplicationId(),
                 applicationSubmissionDO.getApplicantUserId(),
@@ -95,7 +129,8 @@ public class MybatisPlusApplicationSubmissionRepository implements ApplicationSu
                 toInstant(applicationSubmissionDO.getSubmittedAt()),
                 toInstant(applicationSubmissionDO.getCreatedAt()),
                 toInstant(applicationSubmissionDO.getUpdatedAt()),
-                applicationSubmissionDO.getVersion()
+                applicationSubmissionDO.getVersion(),
+                toScoringSnapshot(applicationFactDO)
         );
     }
 
@@ -131,6 +166,63 @@ public class MybatisPlusApplicationSubmissionRepository implements ApplicationSu
         applicationSubmissionDO.setUpdatedAt(toLocalDateTime(applicationSubmission.getUpdatedAt()));
         applicationSubmissionDO.setVersion(applicationSubmission.getVersion());
         return applicationSubmissionDO;
+    }
+
+    private ApplicationFactDO toApplicationFactDO(Long applicationId, ApplicationScoringSnapshot snapshot) {
+        ApplicationFactDO applicationFactDO = new ApplicationFactDO();
+        applicationFactDO.setApplicationId(applicationId);
+        applicationFactDO.setScoreValue(snapshot.appliedPoints());
+        applicationFactDO.setDisplayText(snapshot.warningMessage());
+        applicationFactDO.setEvidenceCount(snapshot.evidenceCount());
+        applicationFactDO.setExtraJson(toExtraJson(snapshot));
+        return applicationFactDO;
+    }
+
+    private String toExtraJson(ApplicationScoringSnapshot snapshot) {
+        try {
+            ObjectNode node = objectMapper.createObjectNode();
+            if (snapshot.optionCode() == null) {
+                node.putNull(EXTRA_OPTION_CODE);
+            } else {
+                node.put(EXTRA_OPTION_CODE, snapshot.optionCode());
+            }
+            if (snapshot.maxPoints() == null) {
+                node.putNull(EXTRA_MAX_POINTS);
+            } else {
+                node.put(EXTRA_MAX_POINTS, snapshot.maxPoints().toPlainString());
+            }
+            node.put(EXTRA_EXCEEDS_MAX_POINTS, snapshot.exceedsMaxPoints());
+            return objectMapper.writeValueAsString(node);
+        } catch (JsonProcessingException exception) {
+            throw new SystemException("申请评分快照序列化失败", exception);
+        }
+    }
+
+    private ApplicationScoringSnapshot toScoringSnapshot(ApplicationFactDO fact) {
+        if (fact == null) {
+            return null;
+        }
+        try {
+            JsonNode extra = objectMapper.readTree(fact.getExtraJson() == null ? "{}" : fact.getExtraJson());
+            String optionCode = extra.path(EXTRA_OPTION_CODE).asText(null);
+            String maxPointsText = extra.path(EXTRA_MAX_POINTS).asText(null);
+            BigDecimal maxPoints = parseOptionalBigDecimal(maxPointsText);
+            boolean exceedsMaxPoints = extra.path(EXTRA_EXCEEDS_MAX_POINTS).asBoolean(false);
+            return new ApplicationScoringSnapshot(
+                    optionCode,
+                    fact.getScoreValue(),
+                    maxPoints,
+                    fact.getEvidenceCount(),
+                    exceedsMaxPoints,
+                    fact.getDisplayText()
+            );
+        } catch (JsonProcessingException | NumberFormatException exception) {
+            throw new SystemException("申请评分快照反序列化失败", exception);
+        }
+    }
+
+    private BigDecimal parseOptionalBigDecimal(String text) {
+        return text == null || text.isBlank() ? null : new BigDecimal(text);
     }
 
     private Instant toInstant(LocalDateTime localDateTime) {

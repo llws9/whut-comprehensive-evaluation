@@ -11,6 +11,7 @@ import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.common.exception.ValidationException;
+import edu.whut.eval.domain.application.model.ApplicationScoringSnapshot;
 import edu.whut.eval.domain.application.model.ApplicationSubmission;
 import edu.whut.eval.domain.application.model.AttachmentRef;
 import edu.whut.eval.domain.application.repository.ApplicationSubmissionRepository;
@@ -134,6 +135,7 @@ public class ApplicationSubmissionCommandApplicationService {
                 .partyMember(isPartyMember(authorizationContext))
                 .build();
 
+        validateOptionRequirement(command, submission);
         BigDecimal appliedPoints = resolveAppliedPoints(command, submission, studentContext);
         BigDecimal maxPoints = null;
         boolean exceedsMaxPoints = false;
@@ -151,18 +153,38 @@ public class ApplicationSubmissionCommandApplicationService {
             }
         }
 
+        ApplicationScoringSnapshot scoringSnapshot = new ApplicationScoringSnapshot(
+                command.getOptionCode(),
+                appliedPoints,
+                maxPoints,
+                submission.getEvidenceAttachments().size(),
+                exceedsMaxPoints,
+                warningMessage
+        );
         ApplicationSubmission saved = applicationSubmissionRepository.save(submission.submit(
-                requiredExpectedVersion(command.getExpectedVersion())
+                requiredExpectedVersion(command.getExpectedVersion()),
+                scoringSnapshot
         ));
 
         return toView(saved, appliedPoints, maxPoints, exceedsMaxPoints, warningMessage);
+    }
+
+    private void validateOptionRequirement(SubmitApplicationCommand command, ApplicationSubmission submission) {
+        boolean optionRequired = ruleEngineService.requiresOption(submission.getItemCode());
+        boolean optionProvided = command.getOptionCode() != null && !command.getOptionCode().isBlank();
+        if (!optionProvided && optionRequired) {
+            throw new ValidationException("optionCode 不能为空");
+        }
+        if (optionProvided && !optionRequired) {
+            throw new ValidationException("当前项目不需要选择评分选项");
+        }
     }
 
     private BigDecimal resolveAppliedPoints(SubmitApplicationCommand command,
                                             ApplicationSubmission submission,
                                             StudentContext studentContext) {
         if (command.getOptionCode() == null || command.getOptionCode().isBlank()) {
-            return command.getAppliedPoints();
+            return null;
         }
         BigDecimal configuredPoints = ruleEngineService.calculatePoints(
                 submission.getItemCode(),
@@ -172,10 +194,13 @@ public class ApplicationSubmissionCommandApplicationService {
         if (configuredPoints != null) {
             return configuredPoints;
         }
-        if (ruleEngineService.allowsCustomPoints(submission.getItemCode(), command.getOptionCode())) {
-            return command.getAppliedPoints();
+        if (!ruleEngineService.allowsCustomPoints(submission.getItemCode(), command.getOptionCode())) {
+            throw new ValidationException("当前选项不允许自定义分值");
         }
-        return BigDecimal.ZERO;
+        if (command.getAppliedPoints() == null) {
+            throw new ValidationException("appliedPoints 不能为空");
+        }
+        return command.getAppliedPoints();
     }
 
     private boolean isPartyMember(UserAuthorizationContext authorizationContext) {

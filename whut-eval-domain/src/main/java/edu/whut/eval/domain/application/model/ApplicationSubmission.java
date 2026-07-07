@@ -146,6 +146,13 @@ public class ApplicationSubmission {
      * 将申请提交到待审核状态。
      */
     public ApplicationSubmission submit(long expectedVersion) {
+        throw new ValidationException("申请评分快照不能为空");
+    }
+
+    /**
+     * 将申请连同提交时评分快照提交到待审核状态。
+     */
+    public ApplicationSubmission submit(long expectedVersion, ApplicationScoringSnapshot scoringSnapshot) {
         assertEditable();
         assertExpectedVersion(expectedVersion);
         if (title == null || title.isBlank()) {
@@ -156,6 +163,9 @@ public class ApplicationSubmission {
         }
         if (evidenceAttachments.isEmpty()) {
             throw new ValidationException("申请附件不能为空");
+        }
+        if (scoringSnapshot == null) {
+            throw new ValidationException("申请评分快照不能为空");
         }
         Instant now = Instant.now();
         return new ApplicationSubmission(
@@ -173,7 +183,8 @@ public class ApplicationSubmission {
                 now,
                 createdAt,
                 now,
-                version + 1
+                version + 1,
+                scoringSnapshot
         );
     }
 

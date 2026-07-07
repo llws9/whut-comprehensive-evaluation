@@ -1,13 +1,16 @@
 package edu.whut.eval.app.student;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import edu.whut.eval.domain.application.model.ApplicationScoringSnapshot;
 import edu.whut.eval.domain.application.model.ApplicationSubmission;
 import edu.whut.eval.domain.application.model.AttachmentRef;
 import edu.whut.eval.domain.application.repository.ApplicationSubmissionRepository;
 import edu.whut.eval.infra.config.MybatisPlusConfig;
 import edu.whut.eval.infra.persistence.mapper.ApplicationAttachmentMapper;
+import edu.whut.eval.infra.persistence.mapper.ApplicationFactMapper;
 import edu.whut.eval.infra.persistence.mapper.ApplicationSubmissionMapper;
 import edu.whut.eval.infra.persistence.repository.MybatisPlusApplicationSubmissionRepository;
 import org.apache.ibatis.session.SqlSessionFactory;
@@ -27,6 +30,7 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 
 import javax.sql.DataSource;
+import java.math.BigDecimal;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,6 +50,7 @@ class MybatisPlusApplicationSubmissionRepositoryIntegrationTest {
 
     @BeforeEach
     void setUpSchema() {
+        jdbcTemplate.execute("DROP TABLE IF EXISTS application_fact");
         jdbcTemplate.execute("DROP TABLE IF EXISTS application_attachment");
         jdbcTemplate.execute("DROP TABLE IF EXISTS application_submission");
         jdbcTemplate.execute(
@@ -76,6 +81,18 @@ class MybatisPlusApplicationSubmissionRepositoryIntegrationTest {
                         "size BIGINT NOT NULL, " +
                         "uploaded_by BIGINT NOT NULL, " +
                         "sort_no INT NOT NULL)"
+        );
+        jdbcTemplate.execute(
+                "CREATE TABLE application_fact (" +
+                        "id BIGINT AUTO_INCREMENT PRIMARY KEY, " +
+                        "application_id BIGINT NOT NULL, " +
+                        "score_value DECIMAL(10,2) NULL, " +
+                        "display_text VARCHAR(1000) NULL, " +
+                        "evidence_count INT NOT NULL, " +
+                        "extra_json VARCHAR(2000) NULL, " +
+                        "created_at DATETIME NOT NULL, " +
+                        "updated_at DATETIME NOT NULL, " +
+                        "UNIQUE KEY uk_application_fact_application_id (application_id))"
         );
     }
 
@@ -120,6 +137,20 @@ class MybatisPlusApplicationSubmissionRepositoryIntegrationTest {
         assertThat(applicationSubmissionMapper.countActiveSubmission(1001L, "item-1", "2025-2026", "1", null)).isZero();
     }
 
+    @Test
+    void shouldSaveAndReloadScoringSnapshot() {
+        ApplicationSubmission submitted = draft("file-1", "uploads/a.pdf")
+                .submit(0L, new ApplicationScoringSnapshot("OPTION_A", new BigDecimal("2.00"), new BigDecimal("6.00"), 1, false, null));
+
+        ApplicationSubmission saved = applicationSubmissionRepository.save(submitted);
+        ApplicationSubmission reloaded = applicationSubmissionRepository.findById(saved.getApplicationId()).orElseThrow();
+
+        assertThat(reloaded.getScoringSnapshot()).isNotNull();
+        assertThat(reloaded.getScoringSnapshot().optionCode()).isEqualTo("OPTION_A");
+        assertThat(reloaded.getScoringSnapshot().appliedPoints()).isEqualByComparingTo("2.00");
+        assertThat(reloaded.getScoringSnapshot().evidenceCount()).isEqualTo(1);
+    }
+
     private ApplicationSubmission draft(String fileId, String storageKey) {
         return ApplicationSubmission.createDraft(
                 1001L,
@@ -143,7 +174,7 @@ class MybatisPlusApplicationSubmissionRepositoryIntegrationTest {
     }
 
     @Configuration
-    @MapperScan(basePackageClasses = {ApplicationSubmissionMapper.class, ApplicationAttachmentMapper.class})
+    @MapperScan(basePackageClasses = {ApplicationSubmissionMapper.class, ApplicationAttachmentMapper.class, ApplicationFactMapper.class})
     @Import({
             MybatisPlusConfig.class,
             MybatisPlusApplicationSubmissionRepository.class
@@ -184,6 +215,11 @@ class MybatisPlusApplicationSubmissionRepositoryIntegrationTest {
         @Bean
         JdbcTemplate jdbcTemplate(DataSource dataSource) {
             return new JdbcTemplate(dataSource);
+        }
+
+        @Bean
+        ObjectMapper objectMapper() {
+            return new ObjectMapper();
         }
     }
 }

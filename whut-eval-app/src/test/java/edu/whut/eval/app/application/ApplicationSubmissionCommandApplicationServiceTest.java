@@ -13,15 +13,18 @@ import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.application.model.ApplicationSubmission;
+import edu.whut.eval.domain.application.model.ApplicationScoringSnapshot;
 import edu.whut.eval.domain.application.model.AttachmentRef;
 import edu.whut.eval.domain.application.model.ApplicationSubmissionStatus;
 import edu.whut.eval.domain.application.repository.ApplicationSubmissionRepository;
 import edu.whut.eval.domain.application.service.ActiveSubmissionPolicy;
 import edu.whut.eval.domain.application.service.ApplicationSubmissionWindowPolicy;
 import edu.whut.eval.domain.config.RuleEngineService;
+import edu.whut.eval.domain.config.StudentContext;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.List;
@@ -31,7 +34,10 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.ArgumentCaptor.forClass;
+import org.mockito.ArgumentCaptor;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
@@ -169,6 +175,62 @@ class ApplicationSubmissionCommandApplicationServiceTest {
                 List.of("file-1")
         ))).isInstanceOf(AccessDeniedAppException.class)
                 .hasMessage("当前用户不属于该组织");
+    }
+
+    @Test
+    void shouldRejectSubmitWithoutOptionCodeWhenItemHasOptions() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(currentUser());
+        given(applicationSubmissionRepository.findById(1L)).willReturn(Optional.of(savedDraft()));
+        given(applicationOrgMembershipValidator.isActiveMember(1001L, 10L)).willReturn(true);
+        given(applicationSubmissionWindowPolicy.isWindowOpen(10L, "competition", "item-1", "2025-2026", "1"))
+                .willReturn(true);
+        given(ruleEngineService.requiresOption("item-1")).willReturn(true);
+
+        assertThatThrownBy(() -> applicationService.submit(new SubmitApplicationCommand(1L, 0L, null, null)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("optionCode 不能为空");
+    }
+
+    @Test
+    void shouldRejectSubmitWithOptionCodeWhenItemHasNoOptions() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(currentUser());
+        given(applicationSubmissionRepository.findById(1L)).willReturn(Optional.of(savedDraft()));
+        given(applicationOrgMembershipValidator.isActiveMember(1001L, 10L)).willReturn(true);
+        given(applicationSubmissionWindowPolicy.isWindowOpen(10L, "competition", "item-1", "2025-2026", "1"))
+                .willReturn(true);
+        given(ruleEngineService.requiresOption("item-1")).willReturn(false);
+
+        assertThatThrownBy(() -> applicationService.submit(new SubmitApplicationCommand(1L, 0L, null, "OPTION_A")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("当前项目不需要选择评分选项");
+    }
+
+    @Test
+    void shouldAttachScoringSnapshotWhenSubmittingWithOptionCode() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(currentUser());
+        given(applicationSubmissionRepository.findById(1L)).willReturn(Optional.of(savedDraft()));
+        given(applicationOrgMembershipValidator.isActiveMember(1001L, 10L)).willReturn(true);
+        given(applicationSubmissionWindowPolicy.isWindowOpen(10L, "competition", "item-1", "2025-2026", "1"))
+                .willReturn(true);
+        given(ruleEngineService.requiresOption("item-1")).willReturn(true);
+        given(ruleEngineService.calculatePoints(eq("item-1"), eq("OPTION_A"), any(StudentContext.class)))
+                .willReturn(new BigDecimal("2.00"));
+        given(ruleEngineService.calculateMaxPoints(eq("item-1"), any(StudentContext.class)))
+                .willReturn(new BigDecimal("6.00"));
+        given(applicationSubmissionRepository.save(any(ApplicationSubmission.class)))
+                .willAnswer(invocation -> invocation.getArgument(0));
+
+        ApplicationSubmissionView result = applicationService.submit(new SubmitApplicationCommand(1L, 0L, null, "OPTION_A"));
+
+        assertThat(result.getAppliedPoints()).isEqualByComparingTo("2.00");
+        assertThat(result.getMaxPoints()).isEqualByComparingTo("6.00");
+        assertThat(result.isExceedsMaxPoints()).isFalse();
+        ArgumentCaptor<ApplicationSubmission> submissionCaptor = forClass(ApplicationSubmission.class);
+        verify(applicationSubmissionRepository).save(submissionCaptor.capture());
+        ApplicationScoringSnapshot snapshot = submissionCaptor.getValue().getScoringSnapshot();
+        assertThat(snapshot).isNotNull();
+        assertThat(snapshot.optionCode()).isEqualTo("OPTION_A");
+        assertThat(snapshot.evidenceCount()).isEqualTo(1);
     }
 
     @Test

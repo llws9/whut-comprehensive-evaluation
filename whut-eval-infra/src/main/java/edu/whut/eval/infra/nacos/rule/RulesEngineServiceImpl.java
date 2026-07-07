@@ -81,6 +81,14 @@ public class RulesEngineServiceImpl implements RuleEngineService {
     }
 
     @Override
+    public boolean requiresOption(String itemCode) {
+        EvaluationItemsConfig config = configRepository.find(EVALUATION_ITEMS_CONFIG, EvaluationItemsConfig.class)
+                .orElseThrow(() -> new ConfigLoadException("evaluation-items config not found"));
+        EvaluationItemsConfig.EvaluationItem item = findItemByCode(config, itemCode);
+        return item.getOptionsKey() != null && !item.getOptionsKey().isBlank();
+    }
+
+    @Override
     public boolean allowsCustomPoints(String itemCode, String optionCode) {
         if (optionCode == null || optionCode.isBlank()) {
             return false;
