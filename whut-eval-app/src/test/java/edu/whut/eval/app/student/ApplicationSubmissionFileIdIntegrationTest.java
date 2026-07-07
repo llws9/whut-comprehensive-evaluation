@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import edu.whut.eval.application.application.command.CreateApplicationDraftCommand;
 import edu.whut.eval.application.application.command.UpdateApplicationDraftCommand;
 import edu.whut.eval.application.application.query.ApplicationSubmissionView;
+import edu.whut.eval.application.application.service.ApplicationOrgMembershipValidator;
 import edu.whut.eval.application.application.service.ApplicationSubmissionCommandApplicationService;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
@@ -283,6 +284,11 @@ class ApplicationSubmissionFileIdIntegrationTest {
         @Bean
         ActiveSubmissionPolicy activeSubmissionPolicy() {
             return (applicantUserId, itemCode, academicYear, term, excludedApplicationId) -> false;
+        }
+
+        @Bean
+        ApplicationOrgMembershipValidator applicationOrgMembershipValidator() {
+            return (userId, orgUnitId) -> true;
         }
 
         @Bean

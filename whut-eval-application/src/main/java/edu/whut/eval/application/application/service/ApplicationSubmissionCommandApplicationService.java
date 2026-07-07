@@ -7,6 +7,7 @@ import edu.whut.eval.application.application.command.WithdrawApplicationCommand;
 import edu.whut.eval.application.application.query.ApplicationSubmissionView;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
+import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.common.exception.ValidationException;
@@ -41,19 +42,22 @@ public class ApplicationSubmissionCommandApplicationService {
     private final ActiveSubmissionPolicy activeSubmissionPolicy;
     private final ApplicationAttachmentResolver applicationAttachmentResolver;
     private final RuleEngineService ruleEngineService;
+    private final ApplicationOrgMembershipValidator applicationOrgMembershipValidator;
 
     public ApplicationSubmissionCommandApplicationService(UserAuthorizationContextAssembler userAuthorizationContextAssembler,
                                                           ApplicationSubmissionRepository applicationSubmissionRepository,
                                                           ApplicationSubmissionWindowPolicy applicationSubmissionWindowPolicy,
                                                           ActiveSubmissionPolicy activeSubmissionPolicy,
                                                           ApplicationAttachmentResolver applicationAttachmentResolver,
-                                                          RuleEngineService ruleEngineService) {
+                                                          RuleEngineService ruleEngineService,
+                                                          ApplicationOrgMembershipValidator applicationOrgMembershipValidator) {
         this.userAuthorizationContextAssembler = userAuthorizationContextAssembler;
         this.applicationSubmissionRepository = applicationSubmissionRepository;
         this.applicationSubmissionWindowPolicy = applicationSubmissionWindowPolicy;
         this.activeSubmissionPolicy = activeSubmissionPolicy;
         this.applicationAttachmentResolver = applicationAttachmentResolver;
         this.ruleEngineService = ruleEngineService;
+        this.applicationOrgMembershipValidator = applicationOrgMembershipValidator;
     }
 
     /**
@@ -62,6 +66,7 @@ public class ApplicationSubmissionCommandApplicationService {
     @Transactional
     public ApplicationSubmissionView createDraft(CreateApplicationDraftCommand command) {
         UserAuthorizationContext authorizationContext = userAuthorizationContextAssembler.requiredAuthorizationContext();
+        validateActiveMembership(authorizationContext.getUserId(), command.getOrgUnitId());
         if (activeSubmissionPolicy.hasActiveSubmission(
                 authorizationContext.getUserId(),
                 command.getItemCode(),
@@ -93,6 +98,7 @@ public class ApplicationSubmissionCommandApplicationService {
     public ApplicationSubmissionView updateDraft(UpdateApplicationDraftCommand command) {
         UserAuthorizationContext authorizationContext = userAuthorizationContextAssembler.requiredAuthorizationContext();
         ApplicationSubmission submission = loadOwnedSubmission(command.getApplicationId(), authorizationContext.getUserId());
+        validateActiveMembership(authorizationContext.getUserId(), submission.getOrgUnitId());
         List<AttachmentRef> attachments = resolveAttachments(command.getAttachmentFileIds(), authorizationContext.getUserId());
         ApplicationSubmission saved = applicationSubmissionRepository.save(submission.updateDraft(
                 command.getTitle(),
@@ -111,6 +117,7 @@ public class ApplicationSubmissionCommandApplicationService {
     public ApplicationSubmissionView submit(SubmitApplicationCommand command) {
         UserAuthorizationContext authorizationContext = userAuthorizationContextAssembler.requiredAuthorizationContext();
         ApplicationSubmission submission = loadOwnedSubmission(command.getApplicationId(), authorizationContext.getUserId());
+        validateActiveMembership(authorizationContext.getUserId(), submission.getOrgUnitId());
         if (!applicationSubmissionWindowPolicy.isWindowOpen(
                 submission.getOrgUnitId(),
                 submission.getCategoryCode(),
@@ -184,6 +191,7 @@ public class ApplicationSubmissionCommandApplicationService {
     public ApplicationSubmissionView withdraw(WithdrawApplicationCommand command) {
         UserAuthorizationContext authorizationContext = userAuthorizationContextAssembler.requiredAuthorizationContext();
         ApplicationSubmission submission = loadOwnedSubmission(command.getApplicationId(), authorizationContext.getUserId());
+        validateActiveMembership(authorizationContext.getUserId(), submission.getOrgUnitId());
         ApplicationSubmission saved = applicationSubmissionRepository.save(submission.withdraw(
                 requiredExpectedVersion(command.getExpectedVersion())
         ));
@@ -194,9 +202,15 @@ public class ApplicationSubmissionCommandApplicationService {
         ApplicationSubmission submission = applicationSubmissionRepository.findById(applicationId)
                 .orElseThrow(() -> new ResourceNotFoundException("申请不存在"));
         if (!currentUserId.equals(submission.getApplicantUserId())) {
-            throw new ValidationException("当前用户无权操作该申请");
+            throw new AccessDeniedAppException("当前用户无权操作该申请");
         }
         return submission;
+    }
+
+    private void validateActiveMembership(Long userId, Long orgUnitId) {
+        if (!applicationOrgMembershipValidator.isActiveMember(userId, orgUnitId)) {
+            throw new AccessDeniedAppException("当前用户不属于该组织");
+        }
     }
 
     private List<AttachmentRef> resolveAttachments(List<String> attachmentFileIds, Long currentUserId) {

@@ -22,12 +22,12 @@ public class RepositoryBackedActiveSubmissionPolicy implements ActiveSubmissionP
                                        String academicYear,
                                        String term,
                                        Long excludeApplicationId) {
-        return applicationSubmissionMapper.existsActiveSubmission(
+        return applicationSubmissionMapper.countActiveSubmission(
                 applicantUserId,
                 itemCode,
                 academicYear,
                 term,
                 excludeApplicationId
-        );
+        ) > 0;
     }
 }

@@ -181,7 +181,7 @@ public class ApplicationSubmission {
      * 学生主动撤回当前申请。
      */
     public ApplicationSubmission withdraw(long expectedVersion) {
-        assertEditable();
+        assertWithdrawable();
         assertExpectedVersion(expectedVersion);
         return new ApplicationSubmission(
                 applicationId,
@@ -201,6 +201,12 @@ public class ApplicationSubmission {
                 version + 1,
                 scoringSnapshot
         );
+    }
+
+    private void assertWithdrawable() {
+        if (status != ApplicationSubmissionStatus.SUBMITTED) {
+            throw new ValidationException("当前申请状态不允许撤回");
+        }
     }
 
     private void assertEditable() {

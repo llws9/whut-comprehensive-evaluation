@@ -32,12 +32,12 @@ public interface ApplicationSubmissionMapper {
                           @Param("previousVersion") Long previousVersion);
 
     /**
-     * 判断是否存在相同项目和学期下的活跃申请。
+     * 统计相同项目和学期下的活跃申请。
      */
-    @Select("SELECT COUNT(1) > 0 FROM application_submission WHERE applicant_user_id = #{applicantUserId} AND item_code = #{itemCode} AND academic_year = #{academicYear} AND term = #{term} AND status IN ('DRAFT', 'SUBMITTED', 'RETURNED') AND (#{excludeApplicationId} IS NULL OR application_id <> #{excludeApplicationId})")
-    boolean existsActiveSubmission(@Param("applicantUserId") Long applicantUserId,
-                                   @Param("itemCode") String itemCode,
-                                   @Param("academicYear") String academicYear,
-                                   @Param("term") String term,
-                                   @Param("excludeApplicationId") Long excludeApplicationId);
+    @Select("SELECT COUNT(1) FROM application_submission WHERE applicant_user_id = #{applicantUserId} AND item_code = #{itemCode} AND academic_year = #{academicYear} AND term = #{term} AND status IN ('DRAFT', 'SUBMITTED', 'RETURNED', 'APPROVED') AND (#{excludeApplicationId} IS NULL OR application_id <> #{excludeApplicationId})")
+    int countActiveSubmission(@Param("applicantUserId") Long applicantUserId,
+                              @Param("itemCode") String itemCode,
+                              @Param("academicYear") String academicYear,
+                              @Param("term") String term,
+                              @Param("excludeApplicationId") Long excludeApplicationId);
 }

@@ -41,6 +41,9 @@ class MybatisPlusApplicationSubmissionRepositoryIntegrationTest {
     @Autowired
     private ApplicationSubmissionRepository applicationSubmissionRepository;
 
+    @Autowired
+    private ApplicationSubmissionMapper applicationSubmissionMapper;
+
     @BeforeEach
     void setUpSchema() {
         jdbcTemplate.execute("DROP TABLE IF EXISTS application_attachment");
@@ -105,6 +108,18 @@ class MybatisPlusApplicationSubmissionRepositoryIntegrationTest {
         assertThat(reloaded.getEvidenceAttachments().get(0).getFileId()).isEqualTo("file-2");
     }
 
+    @Test
+    void shouldCountApprovedAsActiveClaimAndIgnoreRejectedAndWithdrawn() {
+        insertSubmission(1001L, "item-1", "2025-2026", "1", "APPROVED");
+        assertThat(applicationSubmissionMapper.countActiveSubmission(1001L, "item-1", "2025-2026", "1", null)).isEqualTo(1);
+
+        jdbcTemplate.update("UPDATE application_submission SET status = 'REJECTED' WHERE applicant_user_id = 1001 AND item_code = 'item-1' AND academic_year = '2025-2026' AND term = '1'");
+        assertThat(applicationSubmissionMapper.countActiveSubmission(1001L, "item-1", "2025-2026", "1", null)).isZero();
+
+        jdbcTemplate.update("UPDATE application_submission SET status = 'WITHDRAWN' WHERE applicant_user_id = 1001 AND item_code = 'item-1' AND academic_year = '2025-2026' AND term = '1'");
+        assertThat(applicationSubmissionMapper.countActiveSubmission(1001L, "item-1", "2025-2026", "1", null)).isZero();
+    }
+
     private ApplicationSubmission draft(String fileId, String storageKey) {
         return ApplicationSubmission.createDraft(
                 1001L,
@@ -116,6 +131,14 @@ class MybatisPlusApplicationSubmissionRepositoryIntegrationTest {
                 "申请标题",
                 "申请说明",
                 List.of(new AttachmentRef(fileId, storageKey, "a.pdf", "application/pdf", 10L, 1001L))
+        );
+    }
+
+    private void insertSubmission(Long applicantUserId, String itemCode, String academicYear, String term, String status) {
+        jdbcTemplate.update(
+                "INSERT INTO application_submission (applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), ?)",
+                applicantUserId, 2010L, "INTELLECTUAL", itemCode, academicYear, term, "申请标题", "申请说明", status, 0L
         );
     }
 
