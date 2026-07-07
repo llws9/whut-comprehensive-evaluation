@@ -66,6 +66,30 @@ class ReviewApplicationControllerWebMvcTest {
     }
 
     @Test
+    void shouldReturn400WhenReviewListStatusIsUnsupported() throws Exception {
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build()
+                .perform(get("/api/review/applications")
+                        .param("status", "DRAFT"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"));
+    }
+
+    @Test
+    void shouldReturn400WhenReviewListPageSizeIsTooLarge() throws Exception {
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build()
+                .perform(get("/api/review/applications")
+                        .param("pageSize", "101"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"));
+    }
+
+    @Test
     void shouldReturnReviewDetailWithoutStorageKey() throws Exception {
         given(queryService.getReviewDetail(21013L)).willReturn(detailView(ApplicationSubmissionStatus.SUBMITTED));
 

@@ -3722,7 +3722,7 @@ Prompt-to-artifact checklist:
 - A-group review scope: list/detail use `ApplicationScopeSqlTranslator`-compatible query rows, and single-resource actions/detail run `ReviewApplicationAccessValidator` against `application.review`.
 - Storage internals hidden: review attachment response DTOs expose file metadata only; `storageKey` remains internal to query rows and repository mapping.
 - Scoring snapshot preserved: aggregate review transitions carry `submittedAt`, attachments, and `scoringSnapshot`; repository integration coverage asserts `application_fact` survives approve.
-- Code review and fix: post-implementation review found the out-of-scope detail/action semantic bug; commit `61b6fe3 fix: return forbidden for out-of-scope reviews` changed detail/action flows to load the existing resource unscoped, then return 403 through `ReviewApplicationAccessValidator`.
+- Code review and fix: post-implementation review found the out-of-scope detail/action semantic bug; commit `61b6fe3 fix: return forbidden for out-of-scope reviews` changed detail/action flows to load the existing resource unscoped, then return 403 through `ReviewApplicationAccessValidator`. Completion audit review also found that the review list query accepted unsupported `status` values and unbounded `pageSize`; this was fixed by validating status against `SUBMITTED`, `APPROVED`, `RETURNED`, and `REJECTED`, and limiting `pageSize` to 100.
 - Merge to main: `main` contains the Minimal C implementation and review fix commits through `55969f9 docs: record minimal c review workflow plan`.
 
 Verification evidence recorded during execution:
@@ -3732,3 +3732,4 @@ Verification evidence recorded during execution:
 - Full repository passed before merge: `mvn test`.
 - Full repository passed after merge on `main`: `mvn test`.
 - Final git check found `main` at `55969f9` with no uncommitted runtime implementation work.
+- Post-audit RED/GREEN regression for review query bounds passed: `mvn -pl whut-eval-app -am -Dtest=ReviewApplicationQueryRepositoryIntegrationTest,ReviewApplicationControllerWebMvcTest -Dsurefire.failIfNoSpecifiedTests=false test`.

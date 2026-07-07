@@ -9,6 +9,7 @@ import edu.whut.eval.application.application.repository.ReviewApplicationQueryRe
 import edu.whut.eval.application.auth.service.DefaultAuthorizationScopeEvaluator;
 import edu.whut.eval.application.auth.service.DefaultScopePredicateBuilder;
 import edu.whut.eval.application.auth.service.JsonScopeRuleExpressionInterpreter;
+import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.application.query.ApplicationAccessContext;
 import edu.whut.eval.domain.application.query.ReviewApplicationPageQuery;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
@@ -38,6 +39,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @ExtendWith(SpringExtension.class)
 @ContextConfiguration(classes = ReviewApplicationQueryRepositoryIntegrationTest.TestConfig.class)
@@ -86,6 +88,20 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
         assertThat(detail.getAttachments()).hasSize(1);
         assertThat(detail.getAttachments().get(0).getFileId()).isEqualTo("file-1");
         assertThat(detail.getAttachments().get(0).getStorageKey()).isEqualTo("storage/private/a.pdf");
+    }
+
+    @Test
+    void shouldRejectUnsupportedReviewListStatus() {
+        assertThatThrownBy(() -> new ReviewApplicationPageQuery(1, 20, null, null, null, "DRAFT", null, null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("status 仅允许 SUBMITTED、APPROVED、RETURNED 或 REJECTED");
+    }
+
+    @Test
+    void shouldRejectTooLargeReviewPageSize() {
+        assertThatThrownBy(() -> new ReviewApplicationPageQuery(1, 101, null, null, null, "SUBMITTED", null, null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("pageSize 不能超过 100");
     }
 
     private void recreateTables() {
