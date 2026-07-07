@@ -18,6 +18,7 @@ class TeamDeliverySqlConsistencyTest {
     private static final Path ROOT = Path.of(System.getProperty("user.dir")).getParent();
     private static final Path TEAM_DELIVERY = ROOT.resolve("docs/team-delivery");
     private static final Path IAM_RESOURCE_SQL = ROOT.resolve("whut-eval-app/src/main/resources/sql/iam");
+    private static final Path B_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-b-student-application.safe-init.sql");
     private static final Path E_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-e-platform-governance-attachment-ai.safe-init.sql");
 
     @Test
@@ -47,6 +48,72 @@ class TeamDeliverySqlConsistencyTest {
 
         assertThat(sql).doesNotContain("(23004, 21002, 'FILE-0005', 'PUBLIC_POOL'");
         assertThat(sql).contains("(23004, 21002, 'FILE-0008', 'PUBLIC_POOL', 2, '综测申请模板.pdf', 'application/pdf', 142000, 'attachments/2026/05/guide-template.pdf'");
+    }
+
+    @Test
+    void shouldProvideNonDestructiveBGroupSafeInitSql() throws Exception {
+        String sql = Files.readString(B_GROUP_SAFE_INIT_SQL);
+
+        assertThat(sql).contains("CREATE TABLE IF NOT EXISTS `application_submission`");
+        assertThat(sql).contains("CREATE TABLE IF NOT EXISTS `application_attachment`");
+        assertThat(sql).contains("CREATE TABLE IF NOT EXISTS `application_fact`");
+        assertThat(sql).doesNotContain("DROP TABLE");
+        assertThat(sql).doesNotContain("ENGINE=");
+        assertThat(sql).doesNotContain("CHARSET");
+        assertThat(sql).doesNotContain("COLLATE");
+        assertThat(sql).doesNotContain("COMMENT=");
+        assertThat(extractCreateTableBlock(sql, "application_submission"))
+                .contains("`application_id` BIGINT NOT NULL AUTO_INCREMENT")
+                .contains("KEY `idx_application_submission_active_claim` (`applicant_user_id`, `item_code`, `academic_year`, `term`, `status`)");
+        assertThat(extractCreateTableBlock(sql, "application_attachment"))
+                .contains("`id` BIGINT NOT NULL AUTO_INCREMENT")
+                .contains("`storage_key` VARCHAR(512) NOT NULL")
+                .contains("`uploaded_by` BIGINT NOT NULL")
+                .contains("KEY `idx_application_attachment_application_id` (`application_id`)")
+                .contains("KEY `idx_application_attachment_uploaded_by` (`uploaded_by`)")
+                .doesNotContain("selected_source")
+                .doesNotContain("snapshot_");
+        assertThat(extractCreateTableBlock(sql, "application_fact"))
+                .contains("`id` BIGINT NOT NULL AUTO_INCREMENT")
+                .contains("`application_id` BIGINT NOT NULL")
+                .contains("`score_value` DECIMAL(10,2) DEFAULT NULL")
+                .contains("`display_text` VARCHAR(1000) DEFAULT NULL")
+                .contains("`evidence_count` INT NOT NULL")
+                .contains("`extra_json` VARCHAR(2000) DEFAULT NULL")
+                .contains("UNIQUE KEY `uk_application_fact_application_id` (`application_id`)");
+    }
+
+    @Test
+    void shouldRerunBGroupSafeInitSqlWithoutOverwritingRuntimeApplicationRows() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:b_group_safe_init;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")) {
+            executeStatements(connection, Files.readString(B_GROUP_SAFE_INIT_SQL));
+
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO application_submission (applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
+                    VALUES (1001, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', '2025-2026', '上学期', 'runtime title', 'runtime desc', 'DRAFT', NULL, '2026-07-06 10:00:00', '2026-07-06 10:00:00', 0)
+                    """);
+            long applicationId = singleLong(connection, "SELECT application_id FROM application_submission WHERE title = 'runtime title'");
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO application_attachment (application_id, file_id, storage_key, original_filename, content_type, size, uploaded_by, sort_no)
+                    VALUES (%d, 'file_runtime_001', 'runtime/a.pdf', 'a.pdf', 'application/pdf', 128, 1001, 0)
+                    """.formatted(applicationId));
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO application_fact (application_id, score_value, display_text, evidence_count, extra_json, created_at, updated_at)
+                    VALUES (%d, 2.00, 'runtime warning', 1, '{"optionCode":"OPTION_A"}', '2026-07-06 10:00:00', '2026-07-06 10:00:00')
+                    """.formatted(applicationId));
+
+            executeStatements(connection, Files.readString(B_GROUP_SAFE_INIT_SQL));
+
+            assertThat(countRows(connection, "application_submission", "application_id = " + applicationId)).isEqualTo(1);
+            assertThat(singleString(connection, "SELECT title FROM application_submission WHERE application_id = " + applicationId))
+                    .isEqualTo("runtime title");
+            assertThat(countRows(connection, "application_attachment", "application_id = " + applicationId + " AND file_id = 'file_runtime_001'")).isEqualTo(1);
+            assertThat(singleString(connection, "SELECT storage_key FROM application_attachment WHERE application_id = " + applicationId))
+                    .isEqualTo("runtime/a.pdf");
+            assertThat(countRows(connection, "application_fact", "application_id = " + applicationId)).isEqualTo(1);
+            assertThat(singleString(connection, "SELECT display_text FROM application_fact WHERE application_id = " + applicationId))
+                    .isEqualTo("runtime warning");
+        }
     }
 
     @Test
