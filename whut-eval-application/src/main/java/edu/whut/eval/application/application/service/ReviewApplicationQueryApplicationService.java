@@ -55,7 +55,7 @@ public class ReviewApplicationQueryApplicationService {
 
     public ReviewApplicationDetailView getReviewDetail(Long applicationId) {
         UserAuthorizationContext reviewer = requiredReviewer();
-        ReviewApplicationQueryRow row = reviewApplicationQueryRepository.findReviewApplicationDetail(toAccessContext(reviewer), applicationId)
+        ReviewApplicationQueryRow row = reviewApplicationQueryRepository.findReviewApplicationDetail(applicationId)
                 .orElseThrow(() -> new ResourceNotFoundException("申请不存在"));
         reviewApplicationAccessValidator.requireAccess(reviewer, row);
         List<ReviewLogView> logs = applicationReviewLogRepository.listByApplicationId(applicationId)

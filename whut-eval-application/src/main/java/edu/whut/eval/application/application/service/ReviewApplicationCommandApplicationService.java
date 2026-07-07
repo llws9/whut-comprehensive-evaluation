@@ -70,7 +70,7 @@ public class ReviewApplicationCommandApplicationService {
         if (!reviewer.hasAuthority(AuthorizationPermissionCodes.APPLICATION_REVIEW)) {
             throw new AccessDeniedAppException("当前审核人无审核权限");
         }
-        ReviewApplicationQueryRow resource = reviewApplicationQueryRepository.findReviewApplicationDetail(toAccessContext(reviewer), applicationId)
+        ReviewApplicationQueryRow resource = reviewApplicationQueryRepository.findReviewApplicationDetail(applicationId)
                 .orElseThrow(() -> new ResourceNotFoundException("申请不存在"));
         reviewApplicationAccessValidator.requireAccess(reviewer, resource);
         ApplicationSubmission submission = applicationSubmissionRepository.findById(applicationId)

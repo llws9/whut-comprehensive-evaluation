@@ -61,6 +61,21 @@ public class MybatisPlusReviewApplicationQueryRepository implements ReviewApplic
     }
 
     @Override
+    public Optional<ReviewApplicationQueryRow> findReviewApplicationDetail(Long applicationId) {
+        ReviewApplicationQueryRow row = reviewApplicationQueryMapper.selectReviewApplicationDetail(
+                null,
+                null,
+                applicationId
+        );
+        if (row == null) {
+            return Optional.empty();
+        }
+        materializeScoringSnapshot(row);
+        row.setAttachments(reviewApplicationQueryMapper.selectAttachments(applicationId));
+        return Optional.of(row);
+    }
+
+    @Override
     public Optional<ReviewApplicationQueryRow> findReviewApplicationDetail(ApplicationAccessContext accessContext,
                                                                           Long applicationId) {
         SqlPredicateFragment fragment = scopeFragment(accessContext);

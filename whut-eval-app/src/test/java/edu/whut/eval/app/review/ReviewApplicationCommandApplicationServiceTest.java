@@ -59,7 +59,7 @@ class ReviewApplicationCommandApplicationServiceTest {
     @Test
     void shouldApproveSubmittedApplicationAppendLogAndReturnGeneratedLogId() {
         given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
-        given(reviewApplicationQueryRepository.findReviewApplicationDetail(any(), any())).willReturn(Optional.of(resourceRow()));
+        given(reviewApplicationQueryRepository.findReviewApplicationDetail(21013L)).willReturn(Optional.of(resourceRow()));
         given(applicationSubmissionRepository.findById(21013L)).willReturn(Optional.of(submittedApplication()));
         given(applicationSubmissionRepository.save(any(ApplicationSubmission.class))).willAnswer(invocation -> invocation.getArgument(0));
         given(applicationReviewLogRepository.append(any(ApplicationReviewLog.class))).willAnswer(invocation -> {
@@ -94,7 +94,7 @@ class ReviewApplicationCommandApplicationServiceTest {
     @Test
     void shouldRejectOutOfScopeApplication() {
         given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
-        given(reviewApplicationQueryRepository.findReviewApplicationDetail(any(), any())).willReturn(Optional.of(resourceRow()));
+        given(reviewApplicationQueryRepository.findReviewApplicationDetail(21013L)).willReturn(Optional.of(resourceRow()));
         willThrow(new AccessDeniedAppException("当前审核人无权访问该申请"))
                 .given(reviewApplicationAccessValidator).requireAccess(any(), any());
 

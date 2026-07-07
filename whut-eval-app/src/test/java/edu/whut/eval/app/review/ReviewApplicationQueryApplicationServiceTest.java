@@ -8,6 +8,7 @@ import edu.whut.eval.application.application.repository.ReviewApplicationQueryRe
 import edu.whut.eval.application.application.service.ReviewApplicationAccessValidator;
 import edu.whut.eval.application.application.service.ReviewApplicationQueryApplicationService;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
+import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.domain.application.model.ApplicationReviewAction;
 import edu.whut.eval.domain.application.model.ApplicationReviewLog;
 import edu.whut.eval.domain.application.query.ReviewApplicationPageQuery;
@@ -24,10 +25,13 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 class ReviewApplicationQueryApplicationServiceTest {
 
@@ -65,7 +69,7 @@ class ReviewApplicationQueryApplicationServiceTest {
     @Test
     void shouldReturnDetailWithC4TopLevelShapeLogsAndAllowedActions() throws Exception {
         given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
-        given(reviewApplicationQueryRepository.findReviewApplicationDetail(any(), any())).willReturn(Optional.of(submittedRow()));
+        given(reviewApplicationQueryRepository.findReviewApplicationDetail(21013L)).willReturn(Optional.of(submittedRow()));
         given(applicationReviewLogRepository.listByApplicationId(21013L)).willReturn(List.of(new ApplicationReviewLog(
                 31000L,
                 21013L,
@@ -94,13 +98,26 @@ class ReviewApplicationQueryApplicationServiceTest {
         ReviewApplicationQueryRow row = submittedRow();
         row.setStatus("APPROVED");
         given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
-        given(reviewApplicationQueryRepository.findReviewApplicationDetail(any(), any())).willReturn(Optional.of(row));
+        given(reviewApplicationQueryRepository.findReviewApplicationDetail(21013L)).willReturn(Optional.of(row));
         given(applicationReviewLogRepository.listByApplicationId(21013L)).willReturn(List.of());
 
         ReviewApplicationDetailView result = service.getReviewDetail(21013L);
 
         assertThat(result.application().status()).isEqualTo("APPROVED");
         assertThat(result.allowedActions()).isEmpty();
+    }
+
+    @Test
+    void shouldDenyExistingOutOfScopeDetailInsteadOfHidingItAsNotFound() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
+        given(reviewApplicationQueryRepository.findReviewApplicationDetail(21013L)).willReturn(Optional.of(submittedRow()));
+        willThrow(new AccessDeniedAppException("当前审核人无权访问该申请"))
+                .given(reviewApplicationAccessValidator).requireAccess(any(), any());
+
+        assertThatThrownBy(() -> service.getReviewDetail(21013L))
+                .isInstanceOf(AccessDeniedAppException.class)
+                .hasMessage("当前审核人无权访问该申请");
+        verifyNoInteractions(applicationReviewLogRepository);
     }
 
     private UserAuthorizationContext reviewer() {

@@ -12,6 +12,8 @@ public interface ReviewApplicationQueryRepository {
     PageResult<ReviewApplicationQueryRow> pageReviewApplications(ApplicationAccessContext accessContext,
                                                                  ReviewApplicationPageQuery query);
 
+    Optional<ReviewApplicationQueryRow> findReviewApplicationDetail(Long applicationId);
+
     Optional<ReviewApplicationQueryRow> findReviewApplicationDetail(ApplicationAccessContext accessContext,
                                                                     Long applicationId);
 }
