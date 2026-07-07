@@ -214,9 +214,63 @@ public class ApplicationSubmission {
         );
     }
 
+    /**
+     * 审核通过当前申请。
+     */
+    public ApplicationSubmission approve(long expectedVersion) {
+        assertReviewable();
+        assertExpectedVersion(expectedVersion);
+        return reviewedAs(ApplicationSubmissionStatus.APPROVED);
+    }
+
+    /**
+     * 退回当前申请要求学生修改。
+     */
+    public ApplicationSubmission returnForFix(long expectedVersion) {
+        assertReviewable();
+        assertExpectedVersion(expectedVersion);
+        return reviewedAs(ApplicationSubmissionStatus.RETURNED);
+    }
+
+    /**
+     * 审核拒绝当前申请。
+     */
+    public ApplicationSubmission reject(long expectedVersion) {
+        assertReviewable();
+        assertExpectedVersion(expectedVersion);
+        return reviewedAs(ApplicationSubmissionStatus.REJECTED);
+    }
+
+    private ApplicationSubmission reviewedAs(ApplicationSubmissionStatus targetStatus) {
+        return new ApplicationSubmission(
+                applicationId,
+                applicantUserId,
+                orgUnitId,
+                categoryCode,
+                itemCode,
+                academicYear,
+                term,
+                title,
+                description,
+                evidenceAttachments,
+                targetStatus,
+                submittedAt,
+                createdAt,
+                Instant.now(),
+                version + 1,
+                scoringSnapshot
+        );
+    }
+
     private void assertWithdrawable() {
         if (status != ApplicationSubmissionStatus.SUBMITTED) {
             throw new ValidationException("当前申请状态不允许撤回");
+        }
+    }
+
+    private void assertReviewable() {
+        if (status != ApplicationSubmissionStatus.SUBMITTED) {
+            throw new ConflictException("当前申请状态不允许审核");
         }
     }
 
