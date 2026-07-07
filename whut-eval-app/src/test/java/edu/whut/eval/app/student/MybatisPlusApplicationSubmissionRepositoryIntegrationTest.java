@@ -151,6 +151,26 @@ class MybatisPlusApplicationSubmissionRepositoryIntegrationTest {
         assertThat(reloaded.getScoringSnapshot().evidenceCount()).isEqualTo(1);
     }
 
+    @Test
+    void shouldPreserveApplicationFactWhenApprovingSubmittedApplication() {
+        ApplicationSubmission submitted = draft("file-1", "uploads/a.pdf")
+                .submit(0L, new ApplicationScoringSnapshot("OPTION_A", new BigDecimal("2.00"), new BigDecimal("6.00"), 1, false, null));
+        ApplicationSubmission saved = applicationSubmissionRepository.save(submitted);
+
+        ApplicationSubmission approved = applicationSubmissionRepository.save(saved.approve(saved.getVersion()));
+
+        assertThat(approved.getStatus().name()).isEqualTo("APPROVED");
+        assertThat(approved.getScoringSnapshot()).isNotNull();
+        assertThat(approved.getScoringSnapshot().optionCode()).isEqualTo("OPTION_A");
+        assertThat(approved.getScoringSnapshot().appliedPoints()).isEqualByComparingTo("2.00");
+        assertThat(approved.getScoringSnapshot().maxPoints()).isEqualByComparingTo("6.00");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM application_fact WHERE application_id = ?",
+                Integer.class,
+                approved.getApplicationId()
+        )).isEqualTo(1);
+    }
+
     private ApplicationSubmission draft(String fileId, String storageKey) {
         return ApplicationSubmission.createDraft(
                 1001L,
