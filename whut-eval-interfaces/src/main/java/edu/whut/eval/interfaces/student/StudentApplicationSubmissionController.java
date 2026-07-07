@@ -4,8 +4,10 @@ import edu.whut.eval.application.application.command.CreateApplicationDraftComma
 import edu.whut.eval.application.application.command.SubmitApplicationCommand;
 import edu.whut.eval.application.application.command.UpdateApplicationDraftCommand;
 import edu.whut.eval.application.application.command.WithdrawApplicationCommand;
+import edu.whut.eval.application.application.query.ApplicationSubmissionDetailView;
 import edu.whut.eval.application.application.query.ApplicationSubmissionView;
 import edu.whut.eval.application.application.service.ApplicationSubmissionCommandApplicationService;
+import edu.whut.eval.application.application.service.ApplicationSubmissionDetailApplicationService;
 import edu.whut.eval.common.api.ApiResponse;
 import edu.whut.eval.interfaces.student.request.CreateApplicationDraftRequest;
 import edu.whut.eval.interfaces.student.request.SubmitApplicationRequest;
@@ -13,6 +15,7 @@ import edu.whut.eval.interfaces.student.request.UpdateApplicationDraftRequest;
 import edu.whut.eval.interfaces.student.request.WithdrawApplicationRequest;
 import jakarta.validation.Valid;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -29,9 +32,12 @@ import org.springframework.web.bind.annotation.RestController;
 public class StudentApplicationSubmissionController {
 
     private final ApplicationSubmissionCommandApplicationService applicationSubmissionCommandApplicationService;
+    private final ApplicationSubmissionDetailApplicationService applicationSubmissionDetailApplicationService;
 
-    public StudentApplicationSubmissionController(ApplicationSubmissionCommandApplicationService applicationSubmissionCommandApplicationService) {
+    public StudentApplicationSubmissionController(ApplicationSubmissionCommandApplicationService applicationSubmissionCommandApplicationService,
+                                                  ApplicationSubmissionDetailApplicationService applicationSubmissionDetailApplicationService) {
         this.applicationSubmissionCommandApplicationService = applicationSubmissionCommandApplicationService;
+        this.applicationSubmissionDetailApplicationService = applicationSubmissionDetailApplicationService;
     }
 
     /**
@@ -91,5 +97,13 @@ public class StudentApplicationSubmissionController {
                 new WithdrawApplicationCommand(applicationId, request.getReason(), request.getExpectedVersion())
         );
         return ApiResponse.success(view);
+    }
+
+    /**
+     * 读取当前学生自己的申请详情。
+     */
+    @GetMapping("/{applicationId}")
+    public ApiResponse<ApplicationSubmissionDetailView> getDetail(@PathVariable Long applicationId) {
+        return ApiResponse.success(applicationSubmissionDetailApplicationService.getOwnedDetail(applicationId));
     }
 }

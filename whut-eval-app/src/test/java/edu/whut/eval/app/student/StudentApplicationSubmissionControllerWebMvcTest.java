@@ -3,8 +3,11 @@ package edu.whut.eval.app.student;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.application.command.CreateApplicationDraftCommand;
 import edu.whut.eval.application.application.command.SubmitApplicationCommand;
+import edu.whut.eval.application.application.query.ApplicationAttachmentView;
+import edu.whut.eval.application.application.query.ApplicationSubmissionDetailView;
 import edu.whut.eval.application.application.query.ApplicationSubmissionView;
 import edu.whut.eval.application.application.service.ApplicationSubmissionCommandApplicationService;
+import edu.whut.eval.application.application.service.ApplicationSubmissionDetailApplicationService;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.domain.application.model.ApplicationSubmissionStatus;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
@@ -12,12 +15,14 @@ import edu.whut.eval.interfaces.student.StudentApplicationSubmissionController;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -26,14 +31,19 @@ import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standal
 class StudentApplicationSubmissionControllerWebMvcTest {
 
     private ApplicationSubmissionCommandApplicationService applicationSubmissionCommandApplicationService;
+    private ApplicationSubmissionDetailApplicationService applicationSubmissionDetailApplicationService;
     private ObjectMapper objectMapper;
     private StudentApplicationSubmissionController controller;
 
     @BeforeEach
     void setUp() {
         applicationSubmissionCommandApplicationService = mock(ApplicationSubmissionCommandApplicationService.class);
+        applicationSubmissionDetailApplicationService = mock(ApplicationSubmissionDetailApplicationService.class);
         objectMapper = new ObjectMapper();
-        controller = new StudentApplicationSubmissionController(applicationSubmissionCommandApplicationService);
+        controller = new StudentApplicationSubmissionController(
+                applicationSubmissionCommandApplicationService,
+                applicationSubmissionDetailApplicationService
+        );
     }
 
     @Test
@@ -99,6 +109,22 @@ class StudentApplicationSubmissionControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.status").value("SUBMITTED"));
     }
 
+    @Test
+    void shouldReturnOwnedApplicationDetail() throws Exception {
+        given(applicationSubmissionDetailApplicationService.getOwnedDetail(1L)).willReturn(detailView());
+
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build()
+                .perform(get("/api/student/applications/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.applicationId").value(1))
+                .andExpect(jsonPath("$.data.attachments[0].fileId").value("file-1"))
+                .andExpect(jsonPath("$.data.attachments[0].storageKey").doesNotExist())
+                .andExpect(jsonPath("$.data.optionCode").value("OPTION_A"));
+    }
+
     private DraftPayload createDraftPayload() {
         return new DraftPayload(
                 10L,
@@ -123,6 +149,27 @@ class StudentApplicationSubmissionControllerWebMvcTest {
                 "申请说明",
                 List.of("")
         );
+    }
+
+    private ApplicationSubmissionDetailView detailView() {
+        ApplicationSubmissionDetailView view = new ApplicationSubmissionDetailView();
+        view.setApplicationId(1L);
+        view.setOrgUnitId(2010L);
+        view.setCategoryCode("INTELLECTUAL");
+        view.setItemCode("INTELLECTUAL_PAPER");
+        view.setAcademicYear("2025-2026");
+        view.setTerm("上学期");
+        view.setTitle("申请标题");
+        view.setDescription("申请说明");
+        view.setStatus(ApplicationSubmissionStatus.SUBMITTED);
+        view.setSubmittedAt(Instant.parse("2026-07-06T10:00:00Z"));
+        view.setCreatedAt(Instant.parse("2026-07-06T09:00:00Z"));
+        view.setUpdatedAt(Instant.parse("2026-07-06T10:00:00Z"));
+        view.setVersion(1L);
+        view.setOptionCode("OPTION_A");
+        view.setEvidenceCount(1);
+        view.setAttachments(List.of(new ApplicationAttachmentView("file-1", "a.pdf", "application/pdf", 128L, 0)));
+        return view;
     }
 
     private record DraftPayload(Long orgUnitId,
