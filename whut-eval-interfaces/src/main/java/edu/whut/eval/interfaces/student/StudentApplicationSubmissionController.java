@@ -14,6 +14,7 @@ import edu.whut.eval.interfaces.student.request.SubmitApplicationRequest;
 import edu.whut.eval.interfaces.student.request.UpdateApplicationDraftRequest;
 import edu.whut.eval.interfaces.student.request.WithdrawApplicationRequest;
 import jakarta.validation.Valid;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -43,6 +44,7 @@ public class StudentApplicationSubmissionController {
     /**
      * 创建学生申请草稿。
      */
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_SUBMIT)")
     @PostMapping("/drafts")
     public ApiResponse<ApplicationSubmissionView> createDraft(@Valid @RequestBody CreateApplicationDraftRequest request) {
         ApplicationSubmissionView view = applicationSubmissionCommandApplicationService.createDraft(new CreateApplicationDraftCommand(
@@ -61,6 +63,7 @@ public class StudentApplicationSubmissionController {
     /**
      * 更新指定申请草稿。
      */
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_UPDATE)")
     @PutMapping("/{applicationId}/draft")
     public ApiResponse<ApplicationSubmissionView> updateDraft(@PathVariable Long applicationId,
                                                               @Valid @RequestBody UpdateApplicationDraftRequest request) {
@@ -78,6 +81,7 @@ public class StudentApplicationSubmissionController {
      * 提交指定申请。
      * 当申请分值超过最大分值限制时，允许申请但触发警告提示。
      */
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_SUBMIT)")
     @PostMapping("/{applicationId}/submit")
     public ApiResponse<ApplicationSubmissionView> submit(@PathVariable Long applicationId,
                                                          @Valid @RequestBody SubmitApplicationRequest request) {
@@ -90,6 +94,7 @@ public class StudentApplicationSubmissionController {
     /**
      * 撤回指定申请。
      */
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_UPDATE)")
     @PostMapping("/{applicationId}/withdraw")
     public ApiResponse<ApplicationSubmissionView> withdraw(@PathVariable Long applicationId,
                                                            @Valid @RequestBody WithdrawApplicationRequest request) {
@@ -102,6 +107,7 @@ public class StudentApplicationSubmissionController {
     /**
      * 读取当前学生自己的申请详情。
      */
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_VIEW_SELF)")
     @GetMapping("/{applicationId}")
     public ApiResponse<ApplicationSubmissionDetailView> getDetail(@PathVariable Long applicationId) {
         return ApiResponse.success(applicationSubmissionDetailApplicationService.getOwnedDetail(applicationId));

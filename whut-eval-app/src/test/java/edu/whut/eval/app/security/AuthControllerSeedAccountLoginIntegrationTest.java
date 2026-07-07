@@ -99,7 +99,7 @@ class AuthControllerSeedAccountLoginIntegrationTest {
         assertThat(accessClaims.get("identity", String.class)).isEqualTo("STUDENT");
         assertThat(accessClaims.get("roles", List.class)).contains("STUDENT");
         assertThat(accessClaims.get("authorities", List.class))
-                .contains("application.submit", "application.view.self", "score.view.self");
+                .contains("application.submit", "application.update", "application.view.self", "score.view.self");
         assertThat(activeSessionCount(1001L)).isEqualTo(2);
     }
 
