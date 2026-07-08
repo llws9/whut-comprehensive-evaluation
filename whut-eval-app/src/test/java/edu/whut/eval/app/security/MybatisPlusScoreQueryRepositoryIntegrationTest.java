@@ -12,6 +12,8 @@ import edu.whut.eval.application.auth.service.DefaultScoreScopePredicateBuilder;
 import edu.whut.eval.application.auth.service.JsonScopeRuleExpressionInterpreter;
 import edu.whut.eval.application.auth.service.ResourceScopeAccessEvaluator;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
+import edu.whut.eval.domain.org.model.OrgUnit;
+import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
 import edu.whut.eval.domain.score.model.ScoreRecord;
 import edu.whut.eval.domain.score.query.ScoreAccessContext;
 import edu.whut.eval.domain.score.query.ScorePageQuery;
@@ -40,6 +42,8 @@ import org.springframework.test.context.junit.jupiter.SpringExtension;
 import javax.sql.DataSource;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -123,6 +127,8 @@ class MybatisPlusScoreQueryRepositoryIntegrationTest {
      */
     private void recreateTables() {
         jdbcTemplate.execute("DROP TABLE IF EXISTS score_record");
+        jdbcTemplate.execute("DROP TABLE IF EXISTS org_unit");
+        jdbcTemplate.execute("CREATE TABLE org_unit (id BIGINT PRIMARY KEY, path VARCHAR(255) NOT NULL)");
         jdbcTemplate.execute(
                 "CREATE TABLE score_record (" +
                         "score_id BIGINT PRIMARY KEY, " +
@@ -139,6 +145,7 @@ class MybatisPlusScoreQueryRepositoryIntegrationTest {
      * 这里故意保留“范围命中”和“不命中”的混合数据，用于验证 SQL translator 真正收窄后的列表结果。
      */
     private void insertScoreRows() {
+        jdbcTemplate.update("INSERT INTO org_unit (id, path) VALUES (?, ?)", 3001L, "/1/3001");
         jdbcTemplate.update(
                 "INSERT INTO score_record (score_id, student_user_id, org_unit_id, org_path, category_code, item_code, academic_year) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 8001L, 1001L, 3002L, "/1/3001/3002/", "ACADEMIC", "LECTURE", "2024-2025"
@@ -261,6 +268,23 @@ class MybatisPlusScoreQueryRepositoryIntegrationTest {
         @Bean
         ObjectMapper objectMapper() {
             return new ObjectMapper();
+        }
+
+        @Bean
+        OrgUnitLookupRepository orgUnitLookupRepository() {
+            return new InMemoryOrgUnitLookupRepository();
+        }
+    }
+
+    private static class InMemoryOrgUnitLookupRepository implements OrgUnitLookupRepository {
+
+        private final Map<Long, OrgUnit> units = Map.of(
+                3001L, new OrgUnit(3001L, 1L, "GRADE", "3001", "3001", "/1/3001", "ACTIVE")
+        );
+
+        @Override
+        public Optional<OrgUnit> findById(Long id) {
+            return Optional.ofNullable(units.get(id));
         }
     }
 }

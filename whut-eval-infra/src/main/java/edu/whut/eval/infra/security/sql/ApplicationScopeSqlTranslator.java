@@ -65,7 +65,7 @@ public class ApplicationScopeSqlTranslator extends AbstractScopeSqlTranslator {
             parts.add("org_unit_id = " + addParameter(parameters, clause.getOrgUnitId()));
         }
         if (clause.getOrgSubtreeRootId() != null) {
-            parts.add("org_path LIKE " + addParameter(parameters, "%/" + clause.getOrgSubtreeRootId() + "/%"));
+            parts.add(translateOrgSubtreePathPredicate("org_path", clause.getOrgSubtreeRootId(), parameters));
         }
         if (clause.getCategoryCode() != null && !clause.getCategoryCode().isBlank()) {
             parts.add("category_code = " + addParameter(parameters, clause.getCategoryCode()));

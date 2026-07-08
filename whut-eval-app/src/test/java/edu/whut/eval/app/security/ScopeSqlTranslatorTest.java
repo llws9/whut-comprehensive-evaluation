@@ -66,6 +66,7 @@ class ScopeSqlTranslatorTest {
         UserAuthorizationContext context = createContext();
         AuthorizationScopeSet scopeSet = AuthorizationScopeSet.granted("score.view.assigned", List.of(
                 new AuthorizationScope("score.view.assigned", "SELF", null, null, null, null, 5),
+                new AuthorizationScope("score.view.assigned", "ORG_SUBTREE", 3001L, "ACADEMIC", null, null, 8),
                 new AuthorizationScope(
                         "score.view.assigned",
                         "CUSTOM_EXPRESSION",
@@ -81,11 +82,16 @@ class ScopeSqlTranslatorTest {
         SqlPredicateFragment fragment = scoreTranslator.translate(context, predicate);
 
         assertThat(fragment.getExpression()).contains("student_user_id = #{parameters.p1}");
-        assertThat(fragment.getExpression()).contains("academic_year = #{parameters.p2}");
-        assertThat(fragment.getExpression()).contains("student_user_id = #{parameters.p3}");
+        assertThat(fragment.getExpression()).contains("org_path = (SELECT scope_root.path FROM org_unit scope_root WHERE scope_root.id = #{parameters.p2})");
+        assertThat(fragment.getExpression()).contains("org_path LIKE CONCAT((SELECT scope_root.path FROM org_unit scope_root WHERE scope_root.id = #{parameters.p2}), '/%')");
+        assertThat(fragment.getExpression()).contains("category_code = #{parameters.p3}");
+        assertThat(fragment.getExpression()).contains("academic_year = #{parameters.p4}");
+        assertThat(fragment.getExpression()).contains("student_user_id = #{parameters.p5}");
         assertThat(fragment.getParameters()).containsEntry("p1", 1001L);
-        assertThat(fragment.getParameters()).containsEntry("p2", "2025-2026");
-        assertThat(fragment.getParameters()).containsEntry("p3", 1001L);
+        assertThat(fragment.getParameters()).containsEntry("p2", 3001L);
+        assertThat(fragment.getParameters()).containsEntry("p3", "ACADEMIC");
+        assertThat(fragment.getParameters()).containsEntry("p4", "2025-2026");
+        assertThat(fragment.getParameters()).containsEntry("p5", 1001L);
     }
 
     @Test

@@ -25,13 +25,14 @@ class GroupAIdentitySqlSeedConsistencyTest {
     private static final Path SQL_PATH = Path.of(System.getProperty("user.dir"))
             .getParent()
             .resolve("docs/team-delivery/group-a-identity-user-admin.sql");
+    private static final Path TEAM_DELIVERY = SQL_PATH.getParent();
 
     @Test
     void shouldKeepPermissionSeedInSyncWithApplicationPermissionConstants() throws Exception {
         String sql = Files.readString(SQL_PATH);
 
         Set<String> permissionSeedCodes = extractFirstStringColumnValues(sql, "iam_permission");
-        Set<String> codeConstants = permissionCodeConstants();
+        Set<String> codeConstants = groupAOwnedPermissionCodeConstants();
 
         assertThat(permissionSeedCodes).containsExactlyInAnyOrderElementsOf(codeConstants);
     }
@@ -44,6 +45,26 @@ class GroupAIdentitySqlSeedConsistencyTest {
         Set<String> scopePermissionCodes = extractScopeRulePermissionCodes(sql);
 
         assertThat(permissionSeedCodes).containsAll(scopePermissionCodes);
+    }
+
+    @Test
+    void shouldKeepScoreConfirmAssignedOutOfAGroupIdentitySeed() throws Exception {
+        String groupASql = Files.readString(SQL_PATH);
+
+        assertThat(AuthorizationPermissionCodes.SCORE_CONFIRM_ASSIGNED).isEqualTo("score.confirm.assigned");
+        assertThat(groupASql).doesNotContain("score.confirm.assigned");
+    }
+
+    @Test
+    void shouldKeepFinalSelfPermissionsOwnedByAGroupIdentitySeed() throws Exception {
+        String groupASql = Files.readString(SQL_PATH);
+        Path dGroupSafeInitSql = TEAM_DELIVERY.resolve("group-d-score-finalization-import-export.safe-init.sql");
+        String dSafeInitSql = Files.exists(dGroupSafeInitSql) ? Files.readString(dGroupSafeInitSql) : "";
+
+        assertThat(AuthorizationPermissionCodes.FINAL_SUBMIT_SELF).isEqualTo("final.submit.self");
+        assertThat(AuthorizationPermissionCodes.FINAL_VIEW_SELF).isEqualTo("final.view.self");
+        assertThat(groupASql).contains("final.submit.self").contains("final.view.self");
+        assertThat(dSafeInitSql).doesNotContain("final.submit.self").doesNotContain("final.view.self");
     }
 
     @Test
@@ -84,7 +105,7 @@ class GroupAIdentitySqlSeedConsistencyTest {
             }
             try (Statement statement = connection.createStatement()) {
                 assertThat(queryLong(statement, "SELECT COUNT(*) FROM iam_permission"))
-                        .isEqualTo(permissionCodeConstants().size());
+                        .isEqualTo(groupAOwnedPermissionCodeConstants().size());
                 assertThat(queryLong(statement, "SELECT COUNT(*) FROM iam_scope_rule sr LEFT JOIN iam_permission p ON p.permission_code = sr.permission_code WHERE p.id IS NULL"))
                         .isZero();
                 assertThat(queryLong(statement, "SELECT COUNT(*) FROM iam_session WHERE session_no IS NULL OR access_token_id IS NULL OR refresh_token_id IS NULL OR client_ip IS NULL OR updated_at IS NULL"))
@@ -124,6 +145,12 @@ class GroupAIdentitySqlSeedConsistencyTest {
                 }
             }
         }
+        return codes;
+    }
+
+    private static Set<String> groupAOwnedPermissionCodeConstants() {
+        Set<String> codes = permissionCodeConstants();
+        codes.remove(AuthorizationPermissionCodes.SCORE_CONFIRM_ASSIGNED);
         return codes;
     }
 

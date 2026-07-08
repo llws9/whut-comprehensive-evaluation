@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.SQLException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashSet;
@@ -12,6 +13,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TeamDeliverySqlConsistencyTest {
 
@@ -20,6 +22,7 @@ class TeamDeliverySqlConsistencyTest {
     private static final Path IAM_RESOURCE_SQL = ROOT.resolve("whut-eval-app/src/main/resources/sql/iam");
     private static final Path B_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-b-student-application.safe-init.sql");
     private static final Path C_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-c-review-workflow.safe-init.sql");
+    private static final Path D_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-d-score-finalization-import-export.safe-init.sql");
     private static final Path E_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-e-platform-governance-attachment-ai.safe-init.sql");
 
     @Test
@@ -224,6 +227,135 @@ class TeamDeliverySqlConsistencyTest {
         assertThat(applicationScoreRefs).isSubsetOf(approvedApplicationIds);
     }
 
+    @Test
+    void shouldProvideNonDestructiveDGroupSafeInitSql() throws Exception {
+        String sql = Files.readString(D_GROUP_SAFE_INIT_SQL);
+
+        assertThat(sql).contains("CREATE TABLE IF NOT EXISTS `final_record`");
+        assertThat(sql).contains("CREATE TABLE IF NOT EXISTS `final_component_score`");
+        assertThat(sql).doesNotContain("DROP TABLE");
+        assertThat(sql).doesNotContain("ENGINE=");
+        assertThat(sql).doesNotContain("CHARSET");
+        assertThat(sql).doesNotContain("COLLATE");
+        assertThat(sql).doesNotContain("COMMENT=");
+        assertThat(sql).doesNotContain("RAND() * 0");
+        assertThat(sql).doesNotContain("1 /");
+        assertThat(sql).contains("CREATE TEMPORARY TABLE IF NOT EXISTS d_seed_collision_guard");
+        assertThat(sql).contains("INSERT INTO iam_permission (id, permission_code, permission_name, permission_group, status, created_at)");
+        assertThat(sql).contains("INSERT INTO iam_role_permission (id, role_id, permission_id, created_at)");
+        assertThat(sql).contains("INSERT INTO iam_scope_rule (id, assignment_id, permission_code, scope_type, org_unit_id, category_code, item_code, expression_json, priority, status, created_at)");
+        assertThat(extractCreateTableBlock(sql, "final_record"))
+                .contains("`id` BIGINT NOT NULL AUTO_INCREMENT")
+                .contains("`student_user_id` BIGINT NOT NULL")
+                .contains("`academic_year` VARCHAR(32) NOT NULL")
+                .contains("`status` VARCHAR(32) NOT NULL")
+                .contains("`moral_total` DECIMAL(10,2) NOT NULL")
+                .contains("`intellectual_total` DECIMAL(10,2) NOT NULL")
+                .contains("`physical_total` DECIMAL(10,2) NOT NULL")
+                .contains("`labor_total` DECIMAL(10,2) NOT NULL")
+                .contains("`grand_total` DECIMAL(10,2) NOT NULL")
+                .contains("`submitted_at` DATETIME DEFAULT NULL")
+                .contains("`confirmed_at` DATETIME DEFAULT NULL")
+                .contains("`confirm_comment` VARCHAR(1000) DEFAULT NULL")
+                .contains("`version` BIGINT NOT NULL")
+                .contains("`created_at` DATETIME NOT NULL")
+                .contains("`updated_at` DATETIME NOT NULL")
+                .contains("UNIQUE KEY `uk_final_record_student_year` (`student_user_id`, `academic_year`)")
+                .contains("KEY `idx_final_record_student_user_id` (`student_user_id`)")
+                .contains("KEY `idx_final_record_academic_year` (`academic_year`)")
+                .contains("KEY `idx_final_record_status` (`status`)");
+        assertThat(extractCreateTableBlock(sql, "final_component_score"))
+                .contains("`id` BIGINT NOT NULL AUTO_INCREMENT")
+                .contains("`final_record_id` BIGINT NOT NULL")
+                .contains("`category_code` VARCHAR(64) NOT NULL")
+                .contains("`item_code` VARCHAR(64) NOT NULL")
+                .contains("`score_value` DECIMAL(10,2) NOT NULL")
+                .contains("`display_text` VARCHAR(1000) DEFAULT NULL")
+                .contains("`source_type` VARCHAR(32) NOT NULL")
+                .contains("`source_ref_id` VARCHAR(64) DEFAULT NULL")
+                .contains("`created_at` DATETIME NOT NULL")
+                .contains("KEY `idx_final_component_score_record_id` (`final_record_id`)")
+                .contains("KEY `idx_final_component_score_category_code` (`category_code`)")
+                .contains("KEY `idx_final_component_score_item_code` (`item_code`)");
+    }
+
+    @Test
+    void shouldRerunDGroupSafeInitSqlWithoutOverwritingRuntimeFinalRecords() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:d_group_safe_init;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")) {
+            createMinimalIamTables(connection);
+            executeStatements(connection, Files.readString(D_GROUP_SAFE_INIT_SQL));
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO final_record (student_user_id, academic_year, status, moral_total, intellectual_total, physical_total,
+                        labor_total, grand_total, submitted_at, confirmed_at, confirm_comment, version, created_at, updated_at)
+                    VALUES (1001, '2025-2026', 'SUBMITTED', 0.80, 5.00, 0.60, 1.20, 7.60,
+                        '2026-07-07 12:00:00', NULL, NULL, 1, '2026-07-07 12:00:00', '2026-07-07 12:00:00')
+                    """);
+            long recordId = singleLong(connection, "SELECT id FROM final_record WHERE student_user_id = 1001 AND academic_year = '2025-2026'");
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO final_component_score (final_record_id, category_code, item_code, score_value, display_text, source_type, source_ref_id, created_at)
+                    VALUES (%d, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', 2.00, 'runtime component', 'APPLICATION', '21013', '2026-07-07 12:00:00')
+                    """.formatted(recordId));
+
+            executeStatements(connection, Files.readString(D_GROUP_SAFE_INIT_SQL));
+
+            assertThat(countRows(connection, "final_record", "id = " + recordId)).isEqualTo(1);
+            assertThat(singleString(connection, "SELECT status FROM final_record WHERE id = " + recordId)).isEqualTo("SUBMITTED");
+            assertThat(singleString(connection, "SELECT display_text FROM final_component_score WHERE final_record_id = " + recordId))
+                    .isEqualTo("runtime component");
+        }
+    }
+
+    @Test
+    void shouldSeedScoreConfirmPermissionUsingExistingNaturalKeyWhenIdDiffers() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:d_confirm_permission_existing_code;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")) {
+            createMinimalIamTables(connection);
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO iam_permission (id, permission_code, permission_name, permission_group, status, created_at)
+                    VALUES (9099, 'score.confirm.assigned', '已有确认权限', 'score', 'ACTIVE', CURRENT_TIMESTAMP())
+                    """);
+
+            executeStatements(connection, Files.readString(D_GROUP_SAFE_INIT_SQL));
+
+            assertThat(singleLong(connection, "SELECT id FROM iam_permission WHERE permission_code = 'score.confirm.assigned'"))
+                    .isEqualTo(9099L);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4003 AND permission_id = 9099")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4004 AND permission_id = 9099")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "permission_id = 5023")).isEqualTo(0);
+        }
+    }
+
+    @Test
+    void shouldRerunDPermissionSeedWithoutDuplicateBindings() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:d_confirm_permission_rerun;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")) {
+            createMinimalIamTables(connection);
+
+            executeStatements(connection, Files.readString(D_GROUP_SAFE_INIT_SQL));
+            executeStatements(connection, Files.readString(D_GROUP_SAFE_INIT_SQL));
+
+            long permissionId = singleLong(connection, "SELECT id FROM iam_permission WHERE permission_code = 'score.confirm.assigned'");
+            assertThat(permissionId).isEqualTo(5023L);
+            assertThat(countRows(connection, "iam_permission", "permission_code = 'score.confirm.assigned'")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4003 AND permission_id = " + permissionId)).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4004 AND permission_id = " + permissionId)).isEqualTo(1);
+            assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7010 AND permission_code = 'score.confirm.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7011 AND permission_code = 'score.confirm.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void shouldFailDPermissionSeedWhenReservedIdsAreOccupiedByUnrelatedRows() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:d_confirm_permission_collision;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")) {
+            createMinimalIamTables(connection);
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO iam_permission (id, permission_code, permission_name, permission_group, status, created_at)
+                    VALUES (5023, 'unrelated.permission', '占用固定编号', 'test', 'ACTIVE', CURRENT_TIMESTAMP())
+                    """);
+
+            assertThatThrownBy(() -> executeStatements(connection, Files.readString(D_GROUP_SAFE_INIT_SQL)))
+                    .isInstanceOf(SQLException.class);
+        }
+    }
+
     private static void executeStatements(Connection connection, String sql) throws Exception {
         for (String statement : sql.split(";")) {
             String trimmed = statement.trim();
@@ -291,6 +423,44 @@ class TeamDeliverySqlConsistencyTest {
                 .matcher(sql);
         assertThat(matcher.find()).as("insert block for %s", tableName).isTrue();
         return matcher.group();
+    }
+
+    private static void createMinimalIamTables(Connection connection) throws Exception {
+        executeStatements(connection, """
+                CREATE TABLE iam_permission (
+                  id BIGINT NOT NULL,
+                  permission_code VARCHAR(128) NOT NULL,
+                  permission_name VARCHAR(128) NOT NULL,
+                  permission_group VARCHAR(64) NOT NULL,
+                  status VARCHAR(32) NOT NULL,
+                  created_at DATETIME NOT NULL,
+                  PRIMARY KEY (id),
+                  UNIQUE KEY uk_iam_permission_code (permission_code)
+                );
+                CREATE TABLE iam_role_permission (
+                  id BIGINT NOT NULL,
+                  role_id BIGINT NOT NULL,
+                  permission_id BIGINT NOT NULL,
+                  created_at DATETIME NOT NULL,
+                  PRIMARY KEY (id),
+                  UNIQUE KEY uk_iam_role_permission_role_permission (role_id, permission_id)
+                );
+                CREATE TABLE iam_scope_rule (
+                  id BIGINT NOT NULL,
+                  assignment_id BIGINT NOT NULL,
+                  permission_code VARCHAR(128) NOT NULL,
+                  scope_type VARCHAR(64) NOT NULL,
+                  org_unit_id BIGINT DEFAULT NULL,
+                  category_code VARCHAR(64) DEFAULT NULL,
+                  item_code VARCHAR(64) DEFAULT NULL,
+                  expression_json VARCHAR(2000) DEFAULT NULL,
+                  priority INT NOT NULL,
+                  status VARCHAR(32) NOT NULL,
+                  created_at DATETIME NOT NULL,
+                  PRIMARY KEY (id),
+                  UNIQUE KEY uk_iam_scope_rule_natural (assignment_id, permission_code, scope_type, org_unit_id)
+                );
+                """);
     }
 
     private static String extractCreateTableBlock(String sql, String tableName) {

@@ -1,6 +1,7 @@
 package edu.whut.eval.application.auth.service;
 
 import edu.whut.eval.application.auth.model.ApplicationResourceContext;
+import edu.whut.eval.application.auth.model.FinalRecordResourceContext;
 import edu.whut.eval.application.auth.model.ScopeAccessDecision;
 import edu.whut.eval.application.auth.model.ScoreResourceContext;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
@@ -23,4 +24,11 @@ public interface ResourceScopeAccessEvaluator {
     ScopeAccessDecision canAccessScore(UserAuthorizationContext authorizationContext,
                                        String permissionCode,
                                        ScoreResourceContext resourceContext);
+
+    /**
+     * 判断当前用户是否可访问某条最终成绩资源。
+     */
+    ScopeAccessDecision canAccessFinalRecord(UserAuthorizationContext authorizationContext,
+                                             String permissionCode,
+                                             FinalRecordResourceContext resourceContext);
 }
