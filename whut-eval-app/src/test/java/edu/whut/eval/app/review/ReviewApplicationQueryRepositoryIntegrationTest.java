@@ -74,7 +74,7 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
         assertThat(row.getOrgUnitName()).isEqualTo("计算机 2101 班");
         assertThat(row.getTitle()).isEqualTo("期刊论文录用申请");
         assertThat(row.getStatus()).isEqualTo("SUBMITTED");
-        assertThat(row.getOrgPath()).isEqualTo("/1/2002/2010/");
+        assertThat(row.getOrgPath()).isEqualTo("/WHUT/CS/CS2021/CS2101");
     }
 
     @Test
@@ -82,7 +82,7 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
         ReviewApplicationQueryRow detail = repository.findReviewApplicationDetail(accessContext(), 21013L).orElseThrow();
 
         assertThat(detail.getApplicationId()).isEqualTo(21013L);
-        assertThat(detail.getOrgPath()).isEqualTo("/1/2002/2010/");
+        assertThat(detail.getOrgPath()).isEqualTo("/WHUT/CS/CS2021/CS2101");
         assertThat(detail.getOptionCode()).isEqualTo("PAPER_CORE_FIRST_AUTHOR");
         assertThat(detail.getAppliedPoints()).isEqualByComparingTo("2.00");
         assertThat(detail.getAttachments()).hasSize(1);
@@ -160,8 +160,9 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
     private void insertRows() {
         jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1001, '20210001', '张三', 'ACTIVE')");
         jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1002, '20210002', '李四', 'ACTIVE')");
-        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, path, status) VALUES (2010, '计算机 2101 班', '/1/2002/2010/', 'ACTIVE')");
-        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, path, status) VALUES (3000, '外部班级', '/1/3000/', 'ACTIVE')");
+        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, path, status) VALUES (2002, '计算机与人工智能学院', '/WHUT/CS', 'ACTIVE')");
+        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, path, status) VALUES (2010, '计算机 2101 班', '/WHUT/CS/CS2021/CS2101', 'ACTIVE')");
+        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, path, status) VALUES (3000, '外部班级', '/WHUT/ART/ART2021/ART2101', 'ACTIVE')");
         jdbcTemplate.update("""
                 INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
                 VALUES (21013, 1001, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', '2025-2026', '上学期', '期刊论文录用申请', '申请说明', 'SUBMITTED', '2026-07-06 10:00:00', '2026-07-06 09:00:00', '2026-07-06 10:00:00', 1)

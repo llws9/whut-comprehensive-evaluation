@@ -22,6 +22,7 @@ public final class AuthorizationPermissionCodes {
     public static final String SCORE_VIEW_SELF = "score.view.self";
     public static final String SCORE_VIEW_ASSIGNED = "score.view.assigned";
     public static final String SCORE_EXPORT_ASSIGNED = "score.export.assigned";
+    public static final String SCORE_CONFIRM_ASSIGNED = "score.confirm.assigned";
 
     // 最终成绩权限
     public static final String FINAL_SUBMIT_SELF = "final.submit.self";

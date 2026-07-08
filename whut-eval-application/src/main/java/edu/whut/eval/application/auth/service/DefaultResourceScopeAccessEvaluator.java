@@ -1,12 +1,15 @@
 package edu.whut.eval.application.auth.service;
 
 import edu.whut.eval.application.auth.model.ApplicationResourceContext;
+import edu.whut.eval.application.auth.model.FinalRecordResourceContext;
 import edu.whut.eval.domain.auth.model.AuthorizationScope;
 import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
 import edu.whut.eval.application.auth.model.ScopeAccessDecision;
 import edu.whut.eval.application.auth.model.ScopeResourceContext;
 import edu.whut.eval.application.auth.model.ScoreResourceContext;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.Locale;
@@ -19,11 +22,15 @@ public class DefaultResourceScopeAccessEvaluator implements ResourceScopeAccessE
 
     private final AuthorizationScopeEvaluator authorizationScopeEvaluator;
     private final ScopeRuleExpressionInterpreter scopeRuleExpressionInterpreter;
+    private final OrgUnitLookupRepository orgUnitLookupRepository;
 
+    @Autowired
     public DefaultResourceScopeAccessEvaluator(AuthorizationScopeEvaluator authorizationScopeEvaluator,
-                                               ScopeRuleExpressionInterpreter scopeRuleExpressionInterpreter) {
+                                               ScopeRuleExpressionInterpreter scopeRuleExpressionInterpreter,
+                                               OrgUnitLookupRepository orgUnitLookupRepository) {
         this.authorizationScopeEvaluator = authorizationScopeEvaluator;
         this.scopeRuleExpressionInterpreter = scopeRuleExpressionInterpreter;
+        this.orgUnitLookupRepository = orgUnitLookupRepository;
     }
 
     /**
@@ -44,6 +51,28 @@ public class DefaultResourceScopeAccessEvaluator implements ResourceScopeAccessE
                                               String permissionCode,
                                               ScoreResourceContext resourceContext) {
         return evaluate(authorizationContext, permissionCode, resourceContext);
+    }
+
+    /**
+     * 最终成绩聚合按整条记录授权，只允许 ALL / ORG_UNIT / ORG_SUBTREE 命中。
+     */
+    @Override
+    public ScopeAccessDecision canAccessFinalRecord(UserAuthorizationContext authorizationContext,
+                                                    String permissionCode,
+                                                    FinalRecordResourceContext resourceContext) {
+        AuthorizationScopeSet scopeSet = authorizationScopeEvaluator.evaluate(authorizationContext, permissionCode);
+        if (!scopeSet.isGranted()) {
+            return ScopeAccessDecision.deny("permission-not-granted");
+        }
+        if (scopeSet.allowsAll()) {
+            return ScopeAccessDecision.allow("ALL", "matched allow-all scope");
+        }
+        for (AuthorizationScope scope : scopeSet.getScopes()) {
+            if (matchesFinalRecordScope(resourceContext, scope)) {
+                return ScopeAccessDecision.allow(scope.getScopeType(), "matched scope rule");
+            }
+        }
+        return ScopeAccessDecision.deny("no-scope-matched");
     }
 
     /**
@@ -102,6 +131,20 @@ public class DefaultResourceScopeAccessEvaluator implements ResourceScopeAccessE
         return false;
     }
 
+    private boolean matchesFinalRecordScope(FinalRecordResourceContext resourceContext, AuthorizationScope scope) {
+        String scopeType = normalize(scope.getScopeType());
+        if ("ALL".equals(scopeType)) {
+            return true;
+        }
+        if ("ORG_UNIT".equals(scopeType)) {
+            return matchesOrgUnit(resourceContext, scope);
+        }
+        if ("ORG_SUBTREE".equals(scopeType)) {
+            return matchesOrgSubtree(resourceContext, scope);
+        }
+        return false;
+    }
+
     /**
      * ORG_UNIT 语义要求资源组织单元与规则组织单元完全一致。
      */
@@ -110,7 +153,7 @@ public class DefaultResourceScopeAccessEvaluator implements ResourceScopeAccessE
     }
 
     /**
-     * ORG_SUBTREE 现阶段通过 org_path 路径段包含关系判断是否位于某个组织子树下。
+     * ORG_SUBTREE 通过 A 组组织表中的真实 path 判断前缀关系，path 存储的是组织编码链路。
      */
     private boolean matchesOrgSubtree(ScopeResourceContext resourceContext, AuthorizationScope scope) {
         if (scope.getOrgUnitId() == null) {
@@ -120,8 +163,27 @@ public class DefaultResourceScopeAccessEvaluator implements ResourceScopeAccessE
         if (orgPath == null || orgPath.isBlank()) {
             return false;
         }
-        String segment = "/" + scope.getOrgUnitId() + "/";
-        return orgPath.contains(segment);
+        return orgUnitLookupRepository.findById(scope.getOrgUnitId())
+                .map(orgUnit -> isSameOrDescendantPath(orgPath, orgUnit.path()))
+                .orElse(false);
+    }
+
+    private boolean isSameOrDescendantPath(String resourcePath, String rootPath) {
+        if (rootPath == null || rootPath.isBlank()) {
+            return false;
+        }
+        String normalizedResourcePath = normalizePath(resourcePath);
+        String normalizedRootPath = normalizePath(rootPath);
+        return normalizedResourcePath.equals(normalizedRootPath)
+                || normalizedResourcePath.startsWith(normalizedRootPath + "/");
+    }
+
+    private String normalizePath(String path) {
+        String normalized = path.trim();
+        while (normalized.length() > 1 && normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
     }
 
     /**

@@ -25,6 +25,15 @@ abstract class AbstractScopeSqlTranslator {
         return "#{parameters." + key + "}";
     }
 
+    protected String translateOrgSubtreePathPredicate(String orgPathColumn,
+                                                      Long rootOrgUnitId,
+                                                      Map<String, Object> parameters) {
+        String rootIdParameter = addParameter(parameters, rootOrgUnitId);
+        String rootPath = "(SELECT scope_root.path FROM org_unit scope_root WHERE scope_root.id = " + rootIdParameter + ")";
+        return "(" + orgPathColumn + " = " + rootPath
+                + " OR " + orgPathColumn + " LIKE CONCAT(" + rootPath + ", '/%'))";
+    }
+
     protected String translateCustomExpression(UserAuthorizationContext authorizationContext,
                                                String expressionJson,
                                                Map<String, String> fieldMapping,

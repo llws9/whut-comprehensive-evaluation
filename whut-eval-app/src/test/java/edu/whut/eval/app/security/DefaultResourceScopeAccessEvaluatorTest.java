@@ -2,6 +2,7 @@ package edu.whut.eval.app.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.auth.model.ApplicationResourceContext;
+import edu.whut.eval.application.auth.model.FinalRecordResourceContext;
 import edu.whut.eval.application.auth.model.ScopeAccessDecision;
 import edu.whut.eval.application.auth.model.ScoreResourceContext;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
@@ -9,9 +10,13 @@ import edu.whut.eval.application.auth.service.DefaultAuthorizationScopeEvaluator
 import edu.whut.eval.application.auth.service.DefaultResourceScopeAccessEvaluator;
 import edu.whut.eval.application.auth.service.JsonScopeRuleExpressionInterpreter;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
+import edu.whut.eval.domain.org.model.OrgUnit;
+import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -20,7 +25,8 @@ class DefaultResourceScopeAccessEvaluatorTest {
 
     private final DefaultResourceScopeAccessEvaluator evaluator = new DefaultResourceScopeAccessEvaluator(
             new DefaultAuthorizationScopeEvaluator(),
-            new JsonScopeRuleExpressionInterpreter(new ObjectMapper())
+            new JsonScopeRuleExpressionInterpreter(new ObjectMapper()),
+            new InMemoryOrgUnitLookupRepository()
     );
 
     @Test
@@ -137,5 +143,105 @@ class DefaultResourceScopeAccessEvaluatorTest {
 
         assertThat(decision.isAllowed()).isFalse();
         assertThat(decision.getReason()).isEqualTo("no-scope-matched");
+    }
+
+    @Test
+    void shouldAllowFinalRecordOnlyForAllOrgUnitAndOrgSubtreeScopes() {
+        UserAuthorizationContext admin = new UserAuthorizationContext(
+                1010L,
+                "T1010",
+                "Counselor",
+                "teacher",
+                Set.of("counselor"),
+                Set.of("score.view.assigned"),
+                List.of(
+                        new IamScopeRule(401L, "score.view.assigned", "CATEGORY", null, "INTELLECTUAL", null, null, 90, "ACTIVE"),
+                        new IamScopeRule(402L, "score.view.assigned", "ITEM", null, "INTELLECTUAL", "INTELLECTUAL_PAPER", null, 80, "ACTIVE"),
+                        new IamScopeRule(403L, "score.view.assigned", "ORG_SUBTREE", 2002L, null, null, null, 70, "ACTIVE")
+                )
+        );
+
+        ScopeAccessDecision decision = evaluator.canAccessFinalRecord(
+                admin,
+                "score.view.assigned",
+                new FinalRecordResourceContext(41001L, 1001L, 2010L, "/WHUT/CS/CS2022/CS2201", "2025-2026")
+        );
+
+        assertThat(decision.isAllowed()).isTrue();
+        assertThat(decision.getMatchedScopeType()).isEqualTo("ORG_SUBTREE");
+    }
+
+    @Test
+    void shouldDenyFinalRecordWhenCodePathIsOutsideOrgSubtreeRoot() {
+        UserAuthorizationContext admin = new UserAuthorizationContext(
+                1010L,
+                "T1010",
+                "Counselor",
+                "teacher",
+                Set.of("counselor"),
+                Set.of("score.view.assigned"),
+                List.of(
+                        new IamScopeRule(404L, "score.view.assigned", "ORG_SUBTREE", 2002L, null, null, null, 70, "ACTIVE")
+                )
+        );
+
+        ScopeAccessDecision decision = evaluator.canAccessFinalRecord(
+                admin,
+                "score.view.assigned",
+                new FinalRecordResourceContext(41002L, 1007L, 2012L, "/WHUT/ART/ART2022/ART2201", "2025-2026")
+        );
+
+        assertThat(decision.isAllowed()).isFalse();
+        assertThat(decision.getReason()).isEqualTo("no-scope-matched");
+    }
+
+    @Test
+    void shouldDenyFinalRecordForCategoryItemAndCustomExpressionOnlyScopes() {
+        UserAuthorizationContext admin = new UserAuthorizationContext(
+                1010L,
+                "T1010",
+                "Counselor",
+                "teacher",
+                Set.of("counselor"),
+                Set.of("score.view.assigned"),
+                List.of(
+                        new IamScopeRule(411L, "score.view.assigned", "CATEGORY", null, "INTELLECTUAL", null, null, 90, "ACTIVE"),
+                        new IamScopeRule(412L, "score.view.assigned", "ITEM", null, "INTELLECTUAL", "INTELLECTUAL_PAPER", null, 80, "ACTIVE"),
+                        new IamScopeRule(413L, "score.view.assigned", "CUSTOM_EXPRESSION", 2010L, null, null, "{\"field\":\"orgUnitId\"}", 70, "ACTIVE")
+                )
+        );
+
+        ScopeAccessDecision decision = evaluator.canAccessFinalRecord(
+                admin,
+                "score.view.assigned",
+                new FinalRecordResourceContext(41001L, 1001L, 2010L, "/2001/2002/2010/", "2025-2026")
+        );
+
+        assertThat(decision.isAllowed()).isFalse();
+    }
+
+    @Test
+    void shouldExposeOnlyFinalRecordSafeFieldsInResourceContext() {
+        FinalRecordResourceContext context = new FinalRecordResourceContext(41001L, 1001L, 2010L, "/2001/2002/2010/", "2025-2026");
+
+        assertThat(context.getOwnerUserId()).isEqualTo(1001L);
+        assertThat(context.getCategoryCode()).isNull();
+        assertThat(context.getItemCode()).isNull();
+        assertThat(context.getFieldValue("finalRecordId")).isEqualTo(41001L);
+        assertThat(context.getFieldValue("studentUserId")).isEqualTo(1001L);
+        assertThat(context.getFieldValue("ownerUserId")).isEqualTo(1001L);
+        assertThat(context.getFieldValue("unknown")).isNull();
+    }
+
+    private static class InMemoryOrgUnitLookupRepository implements OrgUnitLookupRepository {
+
+        private final Map<Long, OrgUnit> units = Map.of(
+                2002L, new OrgUnit(2002L, 2001L, "COLLEGE", "CS", "计算机与人工智能学院", "/WHUT/CS", "ACTIVE")
+        );
+
+        @Override
+        public Optional<OrgUnit> findById(Long id) {
+            return Optional.ofNullable(units.get(id));
+        }
     }
 }

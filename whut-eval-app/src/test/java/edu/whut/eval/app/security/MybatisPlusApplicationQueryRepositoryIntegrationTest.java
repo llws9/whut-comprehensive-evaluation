@@ -18,6 +18,8 @@ import edu.whut.eval.domain.application.query.ApplicationAccessContext;
 import edu.whut.eval.domain.application.query.ApplicationPageQuery;
 import edu.whut.eval.domain.application.repository.ApplicationQueryRepository;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
+import edu.whut.eval.domain.org.model.OrgUnit;
+import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
 import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.infra.config.MybatisPlusConfig;
 import edu.whut.eval.infra.persistence.mapper.ApplicationQueryMapper;
@@ -42,6 +44,8 @@ import org.springframework.test.context.junit.jupiter.SpringExtension;
 import javax.sql.DataSource;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -125,6 +129,8 @@ class MybatisPlusApplicationQueryRepositoryIntegrationTest {
      */
     private void recreateTables() {
         jdbcTemplate.execute("DROP TABLE IF EXISTS application_record");
+        jdbcTemplate.execute("DROP TABLE IF EXISTS org_unit");
+        jdbcTemplate.execute("CREATE TABLE org_unit (id BIGINT PRIMARY KEY, path VARCHAR(255) NOT NULL)");
         jdbcTemplate.execute(
                 "CREATE TABLE application_record (" +
                         "application_id BIGINT PRIMARY KEY, " +
@@ -140,6 +146,7 @@ class MybatisPlusApplicationQueryRepositoryIntegrationTest {
      * 这里故意保留“范围命中”和“不命中”的混合数据，用于验证 SQL translator 真正收窄后的列表结果。
      */
     private void insertApplicationRows() {
+        jdbcTemplate.update("INSERT INTO org_unit (id, path) VALUES (?, ?)", 3001L, "/1/3001");
         jdbcTemplate.update(
                 "INSERT INTO application_record (application_id, applicant_user_id, org_unit_id, org_path, category_code, item_code) VALUES (?, ?, ?, ?, ?, ?)",
                 9001L, 1001L, 3001L, "/1/3001/", "INTELLECTUAL", "ACADEMIC_LECTURE"
@@ -262,6 +269,24 @@ class MybatisPlusApplicationQueryRepositoryIntegrationTest {
         @Bean
         ObjectMapper objectMapper() {
             return new ObjectMapper();
+        }
+
+        @Bean
+        OrgUnitLookupRepository orgUnitLookupRepository() {
+            return new InMemoryOrgUnitLookupRepository();
+        }
+    }
+
+    private static class InMemoryOrgUnitLookupRepository implements OrgUnitLookupRepository {
+
+        private final Map<Long, OrgUnit> units = Map.of(
+                3001L, new OrgUnit(3001L, 1L, "CLASS", "3001", "3001", "/1/3001", "ACTIVE"),
+                4001L, new OrgUnit(4001L, 1L, "CLASS", "4001", "4001", "/1/4001", "ACTIVE")
+        );
+
+        @Override
+        public Optional<OrgUnit> findById(Long id) {
+            return Optional.ofNullable(units.get(id));
         }
     }
 }
