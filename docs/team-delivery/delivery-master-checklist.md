@@ -235,7 +235,7 @@ A 组认证底座
 - 不允许任意组私自修改别组主责表结构或状态机。
 - 若需要新增跨组写权限，必须先更新这份文档，再改代码和组文档。
 
-## 9. 合并前初始化检查
+## 9. 合并前验收检查
 
 任一组改动 `docs/team-delivery/*.sql`、`*.safe-init.sql`、跨组种子数据或 Maven 测试契约时，合并前必须确认 full seed smoke gate。
 
@@ -253,6 +253,24 @@ PR 上必须关注 `Full Seed Init Smoke` workflow 的两个 job：
 
 若任一 job 失败，不允许通过“单组 SQL 可执行”或“本地 H2 通过”替代放行；必须先修复初始化顺序、幂等性、固定 ID 冲突或组织路径/权限范围口径问题。
 
+任一组改动认证、附件绑定、学生申请、审核状态流转、最终成绩汇总/确认、IAM 范围规则或主链路接口契约时，还必须确认最小业务闭环 smoke gate。
+
+本地复现命令：
+
+```bash
+mvn -B -pl whut-eval-app -am -Dtest=MinimumBusinessLoopSmokeIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test
+```
+
+该 gate 覆盖：
+
+- `2022010101` 和 `T20260001` 种子账号登录；
+- 学生创建并提交一条 `INTELLECTUAL/INTELLECTUAL_PAPER` 申请；
+- 审核人审批通过并写入审核日志；
+- 学生提交 `2025-2026` 学年最终成绩；
+- 审核范围内教师确认最终成绩，最终状态为 `CONFIRMED`。
+
+演示或人工验收前按 `minimum-business-loop-demo-runbook.md` 执行同一条主链路。PR 上必须关注 `Full Seed Init Smoke` workflow 的 `Minimum business loop` job。
+
 ## 10. 关联文档
 
 - [database-schema-confirmation.md](file:///Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/docs/team-delivery/database-schema-confirmation.md)
@@ -260,3 +278,4 @@ PR 上必须关注 `Full Seed Init Smoke` workflow 的两个 job：
 - [database-table-ownership-matrix.md](file:///Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/docs/team-delivery/database-table-ownership-matrix.md)
 - [foundation-capabilities-guide.md](file:///Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/docs/team-delivery/foundation-capabilities-guide.md)
 - [full-seed-init-smoke-gate.md](file:///Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/docs/team-delivery/full-seed-init-smoke-gate.md)
+- [minimum-business-loop-demo-runbook.md](file:///Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/docs/team-delivery/minimum-business-loop-demo-runbook.md)
