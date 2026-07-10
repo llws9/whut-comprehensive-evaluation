@@ -9,6 +9,8 @@ on:
       - "docs/team-delivery/**"
       - "scripts/full-seed-init-mysql-smoke.sh"
       - "whut-eval-app/src/test/java/edu/whut/eval/app/iam/TeamDeliverySqlConsistencyTest.java"
+      - "whut-eval-app/src/test/java/edu/whut/eval/app/smoke/MinimumBusinessLoopSmokeIntegrationTest.java"
+      - "whut-eval-*/src/main/java/**"
       - "pom.xml"
       - "whut-eval-*/pom.xml"
   push:
@@ -19,6 +21,8 @@ on:
       - "docs/team-delivery/**"
       - "scripts/full-seed-init-mysql-smoke.sh"
       - "whut-eval-app/src/test/java/edu/whut/eval/app/iam/TeamDeliverySqlConsistencyTest.java"
+      - "whut-eval-app/src/test/java/edu/whut/eval/app/smoke/MinimumBusinessLoopSmokeIntegrationTest.java"
+      - "whut-eval-*/src/main/java/**"
       - "pom.xml"
       - "whut-eval-*/pom.xml"
 
@@ -83,3 +87,26 @@ jobs:
           MYSQL_USER: root
           MYSQL_PASSWORD: root
         run: scripts/full-seed-init-mysql-smoke.sh
+
+  minimum-business-loop-smoke:
+    name: Minimum business loop
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run minimum business loop smoke gate
+        run: >
+          mvn -B -pl whut-eval-app -am
+          -Dtest=MinimumBusinessLoopSmokeIntegrationTest
+          -Dsurefire.failIfNoSpecifiedTests=false
+          test
