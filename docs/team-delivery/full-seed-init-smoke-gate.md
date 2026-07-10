@@ -47,8 +47,20 @@ The assertions cover:
 ## Real MySQL Check
 
 H2 MySQL-mode is the CI safety net, not a complete replacement for a real MySQL
-smoke test. Before a demo or deployment, run the same initialization order on a
-throwaway MySQL schema and verify:
+smoke test. The repeatable real MySQL smoke gate is:
+
+```bash
+scripts/full-seed-init-mysql-smoke.sh
+```
+
+By default, the script connects to `127.0.0.1:3306` as `root` without a
+password. Override `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, or
+`MYSQL_PASSWORD` when needed. The script creates a throwaway schema, runs the
+same initialization order, reruns E/B/C/D safe-init, verifies the shared seed
+contracts, and drops the schema on exit.
+
+Before a demo or deployment, run the same initialization order on a throwaway
+MySQL schema and verify:
 
 - every script exits successfully;
 - rerunning E/B/C/D safe-init exits successfully;
