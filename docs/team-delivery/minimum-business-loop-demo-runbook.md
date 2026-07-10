@@ -230,14 +230,20 @@ application code, or the workflow itself.
 
 ## Failure Triage
 
-| Symptom | Likely source | Check |
-|---|---|---|
-| Login fails for seed accounts | A-group seed or password hash drift | `group-a-identity-user-admin.sql` and `AuthControllerSeedAccountLoginIntegrationTest` |
-| Draft creation says attachment is missing or unauthorized | E seed file or attachment resolver mismatch | `file_asset`, `public_attachment_entry`, selected `attachmentFileIds` |
-| Submit fails with version conflict | Caller used stale `expectedVersion` | Use the `version` from the immediately previous response |
-| Review approve returns forbidden | A/C scope or review permission drift | Counselor roles, `application.review`, resource org path |
-| Final submit has no component or wrong total | B/D approved-fact aggregation drift | `application_submission`, `application_fact`, `final_component_score` |
-| Final confirm list/detail cannot see the record | D `score.confirm.assigned` scope drift | `iam_scope_rule` rows `8019`/`8020`, org unit root `2002` |
+Start with the failing step in the CI or local test output, then use the matching
+stage below. Do not skip straight to a single-team SQL file until the previous
+stage in the loop is known to be healthy.
+
+| Stage | Failing signal | Likely source | Check |
+|---|---|---|---|
+| Login | `/api/auth/login` returns non-OK, token fields are missing, or service-level login fails | A-group seed account, password hash, role binding, or auth response serialization drift | `group-a-identity-user-admin.sql`, `AuthControllerSeedAccountLoginIntegrationTest`, `iam_user`, `iam_role_assignment`, `iam_session` |
+| JWT/session | HTTP test logs in but protected endpoint returns `401` | JWT properties, token claims, session persistence, or `AccessSessionService` drift | `SecurityConfiguration`, `JwtAuthenticationFilter`, `iam_session`, `infra.security.jwt.*` test properties |
+| Draft and attachment | Draft creation says attachment is missing or unauthorized | E seed file or attachment resolver mismatch | `file_asset`, `public_attachment_entry`, selected `attachmentFileIds`, seeded owner/public visibility |
+| Student submit | Submit fails with version conflict or validation error | Caller used stale `expectedVersion`, rule option drift, or B write contract drift | Use the `version` from the immediately previous response; check `optionCode`, `appliedPoints`, and `application_submission` |
+| Review approve | Review approve returns forbidden or does not write a log | A/C scope, review permission, or resource org path drift | Counselor roles, `application.review`, `application_review_log`, application resource org path |
+| Final submit | Final submit has no component or wrong total | B/D approved-fact aggregation drift | `application_submission`, `application_fact`, `final_record`, `final_component_score` |
+| Final confirm | Final confirm returns forbidden or cannot see the record | D `score.confirm.assigned` scope or ORG_SUBTREE root drift | `iam_scope_rule` rows `8019`/`8020`, org unit root `2002`, final record resource org path |
+| HTTP-only failure | Service-level smoke passes but HTTP smoke fails | Controller mapping, request DTO binding, security filter, exception mapping, or Jackson configuration drift | MockMvc failure section, resolved exception type, controller request DTO, `GlobalExceptionHandler`, Jackson auto-configuration |
 
 ## Merge Gate
 
