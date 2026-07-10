@@ -235,9 +235,28 @@ A 组认证底座
 - 不允许任意组私自修改别组主责表结构或状态机。
 - 若需要新增跨组写权限，必须先更新这份文档，再改代码和组文档。
 
-## 9. 关联文档
+## 9. 合并前初始化检查
+
+任一组改动 `docs/team-delivery/*.sql`、`*.safe-init.sql`、跨组种子数据或 Maven 测试契约时，合并前必须确认 full seed smoke gate。
+
+本地复现命令：
+
+```bash
+mvn -B -pl whut-eval-app -am -Dtest=TeamDeliverySqlConsistencyTest#shouldInitializeFullSeedChainOnAGroupSchemaAndKeepSafeInitRerunnable -Dsurefire.failIfNoSpecifiedTests=false test
+scripts/full-seed-init-mysql-smoke.sh
+```
+
+PR 上必须关注 `Full Seed Init Smoke` workflow 的两个 job：
+
+- `A + E/B/C/D seed chain`
+- `Real MySQL seed chain`
+
+若任一 job 失败，不允许通过“单组 SQL 可执行”或“本地 H2 通过”替代放行；必须先修复初始化顺序、幂等性、固定 ID 冲突或组织路径/权限范围口径问题。
+
+## 10. 关联文档
 
 - [database-schema-confirmation.md](file:///Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/docs/team-delivery/database-schema-confirmation.md)
 - [database-frozen-tables.md](file:///Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/docs/team-delivery/database-frozen-tables.md)
 - [database-table-ownership-matrix.md](file:///Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/docs/team-delivery/database-table-ownership-matrix.md)
 - [foundation-capabilities-guide.md](file:///Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/docs/team-delivery/foundation-capabilities-guide.md)
+- [full-seed-init-smoke-gate.md](file:///Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/docs/team-delivery/full-seed-init-smoke-gate.md)
