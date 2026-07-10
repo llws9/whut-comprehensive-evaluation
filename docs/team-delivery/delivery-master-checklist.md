@@ -271,6 +271,7 @@ mvn -B -pl whut-eval-app -am -Dtest=MinimumBusinessLoopSmokeIntegrationTest,Mini
 - HTTP controller、请求 DTO 绑定、JWT 过滤器、会话校验与真实仓储链路。
 
 演示或人工验收前按 `minimum-business-loop-demo-runbook.md` 执行同一条主链路。PR 上必须关注 `Full Seed Init Smoke` workflow 的 `Minimum business loop` job。
+若该 job 失败，先按 runbook 的阶段化 Failure Triage 定位到 login、JWT/session、draft attachment、review scope、final submit、final confirm 或 HTTP-only 层，再修改对应团队资产。
 
 ## 10. 关联文档
 
