@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/full-seed-init-smoke.yml"
       - "docs/team-delivery/**"
+      - "scripts/full-seed-init-mysql-smoke.sh"
       - "whut-eval-app/src/test/java/edu/whut/eval/app/iam/TeamDeliverySqlConsistencyTest.java"
       - "pom.xml"
       - "whut-eval-*/pom.xml"
@@ -16,6 +17,7 @@ on:
     paths:
       - ".github/workflows/full-seed-init-smoke.yml"
       - "docs/team-delivery/**"
+      - "scripts/full-seed-init-mysql-smoke.sh"
       - "whut-eval-app/src/test/java/edu/whut/eval/app/iam/TeamDeliverySqlConsistencyTest.java"
       - "pom.xml"
       - "whut-eval-*/pom.xml"
@@ -46,3 +48,38 @@ jobs:
           -Dtest=TeamDeliverySqlConsistencyTest#shouldInitializeFullSeedChainOnAGroupSchemaAndKeepSafeInitRerunnable
           -Dsurefire.failIfNoSpecifiedTests=false
           test
+
+  mysql-full-seed-init-smoke:
+    name: Real MySQL seed chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install MySQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mysql-client
+
+      - name: Run real MySQL full seed smoke
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: "3306"
+          MYSQL_USER: root
+          MYSQL_PASSWORD: root
+        run: scripts/full-seed-init-mysql-smoke.sh
