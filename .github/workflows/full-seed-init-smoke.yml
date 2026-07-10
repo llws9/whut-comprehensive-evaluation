@@ -10,6 +10,7 @@ on:
       - "scripts/full-seed-init-mysql-smoke.sh"
       - "whut-eval-app/src/test/java/edu/whut/eval/app/iam/TeamDeliverySqlConsistencyTest.java"
       - "whut-eval-app/src/test/java/edu/whut/eval/app/smoke/MinimumBusinessLoopSmokeIntegrationTest.java"
+      - "whut-eval-app/src/test/java/edu/whut/eval/app/smoke/MinimumBusinessLoopHttpSmokeIntegrationTest.java"
       - "whut-eval-*/src/main/java/**"
       - "pom.xml"
       - "whut-eval-*/pom.xml"
@@ -22,6 +23,7 @@ on:
       - "scripts/full-seed-init-mysql-smoke.sh"
       - "whut-eval-app/src/test/java/edu/whut/eval/app/iam/TeamDeliverySqlConsistencyTest.java"
       - "whut-eval-app/src/test/java/edu/whut/eval/app/smoke/MinimumBusinessLoopSmokeIntegrationTest.java"
+      - "whut-eval-app/src/test/java/edu/whut/eval/app/smoke/MinimumBusinessLoopHttpSmokeIntegrationTest.java"
       - "whut-eval-*/src/main/java/**"
       - "pom.xml"
       - "whut-eval-*/pom.xml"
@@ -107,6 +109,6 @@ jobs:
       - name: Run minimum business loop smoke gate
         run: >
           mvn -B -pl whut-eval-app -am
-          -Dtest=MinimumBusinessLoopSmokeIntegrationTest
+          -Dtest=MinimumBusinessLoopSmokeIntegrationTest,MinimumBusinessLoopHttpSmokeIntegrationTest
           -Dsurefire.failIfNoSpecifiedTests=false
           test

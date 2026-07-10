@@ -258,7 +258,7 @@ PR 上必须关注 `Full Seed Init Smoke` workflow 的两个 job：
 本地复现命令：
 
 ```bash
-mvn -B -pl whut-eval-app -am -Dtest=MinimumBusinessLoopSmokeIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test
+mvn -B -pl whut-eval-app -am -Dtest=MinimumBusinessLoopSmokeIntegrationTest,MinimumBusinessLoopHttpSmokeIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
 该 gate 覆盖：
@@ -268,6 +268,7 @@ mvn -B -pl whut-eval-app -am -Dtest=MinimumBusinessLoopSmokeIntegrationTest -Dsu
 - 审核人审批通过并写入审核日志；
 - 学生提交 `2025-2026` 学年最终成绩；
 - 审核范围内教师确认最终成绩，最终状态为 `CONFIRMED`。
+- HTTP controller、请求 DTO 绑定、JWT 过滤器、会话校验与真实仓储链路。
 
 演示或人工验收前按 `minimum-business-loop-demo-runbook.md` 执行同一条主链路。PR 上必须关注 `Full Seed Init Smoke` workflow 的 `Minimum business loop` job。
 
