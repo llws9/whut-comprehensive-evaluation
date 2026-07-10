@@ -206,12 +206,15 @@ Expected result:
 Run the automated business-loop smoke gate from the repository root:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=MinimumBusinessLoopSmokeIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test
+mvn -pl whut-eval-app -am -Dtest=MinimumBusinessLoopSmokeIntegrationTest,MinimumBusinessLoopHttpSmokeIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
-This test starts from the A/B/C/D safe-init scripts in an H2 MySQL-mode
-database, logs in the student and counselor through `/api/auth/login`, and then
-executes the same business transition through application services. It verifies:
+This gate starts from the A/E/B/C/D safe-init scripts in an H2 MySQL-mode
+database. The service-level test logs in the student and counselor through
+`/api/auth/login` and executes the transition through application services; the
+HTTP-level test exercises the same loop through real controllers, request DTO
+binding, the JWT security filter, session validation, and repositories. It
+verifies:
 
 - student and counselor seed credentials issue tokens;
 - the application reaches `APPROVED`;
@@ -241,7 +244,7 @@ application code, or the workflow itself.
 Before merging changes that affect this flow, run:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=MinimumBusinessLoopSmokeIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test
+mvn -pl whut-eval-app -am -Dtest=MinimumBusinessLoopSmokeIntegrationTest,MinimumBusinessLoopHttpSmokeIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
 If the change also touches team safe-init SQL, seed IDs, IAM scopes, or the
