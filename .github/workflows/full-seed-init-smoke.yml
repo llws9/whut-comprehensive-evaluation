@@ -1,0 +1,48 @@
+name: Full Seed Init Smoke
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/full-seed-init-smoke.yml"
+      - "docs/team-delivery/**"
+      - "whut-eval-app/src/test/java/edu/whut/eval/app/iam/TeamDeliverySqlConsistencyTest.java"
+      - "pom.xml"
+      - "whut-eval-*/pom.xml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/full-seed-init-smoke.yml"
+      - "docs/team-delivery/**"
+      - "whut-eval-app/src/test/java/edu/whut/eval/app/iam/TeamDeliverySqlConsistencyTest.java"
+      - "pom.xml"
+      - "whut-eval-*/pom.xml"
+
+permissions:
+  contents: read
+
+jobs:
+  full-seed-init-smoke:
+    name: A + E/B/C/D seed chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run full seed init smoke gate
+        run: >
+          mvn -B -pl whut-eval-app -am
+          -Dtest=TeamDeliverySqlConsistencyTest#shouldInitializeFullSeedChainOnAGroupSchemaAndKeepSafeInitRerunnable
+          -Dsurefire.failIfNoSpecifiedTests=false
+          test
