@@ -20,6 +20,7 @@ class TeamDeliverySqlConsistencyTest {
     private static final Path ROOT = Path.of(System.getProperty("user.dir")).getParent();
     private static final Path TEAM_DELIVERY = ROOT.resolve("docs/team-delivery");
     private static final Path IAM_RESOURCE_SQL = ROOT.resolve("whut-eval-app/src/main/resources/sql/iam");
+    private static final Path A_GROUP_SQL = TEAM_DELIVERY.resolve("group-a-identity-user-admin.sql");
     private static final Path B_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-b-student-application.safe-init.sql");
     private static final Path C_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-c-review-workflow.safe-init.sql");
     private static final Path D_GROUP_SAFE_INIT_SQL = TEAM_DELIVERY.resolve("group-d-score-finalization-import-export.safe-init.sql");
@@ -85,6 +86,51 @@ class TeamDeliverySqlConsistencyTest {
                 .contains("`evidence_count` INT NOT NULL")
                 .contains("`extra_json` VARCHAR(2000) DEFAULT NULL")
                 .contains("UNIQUE KEY `uk_application_fact_application_id` (`application_id`)");
+    }
+
+    @Test
+    void shouldInitializeFullSeedChainOnAGroupSchemaAndKeepSafeInitRerunnable() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:full_seed_init_smoke;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")) {
+            executeStatements(connection, toH2CompatibleGroupASql(Files.readString(A_GROUP_SQL)));
+
+            executeRuntimeSafeInitChain(connection);
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO application_submission (applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
+                    VALUES (1001, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', '2025-2026', '上学期', 'runtime full-chain application', 'runtime desc', 'APPROVED', '2026-07-08 09:00:00', '2026-07-08 08:00:00', '2026-07-08 09:00:00', 1)
+                    """);
+            long applicationId = singleLong(connection, "SELECT application_id FROM application_submission WHERE title = 'runtime full-chain application'");
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO application_fact (application_id, score_value, display_text, evidence_count, extra_json, created_at, updated_at)
+                    VALUES (%d, 4.50, 'runtime approved score', 1, '{"optionCode":"PAPER_CORE"}', '2026-07-08 09:00:00', '2026-07-08 09:00:00')
+                    """.formatted(applicationId));
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO final_record (student_user_id, academic_year, status, moral_total, intellectual_total, physical_total,
+                        labor_total, grand_total, submitted_at, confirmed_at, confirm_comment, version, created_at, updated_at)
+                    VALUES (1001, '2025-2026', 'SUBMITTED', 0.00, 4.50, 0.00, 0.00, 4.50,
+                        '2026-07-08 09:10:00', NULL, NULL, 1, '2026-07-08 09:10:00', '2026-07-08 09:10:00')
+                    """);
+            long finalRecordId = singleLong(connection, "SELECT id FROM final_record WHERE student_user_id = 1001 AND academic_year = '2025-2026'");
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO final_component_score (final_record_id, category_code, item_code, score_value, display_text, source_type, source_ref_id, created_at)
+                    VALUES (%d, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', 4.50, 'runtime approved score', 'APPLICATION', '%d', '2026-07-08 09:10:00')
+                    """.formatted(finalRecordId, applicationId));
+
+            executeRuntimeSafeInitChain(connection);
+
+            assertThat(singleString(connection, "SELECT path FROM org_unit WHERE id = 2010"))
+                    .isEqualTo("/WHUT/CS/CS2022/CS2201");
+            assertThat(countRows(connection, "iam_permission", "permission_code = 'score.confirm.assigned'")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4003 AND permission_id = (SELECT id FROM iam_permission WHERE permission_code = 'score.confirm.assigned')")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4004 AND permission_id = (SELECT id FROM iam_permission WHERE permission_code = 'score.confirm.assigned')")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7010 AND permission_code = 'score.confirm.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7011 AND permission_code = 'score.confirm.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
+            assertThat(countRows(connection, "application_submission", "application_id = " + applicationId + " AND title = 'runtime full-chain application'")).isEqualTo(1);
+            assertThat(countRows(connection, "application_fact", "application_id = " + applicationId + " AND display_text = 'runtime approved score'")).isEqualTo(1);
+            assertThat(countRows(connection, "final_record", "id = " + finalRecordId + " AND status = 'SUBMITTED'")).isEqualTo(1);
+            assertThat(countRows(connection, "final_component_score", "final_record_id = " + finalRecordId + " AND source_ref_id = '" + applicationId + "'")).isEqualTo(1);
+            assertThat(countRows(connection, "file_asset", "file_id = 'FILE-0008'")).isEqualTo(1);
+            assertThat(countRows(connection, "public_attachment_entry", "id = 14001")).isEqualTo(1);
+        }
     }
 
     @Test
@@ -365,6 +411,13 @@ class TeamDeliverySqlConsistencyTest {
         }
     }
 
+    private static void executeRuntimeSafeInitChain(Connection connection) throws Exception {
+        executeStatements(connection, Files.readString(E_GROUP_SAFE_INIT_SQL));
+        executeStatements(connection, Files.readString(B_GROUP_SAFE_INIT_SQL));
+        executeStatements(connection, Files.readString(C_GROUP_SAFE_INIT_SQL));
+        executeStatements(connection, Files.readString(D_GROUP_SAFE_INIT_SQL));
+    }
+
     private static int countRows(Connection connection, String tableName, String condition) throws Exception {
         try (var resultSet = connection.createStatement()
                 .executeQuery("SELECT COUNT(*) FROM " + tableName + " WHERE " + condition)) {
@@ -461,6 +514,29 @@ class TeamDeliverySqlConsistencyTest {
                   UNIQUE KEY uk_iam_scope_rule_natural (assignment_id, permission_code, scope_type, org_unit_id)
                 );
                 """);
+    }
+
+    private static String toH2CompatibleGroupASql(String sql) {
+        String normalized = sql
+                .replaceAll("(?m)^--.*$", "")
+                .replace("`", "")
+                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户主表'", "")
+                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='组织树'", "")
+                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户组织归属'", "")
+                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='角色模板'", "")
+                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='权限字典'", "")
+                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='角色权限关系'", "")
+                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户角色分配'", "")
+                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据范围规则'", "")
+                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='登录会话'", "")
+                .replace("JSON DEFAULT NULL", "VARCHAR(2048) DEFAULT NULL")
+                .replace("TINYINT(1)", "BOOLEAN")
+                .replace("SET NAMES utf8mb4;", "");
+        normalized = normalized.lines()
+                .filter(line -> !line.trim().startsWith("CONSTRAINT fk_"))
+                .reduce("", (left, right) -> left + right + System.lineSeparator());
+        normalized = normalized.replaceAll(",\\s*\\)", ")");
+        return normalized;
     }
 
     private static String extractCreateTableBlock(String sql, String tableName) {
