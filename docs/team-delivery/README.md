@@ -19,6 +19,7 @@
 | `delivery-master-checklist.md` | 全局总控清单 | 合并数据库责任矩阵、接口依赖矩阵、交付顺序与最小交付项 |
 | `foundation-capabilities-guide.md` | 全局底座说明 | 认证、仓储调用、文件上传、配置、日志、异常、开发规范 |
 | `full-seed-init-smoke-gate.md` | 全局初始化检查 | A + E/B/C/D 初始化顺序、H2 CI gate、真实 MySQL smoke gate |
+| `minimum-business-loop-demo-runbook.md` | 全局演示验收 | 登录、学生申请、审核、最终成绩提交与确认的最小业务闭环 |
 
 
 ## 当前实现状态标识
@@ -36,7 +37,8 @@
 4. 5 个组长分别阅读自己的模块文档，确认接口范围、依赖和排期。
 5. 全员统一阅读 `foundation-capabilities-guide.md`，避免各组重复造底座。
 6. 改动任一组 SQL、safe-init 或跨组种子数据前，阅读 `full-seed-init-smoke-gate.md`，确认本地命令和 CI job。
-7. 组间联调前回看 `delivery-master-checklist.md` 和 `database-schema-confirmation.md`，避免口径漂移。
+7. 准备演示、验收或主链路回归前，阅读 `minimum-business-loop-demo-runbook.md`，确认最小业务闭环和自动 smoke gate。
+8. 组间联调前回看 `delivery-master-checklist.md` 和 `database-schema-confirmation.md`，避免口径漂移。
 
 ## 统一约定
 
