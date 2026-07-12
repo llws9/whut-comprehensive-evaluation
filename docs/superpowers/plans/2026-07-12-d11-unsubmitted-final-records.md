@@ -6,7 +6,7 @@
 
 **Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`. D-11 does not introduce dirty-data support that violates the frozen A/D SQL contracts, including missing `iam_user` columns, nullable organization path/code fields, nullable final-record status/update timestamps, or duplicate `final_record` rows for the same student and academic year. Nullable projection values from optional joins, such as no DRAFT record or no active grade parent, remain valid and are rendered as empty response strings where the API contract says so.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. Only `iam_user.status = 'ACTIVE'` users are eligible; every non-`ACTIVE` status, including `INACTIVE`, `LOCKED`, `DISABLED`, or future status values, is excluded from the unsubmitted roster. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. Rows without an active grade parent are placed after all rows with an active grade parent; within that no-active-grade group, the null grade key does not define relative order, so ordering continues by class code, student number, and user id. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. Only `iam_user.status = 'ACTIVE'` users are eligible; every non-`ACTIVE` status, including `INACTIVE`, `LOCKED`, `DISABLED`, or future status values, is excluded from the unsubmitted roster. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. Rows without an active grade parent are placed after all rows with an active grade parent; within that no-active-grade group, the null grade key does not define relative order, so ordering continues by class code, student number, and user id. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order. `ORG_SUBTREE` root matching is path-prefix based for any active `org_unit` with a valid path; the root's `unit_type` is not part of the subtree predicate. `SCHOOL`, `COLLEGE`, `GRADE`, `CLASS`, or future/custom root types all follow the same rule: only active roots with non-empty leading-slash, non-trailing-slash paths without `%` or `_` can expose active class descendants by real path prefix.
 
 **Frozen Schema Precedence:** If the source design and frozen SQL schema conflict, the frozen A/D schema wins for D-11 implementation and tests. `docs/team-delivery/group-a-identity-user-admin.sql` defines `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, and `org_unit.status` as `NOT NULL`; `docs/team-delivery/group-d-score-finalization-import-export.safe-init.sql` defines `final_record.status` and `final_record.updated_at` as `NOT NULL` and enforces `UNIQUE KEY uk_final_record_student_year (student_user_id, academic_year)`. Therefore D-11 must not add duplicate final-record rows for one student/year, nullable organization path/code cases, nullable final-record status/update timestamps, or missing IAM columns as tests or production behavior. Malformed but schema-valid path strings, such as empty strings, missing leading `/`, trailing `/`, or embedded SQL `LIKE` wildcard characters `%` and `_`, are still valid boundary cases for D-11 subtree guards and must be tested. D-11 treats such malformed subtree paths as non-matching instead of trying to repair or escape them at query time.
 
@@ -42,7 +42,7 @@ mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpe
 
 This focused baseline is only a fallback for pre-implementation comparison. It does not replace the final Task 5 full `mvn test` attempt and does not allow D-11-touched tests to fail.
 
-Execution notes placeholder. The executor must write the observed baseline values back into this section before D-11 implementation starts. Do not use terminal scrollback or a handoff summary as the only baseline source; the final Task 5 comparison reads the fields below.
+Execution notes are recorded in this plan document, not only in terminal scrollback or a handoff summary. Update the fields in this section in place before D-11 implementation starts. Keep the updated fields in the D-11 branch so Task 5 can compare against the same source of truth. Do not create a separate baseline-only commit unless explicitly requested; the recorded values may be committed together with the implementation or final verification changes.
 
 - Full Baseline Result: `PENDING` before implementation; replace with `PASS`, `FAIL`, or `BLOCKED`.
 - Full Baseline Command: `mvn test`
@@ -55,6 +55,21 @@ Execution notes placeholder. The executor must write the observed baseline value
 - Focused Fallback Baseline Failing Tests: `none` when PASS; otherwise list test class and method names.
 
 Comparison rule: only a recorded full `mvn test` baseline allows a full-suite "zero new failures" comparison. If the full baseline is `BLOCKED` or still `PENDING` and only the focused fallback baseline exists, compare only D-11 and final-record related tests against the focused fallback; any later full-suite failures outside that focused set must be reported as observed state, not classified as new or pre-existing. D-11 added/modified tests and final-record tests explicitly run by this plan must pass in all cases.
+
+## Execution Notes
+
+Update these fields as the implementation proceeds. Every field starts as `PENDING`, `NOT_RUN`, or `NOT_REQUIRED`; replace it with the observed command, result, and short evidence before using it for a completion or zero-new-failure claim.
+
+- Baseline Source: `Pre-Implementation Verification Baseline` fields above.
+- Task 3 `rg` Availability: `PENDING`.
+- Task 3 Scope/Provider Verification Command and Result: `PENDING`.
+- Task 5 Shared-Scope Diff Classification: `PENDING`; record which scope-related files changed and whether Step 2 regressions are required.
+- Task 5 Step 2 Shared-Scope Regression Command and Result: `NOT_REQUIRED` unless Step 1 marks shared scope as changed.
+- Task 5 Step 3 Focused D-11 Command and Result: `PENDING`.
+- Task 5 Step 4 FinalRecord Regression Command and Result: `PENDING`.
+- Task 5 Step 5 Full Suite Command and Result: `PENDING`.
+- Task 5 Step 6 Contract-Drift Scan Command Set and Result: `PENDING`; record whether `rg` or fallback `grep -RInE` was used, plus accepted hit file/line notes.
+- Final Verification After Last Edit: `PENDING`; list the exact final commands run after the last file change and before the final commit.
 
 **Tech Stack:** Java 21, Spring Boot 3.3.2, Spring MVC with `jakarta.servlet`, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -1417,6 +1432,21 @@ void shouldAllowTopLevelOrgSubtreeRootPath() {
 }
 
 @Test
+void shouldAllowOrgSubtreeRootWithCustomTypeWhenPathIsActiveAndValid() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (1001, NULL, 'CAMPUS', 'WHUT_CS_SCOPE', '自定义范围根', '/WHUT/CS', 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(1001L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(3);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L);
+}
+
+@Test
 void shouldAllowOrgSubtreeRootAtClassLevelOnlyForThatClass() {
     seedRoster();
 
@@ -1919,6 +1949,26 @@ void shouldKeepCountAndSelectAlignedWhenGradeAndClassFiltersNarrowCrossGradeMemb
 }
 
 @Test
+void shouldKeepCountAndSelectAlignedWhenGradeFilterIsAbsentAndNoGradeRowsExist() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3004, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'INACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4010, 3004, 'CLASS', 'CS2301', '无有效年级班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1009, 'S009', 'NoActiveGradeCountAligned', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6001, 1009, 4010, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 100)
+    );
+
+    assertThat(page.total()).isEqualTo(4);
+    assertThat(page.records()).hasSize(4);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L, 1009L);
+    assertThat(findRow(page, 1009L).getGrade()).isNull();
+}
+
+@Test
 void shouldReturnEmptyPageWhenCountIsZeroAndFiltersCannotMatchVisibleRows() {
     seedRoster();
 
@@ -2256,24 +2306,16 @@ public final class D11ScopeSqlShape {
         if ("1 = 0".equals(normalized) || "1 = 1".equals(normalized)) {
             return true;
         }
-        String orgUnitFragmentPattern = "__D11_CLASS_ALIAS__\\.id IN \\(" + parameterListPattern("d11OrgUnit") + "\\)";
-        String subtreeFragmentPattern = "EXISTS \\( SELECT 1 FROM org_unit root_ou WHERE root_ou\\.id IN \\("
-                + parameterListPattern("d11Subtree")
-                + "\\) AND root_ou\\.status = 'ACTIVE'"
-                + " AND root_ou\\.path IS NOT NULL"
-                + " AND root_ou\\.path <> ''"
-                + " AND root_ou\\.path LIKE '/%'"
-                + " AND root_ou\\.path NOT LIKE '%/'"
-                + " AND LOCATE\\('%', root_ou\\.path\\) = 0"
-                + " AND LOCATE\\('_', root_ou\\.path\\) = 0"
-                + " AND __D11_CLASS_ALIAS__\\.path IS NOT NULL"
-                + " AND __D11_CLASS_ALIAS__\\.path <> ''"
-                + " AND __D11_CLASS_ALIAS__\\.path LIKE '/%'"
-                + " AND __D11_CLASS_ALIAS__\\.path NOT LIKE '%/'"
-                + " AND LOCATE\\('%', __D11_CLASS_ALIAS__\\.path\\) = 0"
-                + " AND LOCATE\\('_', __D11_CLASS_ALIAS__\\.path\\) = 0"
-                + " AND \\( __D11_CLASS_ALIAS__\\.path = root_ou\\.path"
-                + " OR __D11_CLASS_ALIAS__\\.path LIKE CONCAT\\(root_ou\\.path, '/%'\\) \\) \\)";
+        String orgUnitFragmentPattern = fragmentPattern(
+                orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}"),
+                "#{scopeFragment.parameters.d11OrgUnit0}",
+                parameterListPattern("d11OrgUnit")
+        );
+        String subtreeFragmentPattern = fragmentPattern(
+                orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}"),
+                "#{scopeFragment.parameters.d11Subtree0}",
+                parameterListPattern("d11Subtree")
+        );
         String orgUnitOnlyPattern = "\\( ?" + orgUnitFragmentPattern + " ?\\)";
         String subtreeOnlyPattern = "\\( ?" + subtreeFragmentPattern + " ?\\)";
         String orgThenSubtreePattern = "\\( ?" + orgUnitFragmentPattern + " OR " + subtreeFragmentPattern + " ?\\)";
@@ -2315,6 +2357,17 @@ public final class D11ScopeSqlShape {
     private static String parameterListPattern(String prefix) {
         String parameterPattern = "#\\{scopeFragment\\.parameters\\." + prefix + "\\d+\\}";
         return parameterPattern + "(, " + parameterPattern + ")*";
+    }
+
+    private static String fragmentPattern(String generatedFragment,
+                                          String samplePlaceholder,
+                                          String placeholderPattern) {
+        String normalized = normalize(generatedFragment);
+        String[] parts = normalized.split(Pattern.quote(samplePlaceholder), -1);
+        if (parts.length != 2) {
+            throw new IllegalStateException("D-11 scope fragment must contain one sample placeholder");
+        }
+        return Pattern.quote(parts[0]) + placeholderPattern + Pattern.quote(parts[1]);
     }
 }
 ```
@@ -3337,18 +3390,21 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
 - `ORG_SUBTREE` rejects malformed but schema-valid root/class path strings, including empty path, missing leading `/`, trailing `/`, and embedded SQL `LIKE` wildcard characters `%` or `_`.
 - D-11 private `rosterScopeFragment(...)` is covered by mandatory parity tests against existing submitted/confirmed whole-record scope visibility for denied permission, `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths.
-- `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including GRADE and CLASS roots; a GRADE root exposes that grade's class descendants, and a CLASS root exposes that class only, not sibling classes.
+- `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including SCHOOL, COLLEGE, GRADE, CLASS, or custom/future unit types; root `unit_type` is not part of the subtree predicate.
+- A GRADE root exposes that grade's class descendants, and a CLASS root exposes that class only, not sibling classes.
 - If `ORG_UNIT` and `ORG_SUBTREE` both grant the same class, visible students are still counted and returned once.
 - Multiple same-type scope rules are covered: two `ORG_SUBTREE` roots and two `ORG_UNIT` rules both produce union visibility without duplicate students or whitelist rejection.
 - Inactive `ORG_SUBTREE` roots at COLLEGE, GRADE, or CLASS level return an empty page even when their path and descendants are otherwise valid.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
 - `D11ScopeSqlShape` is the single source for D-11 ORG_UNIT/ORG_SUBTREE SQL fragments and whitelist validation; repository/provider code and provider tests do not duplicate subtree SQL shape strings.
-- `D11ScopeSqlShape.assertGeneratedFragmentsSelfValidateForD11()` proves generated single-root and multi-root ORG_SUBTREE SQL fragments pass the same whitelist used by the provider, including the `CONCAT(root_ou.path, '/%')` shape.
+- `D11ScopeSqlShape` derives whitelist patterns from its generated ORG_UNIT/ORG_SUBTREE fragments instead of hand-copying subtree SQL into a second regex body.
+- `D11ScopeSqlShape.assertGeneratedFragmentsSelfValidateForD11()` proves generated single-root and multi-root ORG_SUBTREE SQL fragments pass the same derived whitelist used by the provider, including the `CONCAT(root_ou.path, '/%')` shape.
 - Provider helper contracts are explicit: `scopeExpression(...)` only reads `scopeFragment`, validates the whitelist, and replaces the fixed class-alias placeholder; `classPredicate(...)` only reads `query` and generates code/name case-sensitive `IN` predicates.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
 - Cross-grade duplicate memberships are filtered by `grade` before collapse, so count, row selection, and displayed grade/class all come from the visible membership set.
 - Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
 - Count/select alignment tests include a cross-grade duplicate-membership case with both `grade` and `classes` filters active, proving count and select narrow the same visible membership subset.
+- Count/select alignment tests include a no-active-grade row with no grade filter, proving the count query's `LEFT JOIN grade_ou` and select query keep the same eligibility when `#{query.grade} IS NULL`.
 - Count and select SQL keep eligibility predicates aligned: active user, student membership, scope, grade/classes, and submitted/confirmed exclusion must change together.
 - Grade/classes exact filters are case-sensitive, use code-or-name OR semantics, include distinct code/name matches, and do not duplicate a student when both sides match the same org unit.
 - Reversing the request order of `classes` values does not change the selected display membership, returned student ids, total count, or grade/class display values.
