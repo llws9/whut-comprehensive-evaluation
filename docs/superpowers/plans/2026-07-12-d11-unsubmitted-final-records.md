@@ -6,7 +6,7 @@
 
 **Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`. D-11 does not introduce dirty-data support that violates the frozen A/D SQL contracts, including missing `iam_user` columns, nullable organization path/code fields, nullable final-record status/update timestamps, or duplicate `final_record` rows for the same student and academic year. Nullable projection values from optional joins, such as no DRAFT record or no active grade parent, remain valid and are rendered as empty response strings where the API contract says so.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. Rows without an active grade parent are placed after all rows with an active grade parent; within that no-active-grade group, the null grade key does not define relative order, so ordering continues by class code, student number, and user id. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. Only `iam_user.status = 'ACTIVE'` users are eligible; every non-`ACTIVE` status, including `INACTIVE`, `LOCKED`, `DISABLED`, or future status values, is excluded from the unsubmitted roster. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. Rows without an active grade parent are placed after all rows with an active grade parent; within that no-active-grade group, the null grade key does not define relative order, so ordering continues by class code, student number, and user id. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
 
 **Frozen Schema Precedence:** If the source design and frozen SQL schema conflict, the frozen A/D schema wins for D-11 implementation and tests. `docs/team-delivery/group-a-identity-user-admin.sql` defines `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, and `org_unit.status` as `NOT NULL`; `docs/team-delivery/group-d-score-finalization-import-export.safe-init.sql` defines `final_record.status` and `final_record.updated_at` as `NOT NULL` and enforces `UNIQUE KEY uk_final_record_student_year (student_user_id, academic_year)`. Therefore D-11 must not add duplicate final-record rows for one student/year, nullable organization path/code cases, nullable final-record status/update timestamps, or missing IAM columns as tests or production behavior. Malformed but schema-valid path strings, such as empty strings, missing leading `/`, trailing `/`, or embedded SQL `LIKE` wildcard characters `%` and `_`, are still valid boundary cases for D-11 subtree guards and must be tested. D-11 treats such malformed subtree paths as non-matching instead of trying to repair or escape them at query time.
 
@@ -114,6 +114,14 @@ Request:
 | `pageSize` | `long` | no | Exactly one raw `pageSize` value is allowed; repeated values, `pageSize[]`, or non-numeric values return `VAL-4001` with message `pageSize 不合法`. Missing defaults to `20`; values `<= 0` normalize to `20`; values `> 100` normalize to `100`. |
 
 Response `data` remains `PageResult<UnsubmittedStudentView>` with exactly `total` and `records`. Each record has `studentUserId`, `userNo`, `userName`, `grade`, `className`, fixed `status = "UNSUBMITTED"`, and `lastUpdatedAt`. Optional projection values are rendered as empty strings: `grade` is empty when no active grade parent exists, and `lastUpdatedAt` is empty when no DRAFT final record exists. `lastUpdatedAt` uses `Instant.toString()` when a DRAFT final record exists.
+
+Error responses:
+
+| Case | HTTP status | Response contract |
+| --- | --- | --- |
+| Parameter validation failure, including invalid `academicYear`, `grade`, `classes`, `pageNo`, or `pageSize` | `400 Bad Request` | `code = "VAL-4001"` and the field-specific message named above |
+| Missing or invalid authentication | `401 Unauthorized` | Existing global security error response |
+| Authenticated user without `score.view.assigned` | `403 Forbidden` | Existing access-denied response; service message is `当前用户无未提交最终成绩名单查询权限` |
 
 Field naming map:
 
@@ -801,6 +809,7 @@ Fixture migration rules for existing tests:
 - D-11 `seedRoster()` must create active `COLLEGE -> GRADE -> CLASS` paths with non-null `unit_code`, `unit_name`, `path`, and `status` so grade/classes filters and sort order are deterministic.
 - Existing `org_membership` inserts must populate `membership_type = 'STUDENT'`, `is_primary = 1`, and `status = 'ACTIVE'` unless the test is explicitly about inactive, non-primary, or non-student membership exclusion.
 - Existing `final_record` rows for submitted/confirmed tests must keep non-null status and `updated_at`; D-11 tests must also use only one `final_record` row per `(student_user_id, academic_year)` and one of the frozen statuses `DRAFT`, `SUBMITTED`, or `CONFIRMED`.
+- Rewrite legacy tests that currently rely on duplicate same-year `final_record` rows before enabling the unique key. In the current repository, `shouldHideDraftRecordsFromAdminListAndDetail` starts with `1001 / 2025-2026 / SUBMITTED` from setup and then inserts `1001 / 2025-2026 / DRAFT`; change that test to insert the DRAFT for a different student/year-valid fixture such as a newly seeded active student `1003` in the same academic year, then assert the submitted list still returns only the submitted/confirmed records and `findAdminFinalRecordDetail(draftId)` is empty. Do not relax the unique key to preserve the old duplicate-row fixture.
 - After changing the fixture schema and old insert helpers, immediately run the existing repository integration test class before adding D-11 SQL so schema backfills do not silently weaken Minimal D coverage:
 
 ```bash
@@ -1129,6 +1138,10 @@ void shouldApplyGradeAndClassesFiltersTogetherWithCaseSensitiveExactCodeOrNameMa
             new UnsubmittedFinalRecordQuery("2025-2026", "计算机2022级", List.of("计算机2202班"), 1, 20)).records())
             .extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1003L);
+    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "计算机2022级", List.of("计算机2301班"), 1, 20)).records())
+            .as("grade name and class name filters must both match the same visible membership set")
+            .isEmpty();
     assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
             new UnsubmittedFinalRecordQuery("2025-2026", "计算机", null, 1, 20)).records())
             .as("grade must not use contains matching")
@@ -2288,13 +2301,13 @@ private String scopeExpression(Map<String, Object> params, String classAlias) {
 private void validateD11ScopeExpression(String expression, Map<String, Object> parameters) {
     String normalized = D11ScopeSqlShape.normalize(expression);
     if (!D11ScopeSqlShape.isAllowedScopeExpression(normalized)) {
-        throw new IllegalArgumentException("Unsafe D-11 scope expression");
+        throw new IllegalArgumentException("Unsafe D-11 scope expression: shape not whitelisted");
     }
     if (!referencedScopeParameterNames(normalized).equals(parameters.keySet())) {
-        throw new IllegalArgumentException("Unsafe D-11 scope expression");
+        throw new IllegalArgumentException("Unsafe D-11 scope expression: parameter names mismatch");
     }
     if (!parameters.values().stream().allMatch(Long.class::isInstance)) {
-        throw new IllegalArgumentException("Unsafe D-11 scope expression");
+        throw new IllegalArgumentException("Unsafe D-11 scope expression: non-Long parameter value");
     }
 }
 
@@ -2417,10 +2430,10 @@ void shouldRejectUnsafeD11ScopeExpressionFragments() {
 
     assertThatThrownBy(() -> provider.buildCountUnsubmittedStudents(params))
             .isInstanceOf(IllegalArgumentException.class)
-            .hasMessage("Unsafe D-11 scope expression");
+            .hasMessage("Unsafe D-11 scope expression: shape not whitelisted");
     assertThatThrownBy(() -> provider.buildSelectUnsubmittedStudents(params))
             .isInstanceOf(IllegalArgumentException.class)
-            .hasMessage("Unsafe D-11 scope expression");
+            .hasMessage("Unsafe D-11 scope expression: shape not whitelisted");
 }
 
 @Test
@@ -2435,10 +2448,10 @@ void shouldRejectD11ScopeFragmentsWhenExpressionAndParameterMapDisagree() {
 
     assertThatThrownBy(() -> provider.buildCountUnsubmittedStudents(params))
             .isInstanceOf(IllegalArgumentException.class)
-            .hasMessage("Unsafe D-11 scope expression");
+            .hasMessage("Unsafe D-11 scope expression: parameter names mismatch");
     assertThatThrownBy(() -> provider.buildSelectUnsubmittedStudents(params))
             .isInstanceOf(IllegalArgumentException.class)
-            .hasMessage("Unsafe D-11 scope expression");
+            .hasMessage("Unsafe D-11 scope expression: parameter names mismatch");
 }
 
 @Test
@@ -2453,10 +2466,10 @@ void shouldRejectD11ScopeFragmentsWithNonLongParameterValues() {
 
     assertThatThrownBy(() -> provider.buildCountUnsubmittedStudents(params))
             .isInstanceOf(IllegalArgumentException.class)
-            .hasMessage("Unsafe D-11 scope expression");
+            .hasMessage("Unsafe D-11 scope expression: non-Long parameter value");
     assertThatThrownBy(() -> provider.buildSelectUnsubmittedStudents(params))
             .isInstanceOf(IllegalArgumentException.class)
-            .hasMessage("Unsafe D-11 scope expression");
+            .hasMessage("Unsafe D-11 scope expression: non-Long parameter value");
 }
 
 @Test
