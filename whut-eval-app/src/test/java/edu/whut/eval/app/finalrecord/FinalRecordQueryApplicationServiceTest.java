@@ -7,6 +7,8 @@ import edu.whut.eval.application.finalrecord.query.AdminFinalRecordListItemView;
 import edu.whut.eval.application.finalrecord.query.FinalComponentScoreListView;
 import edu.whut.eval.application.finalrecord.query.FinalRecordQueryRow;
 import edu.whut.eval.application.finalrecord.query.FinalRecordStudentView;
+import edu.whut.eval.application.finalrecord.query.UnsubmittedStudentRow;
+import edu.whut.eval.application.finalrecord.query.UnsubmittedStudentView;
 import edu.whut.eval.application.finalrecord.repository.FinalRecordQueryRepository;
 import edu.whut.eval.application.finalrecord.service.FinalRecordAccessValidator;
 import edu.whut.eval.application.finalrecord.service.FinalRecordQueryApplicationService;
@@ -14,8 +16,11 @@ import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.domain.finalrecord.query.FinalRecordPageQuery;
+import edu.whut.eval.domain.finalrecord.query.FinalRecordAccessContext;
+import edu.whut.eval.domain.finalrecord.query.UnsubmittedFinalRecordQuery;
 import edu.whut.eval.domain.shared.PageResult;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -26,9 +31,12 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 class FinalRecordQueryApplicationServiceTest {
 
@@ -87,6 +95,108 @@ class FinalRecordQueryApplicationServiceTest {
     }
 
     @Test
+    void shouldPageUnsubmittedStudentsWithFixedStatusAndStringFallbacks() {
+        UserAuthorizationContext admin = adminWithAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED);
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(admin);
+        UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20);
+        given(queryRepository.pageUnsubmittedStudents(any(), same(query)))
+                .willReturn(new PageResult<>(2, List.of(
+                        unsubmittedRow(1001L, "S001", "Alice", "2022级", "CS2201", Instant.parse("2026-07-12T10:15:30.123Z")),
+                        unsubmittedRow(1002L, "S002", "Bob", null, "CS2202", null)
+                )));
+
+        PageResult<UnsubmittedStudentView> page = service.pageUnsubmittedStudents(query);
+
+        assertThat(page.total()).isEqualTo(2);
+        assertThat(page.records()).containsExactly(
+                new UnsubmittedStudentView(1001L, "S001", "Alice", "2022级", "CS2201", "UNSUBMITTED", "2026-07-12T10:15:30.123Z"),
+                new UnsubmittedStudentView(1002L, "S002", "Bob", "", "CS2202", "UNSUBMITTED", "")
+        );
+        ArgumentCaptor<FinalRecordAccessContext> captor = ArgumentCaptor.forClass(FinalRecordAccessContext.class);
+        verify(queryRepository).pageUnsubmittedStudents(captor.capture(), same(query));
+        assertThat(captor.getValue().getPermissionCode()).isEqualTo(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED);
+    }
+
+    @Test
+    void shouldRenderMissingDraftLastUpdatedAtAsEmptyString() {
+        UserAuthorizationContext admin = adminWithAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED);
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(admin);
+        UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20);
+        given(queryRepository.pageUnsubmittedStudents(any(), same(query)))
+                .willReturn(new PageResult<>(1, List.of(
+                        unsubmittedRow(1001L, "S001", "Alice", "2022级", "CS2201", null)
+                )));
+
+        PageResult<UnsubmittedStudentView> page = service.pageUnsubmittedStudents(query);
+
+        assertThat(page.records()).containsExactly(
+                new UnsubmittedStudentView(1001L, "S001", "Alice", "2022级", "CS2201", "UNSUBMITTED", "")
+        );
+    }
+
+    @Test
+    void shouldRenderNullStringProjectionsAsEmptyStrings() {
+        UserAuthorizationContext admin = adminWithAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED);
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(admin);
+        UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20);
+        given(queryRepository.pageUnsubmittedStudents(any(), same(query)))
+                .willReturn(new PageResult<>(1, List.of(
+                        unsubmittedRow(1001L, null, null, "2022级", null, null)
+                )));
+
+        PageResult<UnsubmittedStudentView> page = service.pageUnsubmittedStudents(query);
+
+        assertThat(page.records()).containsExactly(
+                new UnsubmittedStudentView(1001L, "", "", "2022级", "", "UNSUBMITTED", "")
+        );
+    }
+
+    @Test
+    void shouldRenderLastUpdatedAtWithInstantStringPrecision() {
+        UserAuthorizationContext admin = adminWithAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED);
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(admin);
+        UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20);
+        given(queryRepository.pageUnsubmittedStudents(any(), same(query)))
+                .willReturn(new PageResult<>(2, List.of(
+                        unsubmittedRow(1001L, "S001", "Alice", "2022级", "CS2201", Instant.parse("2026-07-12T10:15:30Z")),
+                        unsubmittedRow(1002L, "S002", "Bob", "2022级", "CS2201", Instant.parse("2026-07-12T10:15:30.456Z"))
+                )));
+
+        PageResult<UnsubmittedStudentView> page = service.pageUnsubmittedStudents(query);
+
+        assertThat(page.records()).containsExactly(
+                new UnsubmittedStudentView(1001L, "S001", "Alice", "2022级", "CS2201", "UNSUBMITTED", "2026-07-12T10:15:30Z"),
+                new UnsubmittedStudentView(1002L, "S002", "Bob", "2022级", "CS2201", "UNSUBMITTED", "2026-07-12T10:15:30.456Z")
+        );
+    }
+
+    @Test
+    void shouldDenyUnsubmittedListWithoutScoreViewAssigned() {
+        UserAuthorizationContext admin = adminWithAuthority("other.permission");
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(admin);
+
+        assertThatThrownBy(() -> service.pageUnsubmittedStudents(
+                new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)))
+                .isInstanceOf(AccessDeniedAppException.class)
+                .hasMessage("当前用户无未提交最终成绩名单查询权限");
+        verify(queryRepository, never()).pageUnsubmittedStudents(any(), any());
+    }
+
+    @Test
+    void shouldReturnEmptyUnsubmittedPage() {
+        UserAuthorizationContext admin = adminWithAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED);
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(admin);
+        UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20);
+        given(queryRepository.pageUnsubmittedStudents(any(), same(query)))
+                .willReturn(new PageResult<>(0, List.of()));
+
+        PageResult<UnsubmittedStudentView> page = service.pageUnsubmittedStudents(query);
+
+        assertThat(page.total()).isZero();
+        assertThat(page.records()).isEmpty();
+    }
+
+    @Test
     void shouldReturnAdminDetailAfterAccessValidation() {
         given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(adminContext());
         given(queryRepository.findAdminFinalRecordDetail(41001L)).willReturn(Optional.of(row()));
@@ -117,6 +227,23 @@ class FinalRecordQueryApplicationServiceTest {
     private UserAuthorizationContext adminContext() {
         return new UserAuthorizationContext(1010L, "T1010", "Counselor", "teacher", Set.of("counselor"),
                 Set.of(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED), List.of());
+    }
+
+    private UserAuthorizationContext adminWithAuthority(String authority) {
+        return new UserAuthorizationContext(1010L, "T1010", "Counselor", "teacher", Set.of("counselor"),
+                Set.of(authority), List.of());
+    }
+
+    private UnsubmittedStudentRow unsubmittedRow(Long studentUserId, String userNo, String userName,
+                                                 String grade, String className, Instant lastUpdatedAt) {
+        UnsubmittedStudentRow row = new UnsubmittedStudentRow();
+        row.setStudentUserId(studentUserId);
+        row.setUserNo(userNo);
+        row.setUserName(userName);
+        row.setGrade(grade);
+        row.setClassName(className);
+        row.setLastUpdatedAt(lastUpdatedAt);
+        return row;
     }
 
     private FinalRecordQueryRow row() {

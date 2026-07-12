@@ -10,15 +10,19 @@ import edu.whut.eval.application.finalrecord.query.FinalComponentScoreView;
 import edu.whut.eval.application.finalrecord.query.FinalRecordQueryRow;
 import edu.whut.eval.application.finalrecord.query.FinalRecordStudentView;
 import edu.whut.eval.application.finalrecord.query.FinalRecordView;
+import edu.whut.eval.application.finalrecord.query.UnsubmittedStudentRow;
+import edu.whut.eval.application.finalrecord.query.UnsubmittedStudentView;
 import edu.whut.eval.application.finalrecord.repository.FinalRecordQueryRepository;
 import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.domain.finalrecord.query.FinalRecordAccessContext;
 import edu.whut.eval.domain.finalrecord.query.FinalRecordPageQuery;
+import edu.whut.eval.domain.finalrecord.query.UnsubmittedFinalRecordQuery;
 import edu.whut.eval.domain.shared.PageResult;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.List;
 
 @Service
@@ -64,6 +68,16 @@ public class FinalRecordQueryApplicationService {
         return new PageResult<>(page.total(), page.records().stream().map(this::toAdminListItem).toList());
     }
 
+    public PageResult<UnsubmittedStudentView> pageUnsubmittedStudents(UnsubmittedFinalRecordQuery query) {
+        UserAuthorizationContext admin = userAuthorizationContextAssembler.requiredAuthorizationContext();
+        ensurePermission(admin, AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED, "当前用户无未提交最终成绩名单查询权限");
+        PageResult<UnsubmittedStudentRow> page = finalRecordQueryRepository.pageUnsubmittedStudents(
+                toAccessContext(admin, AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED),
+                query
+        );
+        return new PageResult<>(page.total(), page.records().stream().map(this::toUnsubmittedStudentView).toList());
+    }
+
     public AdminFinalRecordDetailView getAdminFinalRecordDetail(Long finalRecordId) {
         UserAuthorizationContext admin = userAuthorizationContextAssembler.requiredAuthorizationContext();
         ensurePermission(admin, AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED, "当前用户无最终成绩查询权限");
@@ -107,6 +121,19 @@ public class FinalRecordQueryApplicationService {
                 row.getStudentUserName(), row.getOrgUnitId(), row.getOrgUnitName(), row.getAcademicYear(), row.getStatus(),
                 row.getMoralTotal(), row.getIntellectualTotal(), row.getPhysicalTotal(), row.getLaborTotal(),
                 row.getGrandTotal(), row.getSubmittedAt(), row.getConfirmedAt(), row.getVersion());
+    }
+
+    private UnsubmittedStudentView toUnsubmittedStudentView(UnsubmittedStudentRow row) {
+        return new UnsubmittedStudentView(row.getStudentUserId(), blankIfNull(row.getUserNo()), blankIfNull(row.getUserName()),
+                blankIfNull(row.getGrade()), blankIfNull(row.getClassName()), "UNSUBMITTED", instantToString(row.getLastUpdatedAt()));
+    }
+
+    private String blankIfNull(String value) {
+        return value == null ? "" : value;
+    }
+
+    private String instantToString(Instant value) {
+        return value == null ? "" : value.toString();
     }
 
     private FinalComponentScoreView toComponentView(FinalComponentScoreRow row) {

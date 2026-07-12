@@ -2,6 +2,7 @@ package edu.whut.eval.infra.persistence.repository;
 
 import edu.whut.eval.application.finalrecord.query.FinalComponentScoreRow;
 import edu.whut.eval.application.finalrecord.query.FinalRecordQueryRow;
+import edu.whut.eval.application.finalrecord.query.UnsubmittedStudentRow;
 import edu.whut.eval.application.finalrecord.repository.FinalRecordQueryRepository;
 import edu.whut.eval.domain.auth.model.ApplicationScopePredicate;
 import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
@@ -9,6 +10,7 @@ import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.domain.auth.service.AuthorizationScopeEvaluator;
 import edu.whut.eval.domain.finalrecord.query.FinalRecordAccessContext;
 import edu.whut.eval.domain.finalrecord.query.FinalRecordPageQuery;
+import edu.whut.eval.domain.finalrecord.query.UnsubmittedFinalRecordQuery;
 import edu.whut.eval.domain.finalrecord.service.FinalRecordScopePredicateBuilder;
 import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.infra.persistence.mapper.FinalRecordQueryMapper;
@@ -58,6 +60,12 @@ public class MybatisPlusFinalRecordQueryRepository implements FinalRecordQueryRe
                 query.getPageSize()
         );
         return new PageResult<>(total, records);
+    }
+
+    @Override
+    public PageResult<UnsubmittedStudentRow> pageUnsubmittedStudents(FinalRecordAccessContext accessContext,
+                                                                     UnsubmittedFinalRecordQuery query) {
+        throw new UnsupportedOperationException("D-11 unsubmitted final-record repository SQL is implemented in Task 3");
     }
 
     @Override
