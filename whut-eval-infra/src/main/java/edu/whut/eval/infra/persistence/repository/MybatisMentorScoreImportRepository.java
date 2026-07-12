@@ -9,6 +9,7 @@ import edu.whut.eval.infra.persistence.mapper.MentorScoreImportMapper;
 import edu.whut.eval.infra.persistence.repository.row.MentorScoreCategoryTotalRow;
 import edu.whut.eval.infra.persistence.repository.row.MentorScoreImportStudentTargetRow;
 import edu.whut.eval.infra.persistence.repository.row.MentorScoreImportedComponentRow;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -48,8 +49,7 @@ public class MybatisMentorScoreImportRepository implements MentorScoreImportRepo
     public void upsertDraftComponent(MentorScoreImportedComponent component, String importBatchId) {
         FinalRecordDO record = mapper.selectFinalRecordForUpdate(component.studentUserId(), component.academicYear());
         if (record == null) {
-            record = newDraftRecord(component);
-            mapper.insertDraft(record);
+            record = insertOrReloadDraft(component);
         }
         if (!"DRAFT".equals(record.getStatus())) {
             throw new ConflictException("已提交或已确认的最终成绩不允许导入覆盖");
@@ -99,6 +99,20 @@ public class MybatisMentorScoreImportRepository implements MentorScoreImportRepo
         record.setCreatedAt(now);
         record.setUpdatedAt(now);
         return record;
+    }
+
+    private FinalRecordDO insertOrReloadDraft(MentorScoreImportedComponent component) {
+        FinalRecordDO record = newDraftRecord(component);
+        try {
+            mapper.insertDraft(record);
+            return record;
+        } catch (DataIntegrityViolationException exception) {
+            FinalRecordDO concurrentRecord = mapper.selectFinalRecordForUpdate(component.studentUserId(), component.academicYear());
+            if (concurrentRecord == null) {
+                throw new ConflictException("最终成绩保存后读取失败");
+            }
+            return concurrentRecord;
+        }
     }
 
     private MentorScoreImportedComponentRow toComponentRow(Long finalRecordId,
