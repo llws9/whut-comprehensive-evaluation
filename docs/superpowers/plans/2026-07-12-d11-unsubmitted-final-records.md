@@ -216,7 +216,20 @@ void shouldTreatBlankClassesAsEmptyFilter() {
 }
 
 @Test
-void shouldRejectMoreThanFiveHundredRawClasses() {
+void shouldAllowExactlyFiveHundredNormalizedClasses() {
+    List<String> classes = new ArrayList<>();
+    for (int i = 0; i < 500; i++) {
+        classes.add("CS" + i);
+    }
+
+    UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, classes, 1, 20);
+
+    assertThat(query.getClasses()).hasSize(500);
+    assertThat(query.isClassesEmpty()).isFalse();
+}
+
+@Test
+void shouldRejectMoreThanFiveHundredNormalizedClasses() {
     List<String> classes = new ArrayList<>();
     for (int i = 0; i < 501; i++) {
         classes.add("CS" + i);
@@ -228,15 +241,15 @@ void shouldRejectMoreThanFiveHundredRawClasses() {
 }
 
 @Test
-void shouldRejectMoreThanFiveHundredRawClassesEvenWhenValuesRepeat() {
+void shouldApplyClassLimitAfterTrimBlankAndDeduplication() {
     List<String> classes = new ArrayList<>();
     for (int i = 0; i < 501; i++) {
         classes.add("CS2201");
     }
 
-    assertThatThrownBy(() -> new UnsubmittedFinalRecordQuery("2025-2026", null, classes, 1, 20))
-            .isInstanceOf(ValidationException.class)
-            .hasMessage("classes 不合法");
+    UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, classes, 1, 20);
+
+    assertThat(query.getClasses()).containsExactly("CS2201");
 }
 
 @Test
@@ -256,7 +269,7 @@ void shouldRejectOverlongGradeAndClassValues() {
 
 Create `UnsubmittedFinalRecordQuery`:
 
-D-11 keeps `grade` and `classes` as exact-match filter strings without comma splitting or case folding. They are bound through MyBatis parameters and naturally produce no matches when no `org_unit.unit_code` or `org_unit.unit_name` equals the value. To cap request size, reject more than `MAX_CLASSES = 500` raw `classes` parameters before de-duplication, and reject any single normalized `grade` or `classes` value longer than 256 characters.
+D-11 keeps `grade` and `classes` as exact-match filter strings without comma splitting or case folding. They are bound through MyBatis parameters and naturally produce no matches when no `org_unit.unit_code` or `org_unit.unit_name` equals the value. Match the source spec: trim, drop blanks, de-duplicate `classes` while preserving first-seen order, then reject more than `MAX_CLASSES = 500` normalized class values. Also reject any single normalized `grade` or `classes` value longer than 256 characters.
 
 ```java
 package edu.whut.eval.domain.finalrecord.query;
@@ -334,15 +347,15 @@ public class UnsubmittedFinalRecordQuery {
         if (values == null || values.isEmpty()) {
             return List.of();
         }
-        if (values.size() > MAX_CLASSES) {
-            throw new ValidationException("classes 不合法");
-        }
         Set<String> normalized = new LinkedHashSet<>();
         for (String value : values) {
             String trimmed = normalizeFilterValue(value, "classes");
             if (trimmed != null) {
                 normalized.add(trimmed);
             }
+        }
+        if (normalized.size() > MAX_CLASSES) {
+            throw new ValidationException("classes 不合法");
         }
         return List.copyOf(new ArrayList<>(normalized));
     }
@@ -456,19 +469,21 @@ void shouldRenderNullLastUpdatedAtAsEmptyString() {
 }
 
 @Test
-void shouldRenderLastUpdatedAtWithFixedUtcMillisecondPrecision() {
+void shouldRenderLastUpdatedAtWithInstantStringPrecision() {
     UserAuthorizationContext admin = adminWithAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED);
     when(userAuthorizationContextAssembler.requiredAuthorizationContext()).thenReturn(admin);
     UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20);
     when(finalRecordQueryRepository.pageUnsubmittedStudents(any(), same(query)))
-            .thenReturn(new PageResult<>(1, List.of(
-                    unsubmittedRow(1001L, "S001", "Alice", "2022级", "CS2201", Instant.parse("2026-07-12T10:15:30Z"))
+            .thenReturn(new PageResult<>(2, List.of(
+                    unsubmittedRow(1001L, "S001", "Alice", "2022级", "CS2201", Instant.parse("2026-07-12T10:15:30Z")),
+                    unsubmittedRow(1002L, "S002", "Bob", "2022级", "CS2201", Instant.parse("2026-07-12T10:15:30.456Z"))
             )));
 
     PageResult<UnsubmittedStudentView> page = service.pageUnsubmittedStudents(query);
 
     assertThat(page.records()).containsExactly(
-            new UnsubmittedStudentView(1001L, "S001", "Alice", "2022级", "CS2201", "UNSUBMITTED", "2026-07-12T10:15:30.000Z")
+            new UnsubmittedStudentView(1001L, "S001", "Alice", "2022级", "CS2201", "UNSUBMITTED", "2026-07-12T10:15:30Z"),
+            new UnsubmittedStudentView(1002L, "S002", "Bob", "2022级", "CS2201", "UNSUBMITTED", "2026-07-12T10:15:30.456Z")
     );
 }
 
@@ -574,8 +589,6 @@ In `FinalRecordQueryApplicationService`, add imports and this method:
 
 ```java
 import java.time.Instant;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 
 public PageResult<UnsubmittedStudentView> pageUnsubmittedStudents(UnsubmittedFinalRecordQuery query) {
     UserAuthorizationContext admin = userAuthorizationContextAssembler.requiredAuthorizationContext();
@@ -591,9 +604,6 @@ public PageResult<UnsubmittedStudentView> pageUnsubmittedStudents(UnsubmittedFin
 Add helpers:
 
 ```java
-private static final DateTimeFormatter UNSUBMITTED_LAST_UPDATED_FORMATTER =
-        DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
-
 private UnsubmittedStudentView toUnsubmittedView(UnsubmittedStudentRow row) {
     return new UnsubmittedStudentView(row.getStudentUserId(), valueOrEmpty(row.getUserNo()),
             valueOrEmpty(row.getUserName()), valueOrEmpty(row.getGrade()), valueOrEmpty(row.getClassName()),
@@ -601,7 +611,7 @@ private UnsubmittedStudentView toUnsubmittedView(UnsubmittedStudentRow row) {
 }
 
 private String formatLastUpdatedAt(Instant value) {
-    return value == null ? "" : UNSUBMITTED_LAST_UPDATED_FORMATTER.format(value);
+    return value == null ? "" : value.toString();
 }
 
 private String valueOrEmpty(String value) {
@@ -1841,6 +1851,19 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("VAL-4001"));
 
+    MockHttpServletRequestBuilder tooManyMergedClasses = get("/api/admin/final-records/unsubmitted")
+            .param("academicYear", "2025-2026")
+            .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED)));
+    for (int i = 0; i < 250; i++) {
+        tooManyMergedClasses.param("classes", "CS" + i);
+    }
+    for (int i = 250; i < 501; i++) {
+        tooManyMergedClasses.param("classes[]", "CS" + i);
+    }
+    mockMvc.perform(tooManyMergedClasses)
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
+
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
                     .param("pageNo", String.valueOf(Long.MAX_VALUE))
@@ -2083,7 +2106,8 @@ Run:
 
 ```bash
 git diff --check
-BASE_BRANCH=$(git show-ref --verify --quiet refs/heads/main && echo main || echo master)
+BASE_BRANCH="${BASE_BRANCH:-$(git show-ref --verify --quiet refs/heads/main && echo main || (git show-ref --verify --quiet refs/heads/master && echo master || true))}"
+test -n "$BASE_BRANCH" || { echo "Set BASE_BRANCH to the branch to diff against"; exit 1; }
 git diff --stat "$BASE_BRANCH"...HEAD
 rg -n "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
@@ -2147,7 +2171,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - A student with both `DRAFT` and `SUBMITTED` or `CONFIRMED` records for the same year is excluded.
 - `SUBMITTED` and `CONFIRMED` records exclude students.
 - Unknown and `NULL` final-record statuses are ignored and do not contribute to `lastUpdatedAt`.
-- `lastUpdatedAt` is rendered as UTC `yyyy-MM-dd'T'HH:mm:ss.SSS'Z'` with fixed millisecond precision, or empty string.
+- `lastUpdatedAt` is rendered with `Instant.toString()` actual precision, or empty string.
 - DRAFT rows with `updated_at = NULL` keep the student unsubmitted, expose raw `lastUpdatedAt = null`, and render API `lastUpdatedAt` as an empty string.
 - Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
 - Rows without an active `GRADE` parent sort after rows with active grades.
