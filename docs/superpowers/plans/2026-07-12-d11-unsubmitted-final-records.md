@@ -6,7 +6,7 @@
 
 **Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, repeated `classes`, `pageNo`, and `pageSize`; response pagination remains `PageResult<T>` with only `total` and `records`.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student number, then user id; this plan intentionally extends the design SQL with student-number nulls-last before `student number` to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class/grade from the lowest numeric visible membership id.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student number, then user id; this plan intentionally extends the design SQL with student-number nulls-last before `student number` to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership.
 
 **Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -1180,6 +1180,44 @@ void shouldKeepCountAndRowsConsistentWhenFiltersLeaveMultipleVisibleMembershipsF
 }
 
 @Test
+void shouldKeepCountAndPagedRowsConsistentWhenManyVisibleMembershipsCollapseToOneStudent() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4003, 3001, 'CLASS', 'CS2200', '计算机2200班', '/WHUT/CS/CS2022/CS2200', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4004, 3001, 'CLASS', 'CS2203', '计算机2203班', '/WHUT/CS/CS2022/CS2203', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1001, 4003, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6000, 1001, 4002, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (7000, 1001, 4004, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> firstPage = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2200", "CS2202", "CS2203"), 1, 1)
+    );
+    PageResult<UnsubmittedStudentRow> secondPage = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2200", "CS2202", "CS2203"), 2, 1)
+    );
+
+    assertThat(firstPage.total()).isEqualTo(1);
+    assertThat(firstPage.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L);
+    assertThat(secondPage.total()).isEqualTo(1);
+    assertThat(secondPage.records()).isEmpty();
+}
+
+@Test
+void shouldReturnEmptyPageWhenCountIsZeroAndFiltersCannotMatchVisibleRows() {
+    seedRoster();
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2099", List.of("NO_SUCH_CLASS"), 1, 20)
+    );
+
+    assertThat(page.total()).isZero();
+    assertThat(page.records()).isEmpty();
+}
+
+@Test
 void shouldPageInStableOrderWithoutDuplicatingStudents() {
     seedRoster();
 
@@ -1266,7 +1304,7 @@ List<UnsubmittedStudentRow> selectUnsubmittedStudents(@Param("scopeExpression") 
 
 In `FinalRecordQuerySqlProvider`, add:
 
-Count and select SQL must keep the same eligibility predicates: active user, `u.identity = 'STUDENT'`, active primary STUDENT membership, active class, scope expression, grade/classes filters, and the submitted/confirmed `NOT EXISTS` exclusion. This is a hard invariant: the count query's grouped visible-student subquery and the select query's inner `visible` subquery must be isomorphic for all eligibility predicates, including scope, grade, classes, final-record exclusion, membership status, user status, and user identity. If you add, delete, or change one predicate in either SQL, update the other SQL in the same task and add or adjust a count/select alignment assertion. Prefer extracting a small helper for shared predicate fragments if the final implementation starts to drift from the snippets below.
+Count and select SQL must keep the same eligibility predicates: active user, `u.identity = 'STUDENT'`, active primary STUDENT membership, active class, scope expression, grade/classes filters, and the submitted/confirmed `NOT EXISTS` exclusion. This is a hard invariant: the count query's grouped visible-student subquery and the select query's inner `visible` subquery must be isomorphic in FROM/JOIN/WHERE shape for all eligibility predicates, including scope, grade, classes, final-record exclusion, membership status, user status, and user identity. They may differ only in projected columns (`u.id` for count versus `user_id` and `membership_id` for select picking). Do not add display-only joins, HAVING clauses, ordering, or row-shaping predicates to either visible subquery. If you add, delete, or change one predicate in either SQL, update the other SQL in the same task and add or adjust a count/select alignment assertion. Prefer extracting a small helper that renders the shared visible roster subquery from a small alias descriptor if the final implementation starts to drift from the snippets below.
 
 The select `ORDER BY` intentionally adds `CASE WHEN u.user_no IS NULL THEN 1 ELSE 0 END` before `u.user_no ASC`; this extends the design SQL to make dirty `user_no = NULL` data sort after numbered students consistently on H2 and MySQL. The outer `class_ou` / `grade_ou` type and status predicates duplicate inner eligibility checks defensively so future edits to the inner visible subquery cannot silently display inactive or wrong-type org units.
 
@@ -1442,6 +1480,7 @@ public PageResult<UnsubmittedStudentRow> pageUnsubmittedStudents(FinalRecordAcce
     SqlPredicateFragment fragment = rosterScopeFragment(accessContext);
     long total = finalRecordQueryMapper.countUnsubmittedStudents(fragment.getExpression(), fragment.getParameters(), query);
     if (total == 0) {
+        // Optimization only: correctness depends on count/select visible subqueries remaining isomorphic.
         return new PageResult<>(0, List.of());
     }
     List<UnsubmittedStudentRow> records = finalRecordQueryMapper.selectUnsubmittedStudents(
@@ -1684,6 +1723,20 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("pageNo", "abc")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("pageSize", "abc")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
 }
 
 ```
@@ -1744,14 +1797,18 @@ public ApiResponse<PageResult<UnsubmittedStudentView>> pageUnsubmittedFinalRecor
         @RequestParam(required = false) String grade,
         @RequestParam(required = false, name = "classes") List<String> classes,
         @RequestParam(required = false, name = "classes[]") List<String> arrayStyleClasses,
-        @RequestParam(defaultValue = "1") long pageNo,
-        @RequestParam(defaultValue = "20") long pageSize,
+        @RequestParam(defaultValue = "1") String pageNo,
+        @RequestParam(defaultValue = "20") String pageSize,
         HttpServletRequest request) {
     rejectUnsupportedSingleValueParameterShape(request, "academicYear");
     rejectUnsupportedSingleValueParameterShape(request, "grade");
+    rejectUnsupportedSingleValueParameterShape(request, "pageNo");
+    rejectUnsupportedSingleValueParameterShape(request, "pageSize");
     List<String> classFilters = mergeClassFilters(classes, arrayStyleClasses);
     return ApiResponse.success(queryApplicationService.pageUnsubmittedStudents(
-            new UnsubmittedFinalRecordQuery(academicYear, grade, classFilters, pageNo, pageSize)
+            new UnsubmittedFinalRecordQuery(academicYear, grade, classFilters,
+                    parseLongParameter("pageNo", pageNo),
+                    parseLongParameter("pageSize", pageSize))
     ));
 }
 ```
@@ -1778,6 +1835,14 @@ private List<String> mergeClassFilters(List<String> classes, List<String> arrayS
         merged.addAll(arrayStyleClasses);
     }
     return merged;
+}
+
+private long parseLongParameter(String name, String value) {
+    try {
+        return Long.parseLong(value);
+    } catch (NumberFormatException ex) {
+        throw new ValidationException(name + " 不合法");
+    }
 }
 ```
 
@@ -1888,7 +1953,9 @@ Run:
 ```bash
 git diff --check
 git diff --stat main...HEAD
-rg -n "pageNum|pages|className.*List|academicYear 不能为空|SUBMITTED', 'CONFIRMED'.*unsubmitted|application_submission|application_fact" \
+rg -n "pageNum|pages|className.*List|academicYear 不能为空|application_submission|application_fact" \
+  whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
+rg -n "status\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'CONFIRMED'\s*\)|status\s*=\s*'SUBMITTED'|status\s*=\s*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 rg -n "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
@@ -1897,7 +1964,9 @@ rg -n "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*LIKE.*
 If `rg` is unavailable in the execution environment, run the equivalent `grep -RInE` command with the regex in double quotes:
 
 ```bash
-grep -RInE "pageNum|pages|className.*List|academicYear 不能为空|SUBMITTED', 'CONFIRMED'.*unsubmitted|application_submission|application_fact" \
+grep -RInE "pageNum|pages|className.*List|academicYear 不能为空|application_submission|application_fact" \
+  whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
+grep -RInE "status\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'CONFIRMED'\s*\)|status\s*=\s*'SUBMITTED'|status\s*=\s*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 grep -RInE "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
@@ -1906,12 +1975,13 @@ grep -RInE "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*L
 Expected:
 
 - `git diff --check` prints no whitespace errors.
-- The two anti-pattern scans are mandatory. If `rg` is available, run the two `rg` commands above; if `rg` is unavailable, run the two `grep -RInE` fallback commands above over the same directories before claiming Task 5 verification is complete.
-- The anti-pattern scans pass only when they produce no new D-11 hits in changed files. Any new hit fails the verification unless the execution notes name the file/line and explain why the hit is unrelated to D-11 contract drift.
+- The scope, status, and numeric-path scans are mandatory. If `rg` is available, run the three `rg` commands above; if `rg` is unavailable, run the three `grep -RInE` fallback commands above over the same directories before claiming Task 5 verification is complete.
+- The scans pass only when they produce no new D-11 contract-drift hits in changed files. Any new hit fails the verification unless the execution notes name the file/line and explain why the hit is unrelated to D-11 contract drift.
 - No `PageResult` metadata fields are added.
 - No D-11 code uses application/import/export tables.
 - No D-11 invalid academic-year path uses `academicYear 不能为空`.
-- Treat the anti-pattern scans as checks on changed files/new hits, not a requirement for the entire repository to have zero historical matches.
+- Treat the scans as checks on changed files/new hits, not a requirement for the entire repository to have zero historical matches.
+- The status-predicate scan may find intentional D-11 `NOT EXISTS` exclusion of `SUBMITTED`/`CONFIRMED` records in the requested `academicYear`; it must not find D-11 code that requires returned unsubmitted roster rows themselves to have `SUBMITTED` or `CONFIRMED` status.
 - The numeric-path anti-pattern check has zero new D-11 hits, or every hit is manually confirmed unrelated to D-11 `ORG_SUBTREE` SQL. Correct D-11 subtree matching must compare `class_ou.path` to `root_ou.path` with `CONCAT(root_ou.path, '/%')`, never numeric org ids embedded in path strings.
 
 - [ ] **Step 7: Commit final fixes if any**
