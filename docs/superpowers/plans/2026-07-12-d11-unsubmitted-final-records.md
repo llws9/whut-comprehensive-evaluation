@@ -781,7 +781,7 @@ CREATE TABLE org_membership (
 );
 ```
 
-Also ensure the test `final_record` schema preserves the frozen D contract needed by D-11: `status VARCHAR(32) NOT NULL`, `updated_at DATETIME NOT NULL`, and a unique key on `(student_user_id, academic_year)`. Keep all existing Minimal D columns needed by submitted/confirmed list/detail tests. If the current fixture uses simplified `iam_user`, `org_unit`, `org_membership`, or `final_record` tables, replace only the test fixture setup and update old inserts to populate the required non-null columns.
+Also ensure the test `final_record` schema preserves the frozen D contract needed by D-11: `status VARCHAR(32) NOT NULL`, `updated_at DATETIME NOT NULL`, and a unique key on `(student_user_id, academic_year)`. Keep all existing Minimal D columns needed by submitted/confirmed list/detail tests. If the current fixture uses simplified `iam_user`, `org_unit`, `org_membership`, or `final_record` tables, replace only the test fixture setup and update old inserts to populate the required non-null columns. Because the frozen D schema uses plain `DATETIME` without fractional-second precision, repository integration tests must use second-precision timestamp strings and second-precision `Instant` expectations. Service-only mapping tests may still use fractional `Instant` values to prove `Instant.toString()` precision is passed through when the repository supplies such an `Instant`.
 
 Fixture migration rules for existing tests:
 
@@ -859,7 +859,7 @@ void shouldIncludeCurrentRosterStudentsWithNoFinalRecord() {
 @Test
 void shouldKeepDraftStudentsUnsubmittedAndExposeDraftUpdatedAt() {
     seedRoster();
-    insertFinalRecord(11L, 1001L, "2025-2026", "DRAFT", "2026-07-12 10:15:30.123");
+    insertFinalRecord(11L, 1001L, "2025-2026", "DRAFT", "2026-07-12 10:15:30");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -868,7 +868,7 @@ void shouldKeepDraftStudentsUnsubmittedAndExposeDraftUpdatedAt() {
 
     UnsubmittedStudentRow alice = findRow(page, 1001L);
     assertThat(page.total()).isEqualTo(3);
-    assertThat(alice.getLastUpdatedAt()).isEqualTo(Instant.parse("2026-07-12T10:15:30.123Z"));
+    assertThat(alice.getLastUpdatedAt()).isEqualTo(Instant.parse("2026-07-12T10:15:30Z"));
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .contains(1001L);
     assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1001L)
@@ -878,7 +878,7 @@ void shouldKeepDraftStudentsUnsubmittedAndExposeDraftUpdatedAt() {
 @Test
 void shouldKeepDraftStudentsUnsubmittedWhenFilteredByClass() {
     seedRoster();
-    insertFinalRecord(13L, 1001L, "2025-2026", "DRAFT", "2026-07-12 11:15:30.456");
+    insertFinalRecord(13L, 1001L, "2025-2026", "DRAFT", "2026-07-12 11:15:30");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -889,7 +889,7 @@ void shouldKeepDraftStudentsUnsubmittedWhenFilteredByClass() {
     assertThat(page.total()).isEqualTo(2);
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1001L, 1002L);
-    assertThat(alice.getLastUpdatedAt()).isEqualTo(Instant.parse("2026-07-12T11:15:30.456Z"));
+    assertThat(alice.getLastUpdatedAt()).isEqualTo(Instant.parse("2026-07-12T11:15:30Z"));
 }
 
 @Test
@@ -2440,10 +2440,11 @@ Expected: PASS. The provider must use `CAST(... AS BINARY)` for exact `grade` an
 Before committing, run this local contract scan and inspect every hit:
 
 ```bash
+command -v rg
 rg -n "scopeExpression" whut-eval-infra whut-eval-application whut-eval-domain whut-eval-interfaces whut-eval-app/src/test
 ```
 
-If `rg` is unavailable, run the fallback command:
+If `command -v rg` fails, record that in the execution notes and run the fallback command:
 
 ```bash
 grep -RInE "scopeExpression" whut-eval-infra whut-eval-application whut-eval-domain whut-eval-interfaces whut-eval-app/src/test
@@ -2876,8 +2877,8 @@ Add this route before `@GetMapping("/{recordId}")`:
 public ApiResponse<PageResult<UnsubmittedStudentView>> pageUnsubmittedFinalRecords(
         @RequestParam(required = false) String academicYear,
         @RequestParam(required = false) String grade,
-        @RequestParam(defaultValue = "1") String pageNo,
-        @RequestParam(defaultValue = "20") String pageSize,
+        @RequestParam(required = false) String pageNo,
+        @RequestParam(required = false) String pageSize,
         HttpServletRequest request) {
     rejectMultiValueOrArrayStyleParameter(request, "academicYear");
     rejectMultiValueOrArrayStyleParameter(request, "grade");
@@ -2886,8 +2887,8 @@ public ApiResponse<PageResult<UnsubmittedStudentView>> pageUnsubmittedFinalRecor
     List<String> classFilters = mergeClassFilters(request);
     return ApiResponse.success(queryApplicationService.pageUnsubmittedStudents(
             new UnsubmittedFinalRecordQuery(academicYear, grade, classFilters,
-                    parseLongParameter("pageNo", pageNo),
-                    parseLongParameter("pageSize", pageSize))
+                    parseLongParameter("pageNo", pageNo, 1),
+                    parseLongParameter("pageSize", pageSize, 20))
     ));
 }
 ```
@@ -2918,7 +2919,10 @@ private void addParameterValues(List<String> target, String[] values) {
     }
 }
 
-private long parseLongParameter(String name, String value) {
+private long parseLongParameter(String name, String value, long defaultValue) {
+    if (value == null) {
+        return defaultValue;
+    }
     try {
         return Long.parseLong(value);
     } catch (NumberFormatException ex) {
@@ -3069,7 +3073,7 @@ rg -n "scopeExpression" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 ```
 
-Prefer the four `rg` scans above. If `rg` is unavailable in the execution environment, run the four fallback `grep -RInE` commands below as an equivalent substitute; execute one complete scan set, not both. These use POSIX ERE character classes such as `[[:space:]]` instead of `\s`, so their matching semantics align with the `rg` checks:
+Prefer the four `rg` scans above. Before running the scan set, execute `command -v rg` once and record whether `rg` is available. If `rg` is unavailable in the execution environment, run the four fallback `grep -RInE` commands below as an equivalent substitute; execute one complete scan set, not both. These use POSIX ERE character classes such as `[[:space:]]` instead of `\s`, so their matching semantics align with the `rg` checks:
 
 ```bash
 grep -RInE "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
