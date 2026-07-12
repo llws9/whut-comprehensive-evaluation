@@ -579,6 +579,8 @@ import edu.whut.eval.domain.finalrecord.importing.LectureImportResult;
 import edu.whut.eval.domain.finalrecord.importing.LectureImportRow;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -609,6 +611,9 @@ class LectureImportApplicationServiceTest {
 
     @Test
     void shouldRejectInvalidRequestParametersBeforeParsing() {
+        assertThatThrownBy(() -> service.importLectures(new ImportLecturesCommand(new byte[0], "讲座", "2026-05-18T14:30", "2025-2026")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("上传文件不能为空");
         assertThatThrownBy(() -> service.importLectures(command(" ", "2026-05-18T14:30", "2025-2026")))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("title 不能为空");
@@ -642,6 +647,24 @@ class LectureImportApplicationServiceTest {
         assertThatThrownBy(() -> service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026")))
                 .isInstanceOf(AccessDeniedAppException.class)
                 .hasMessage("当前用户无导入权限");
+    }
+
+    @Test
+    void shouldValidateCodePointLengthBoundaries() {
+        String validTitle = "一".repeat(255);
+        String tooLongTitle = "一".repeat(256);
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", "讲座")));
+        given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
+        given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+        given(repository.insertLectureComponents(eq("2025-2026"), any(), any())).willReturn(List.of());
+
+        LectureImportResult result = service.importLectures(command(validTitle, "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.successCount()).isEqualTo(1);
+        assertThatThrownBy(() -> service.importLectures(command(tooLongTitle, "2026-05-18T14:30", "2025-2026")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("title 长度不能超过 255");
     }
 
     private ImportLecturesCommand command(String title, String heldAt, String academicYear) {
@@ -697,6 +720,8 @@ import edu.whut.eval.domain.finalrecord.importing.LectureImportResult;
 import edu.whut.eval.domain.finalrecord.importing.LectureImportRow;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -757,14 +782,30 @@ public class LectureImportApplicationService {
         if (!acquired) {
             throw new ConflictException("同一讲座批次正在导入，请稍后重试");
         }
+        boolean releaseRegistered = registerBatchLockRelease(lectureBatchId);
         try {
             if (repository.lectureBatchExists(request.academicYear(), lectureBatchId)) {
                 throw new ConflictException("同一讲座批次已导入");
             }
             return processRows(request, lectureBatchId, context, rows);
         } finally {
-            batchLock.release(lectureBatchId);
+            if (!releaseRegistered) {
+                batchLock.release(lectureBatchId);
+            }
         }
+    }
+
+    private boolean registerBatchLockRelease(String lectureBatchId) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            return false;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                batchLock.release(lectureBatchId);
+            }
+        });
+        return true;
     }
 
     private LectureImportResult processRows(NormalizedRequest request,
@@ -776,6 +817,9 @@ public class LectureImportApplicationService {
     }
 
     private NormalizedRequest normalize(ImportLecturesCommand command) {
+        if (command.fileContent() == null || command.fileContent().length == 0) {
+            throw new ValidationException("上传文件不能为空");
+        }
         String title = normalizeTitle(command.title());
         LocalDateTime heldAt = normalizeHeldAt(command.heldAt());
         String academicYear = normalizeAcademicYear(command.academicYear());
@@ -877,13 +921,14 @@ void shouldCollectFieldFailuresInFrozenOrderAndRawValueShape() {
     given(parser.parse(any())).willReturn(List.of(
             new LectureImportRow(2L, null, null, "x"),
             new LectureImportRow(3L, "S1", "99999999.999", "x"),
-            new LectureImportRow(4L, "S2", "1.234", "x")
+            new LectureImportRow(4L, "S2", "1.234", "x"),
+            new LectureImportRow(5L, "S3", "1.00", "一".repeat(1001))
     ));
 
     LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
 
     assertThat(result.failedRows()).extracting("code")
-            .containsExactly("STUDENT_NO_REQUIRED", "SCORE_VALUE_OUT_OF_RANGE", "SCORE_VALUE_SCALE_INVALID");
+            .containsExactly("STUDENT_NO_REQUIRED", "SCORE_VALUE_OUT_OF_RANGE", "SCORE_VALUE_SCALE_INVALID", "DISPLAY_TEXT_TOO_LONG");
     assertThat(result.failedRows().get(0).rawValue()).containsOnlyKeys("studentNo", "scoreValue", "displayText");
 }
 
@@ -952,7 +997,7 @@ void shouldCollectStudentScopeAndLockFailuresAndSortFailedRowsByRowNo() {
 }
 
 @Test
-void shouldReleaseAcquiredLockOnDuplicateConflictAndPersistenceFailure() {
+void shouldReleaseAcquiredLockOnDuplicateConflict() {
     given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
     given(parser.parse(any())).willReturn(List.of());
     given(repository.lectureBatchExists(eq("2025-2026"), any())).willReturn(true);
@@ -961,6 +1006,39 @@ void shouldReleaseAcquiredLockOnDuplicateConflictAndPersistenceFailure() {
             .isInstanceOf(ConflictException.class)
             .hasMessage("同一讲座批次已导入");
     assertThat(lock.releases.get()).isEqualTo(1);
+}
+
+@Test
+void shouldReleaseAcquiredLockOnPersistenceFailure() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+    given(parser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", null)));
+    given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
+    given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+    org.mockito.Mockito.doThrow(new ConflictException("最终成绩状态已变更，请刷新后重试"))
+            .when(repository).insertLectureComponents(eq("2025-2026"), any(), any());
+
+    assertThatThrownBy(() -> service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026")))
+            .isInstanceOf(ConflictException.class)
+            .hasMessage("最终成绩状态已变更，请刷新后重试");
+    assertThat(lock.releases.get()).isEqualTo(1);
+}
+
+@Test
+void shouldDeferLockReleaseUntilTransactionCompletionWhenSynchronizationIsActive() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+    given(parser.parse(any())).willReturn(List.of());
+
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+        service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(lock.releases.get()).isZero();
+        TransactionSynchronizationManager.getSynchronizations()
+                .forEach(synchronization -> synchronization.afterCompletion(TransactionSynchronization.STATUS_COMMITTED));
+        assertThat(lock.releases.get()).isEqualTo(1);
+    } finally {
+        TransactionSynchronizationManager.clearSynchronization();
+    }
 }
 
 private LectureImportStudentTarget target(Long studentUserId, String orgPath) {
@@ -986,19 +1064,70 @@ Expected: several tests fail because `processRows` still returns all failures an
 
 - [ ] **Step 3: Implement row processing**
 
-Replace `processRows` with logic that:
+Replace `processRows` and add the helper methods below. This code keeps duplicate detection after field validation, uses real organization paths for `ORG_SUBTREE`, sorts writes for stable locking, merges repository row failures, and lets unexpected repository exceptions propagate for rollback:
 
-- validates fields in frozen order;
-- consumes duplicate keys only for field-valid rows;
-- resolves target by normalized student number;
-- applies `score.import` scope with union semantics and real org path prefix;
-- creates `LectureImportedComponent` values with default display text `request.title() + " 讲座签到"`;
-- sorts mutation candidates by `studentUserId` then `rowNo`;
-- calls repository once with the sorted candidate list;
-- merges repository-returned row-level failures such as `FINAL_RECORD_LOCKED` into `failedRows`;
-- lets unexpected `ConflictException` from repository propagate so the surrounding transaction rolls back.
+```java
+private LectureImportResult processRows(NormalizedRequest request,
+                                        String lectureBatchId,
+                                        UserAuthorizationContext context,
+                                        List<LectureImportRow> rows) {
+    List<LectureImportFailedRow> failedRows = new ArrayList<>();
+    List<ResolvedLectureRow> resolvedRows = new ArrayList<>();
+    Set<String> seenStudentNos = new LinkedHashSet<>();
 
-Use these helpers in `LectureImportApplicationService`:
+    for (LectureImportRow row : rows) {
+        Optional<LectureImportFailedRow> fieldFailure = validateFields(row);
+        if (fieldFailure.isPresent()) {
+            failedRows.add(fieldFailure.get());
+            continue;
+        }
+
+        String studentNo = row.studentNo().trim();
+        if (!seenStudentNos.add(studentNo)) {
+            failedRows.add(failed(row, "DUPLICATE_STUDENT", "studentNo 在文件中重复"));
+            continue;
+        }
+
+        Optional<LectureImportStudentTarget> target = repository.findTarget(studentNo, request.academicYear());
+        if (target.isEmpty()) {
+            failedRows.add(failed(row, "STUDENT_NOT_FOUND", "studentNo 对应学生不存在或未启用"));
+            continue;
+        }
+        if (!canAccess(context, target.get())) {
+            failedRows.add(failed(row, "OUT_OF_SCOPE", "当前用户无权导入该学生讲座成绩"));
+            continue;
+        }
+
+        BigDecimal score = new BigDecimal(row.scoreValue().trim()).setScale(2, RoundingMode.UNNECESSARY);
+        String displayText = isBlank(row.displayText()) ? request.title() + " 讲座签到" : row.displayText().trim();
+        resolvedRows.add(new ResolvedLectureRow(row.rowNo(), target.get().studentUserId(), row.scoreValue().trim(), score, displayText));
+    }
+
+    resolvedRows.sort(Comparator.comparing(ResolvedLectureRow::studentUserId).thenComparing(ResolvedLectureRow::rowNo));
+    List<LectureImportedComponent> components = resolvedRows.stream()
+            .map(row -> new LectureImportedComponent(row.rowNo(), row.studentUserId(), row.scoreValueText(), row.scoreValue(), row.displayText()))
+            .toList();
+    if (!components.isEmpty()) {
+        failedRows.addAll(repository.insertLectureComponents(request.academicYear(), lectureBatchId, components));
+    }
+
+    failedRows.sort(Comparator.comparing(LectureImportFailedRow::rowNo));
+    long totalCount = rows.size();
+    long failedCount = failedRows.size();
+    return new LectureImportResult(
+            lectureBatchId,
+            request.title(),
+            request.heldAt(),
+            request.academicYear(),
+            totalCount,
+            totalCount - failedCount,
+            failedCount,
+            List.copyOf(failedRows)
+    );
+}
+```
+
+Add these helpers in `LectureImportApplicationService`:
 
 ```java
 private Optional<LectureImportFailedRow> validateFields(LectureImportRow row) {
@@ -1050,9 +1179,41 @@ private boolean canAccess(UserAuthorizationContext context, LectureImportStudent
     }
     return false;
 }
-```
 
-Add `ResolvedLectureRow` as a private record and ensure final `failedRows` is sorted by `rowNo`.
+private boolean matchesOrgSubtree(Long rootOrgUnitId, String targetPath) {
+    if (rootOrgUnitId == null || isBlank(targetPath)) {
+        return false;
+    }
+    Optional<String> rootPath = repository.findActiveOrgPath(rootOrgUnitId);
+    if (rootPath.isEmpty() || isBlank(rootPath.get())) {
+        return false;
+    }
+    String normalizedRootPath = trimTrailingSlash(rootPath.get().trim());
+    String normalizedTargetPath = trimTrailingSlash(targetPath.trim());
+    return normalizedTargetPath.equals(normalizedRootPath)
+            || normalizedTargetPath.startsWith(normalizedRootPath + "/");
+}
+
+private String trimTrailingSlash(String path) {
+    if (path.length() > 1 && path.endsWith("/")) {
+        return path.substring(0, path.length() - 1);
+    }
+    return path;
+}
+
+private boolean isBlank(String value) {
+    return value == null || value.isBlank();
+}
+
+private record ResolvedLectureRow(
+        Long rowNo,
+        Long studentUserId,
+        String scoreValueText,
+        BigDecimal scoreValue,
+        String displayText
+) {
+}
+```
 
 - [ ] **Step 4: Verify service behavior**
 
@@ -1061,7 +1222,7 @@ mvn -pl whut-eval-app -am -Dtest=LectureImportApplicationServiceTest test -Dsure
 git diff --check
 ```
 
-Expected: service tests pass. If row-level locked behavior cannot be handled cleanly with the initial repository API, adjust the repository API before committing:
+Expected: service tests pass.
 
 - [ ] **Step 5: Commit**
 
@@ -1102,6 +1263,15 @@ void shouldFindActiveStudentTargetWithoutIdentityAndResolveSmallestPrimaryMember
 }
 
 @Test
+void shouldFindOnlyActiveOrgPathForScopeRoot() {
+    insertOrgUnit(4001L, "临时学院", "/WHUT/TEMP", "INACTIVE");
+
+    assertThat(repository.findActiveOrgPath(2002L)).contains("/WHUT/CS");
+    assertThat(repository.findActiveOrgPath(4001L)).isEmpty();
+    assertThat(repository.findActiveOrgPath(9999L)).isEmpty();
+}
+
+@Test
 void shouldDetectExistingLectureBatchByAcademicYearAndSourceRefId() {
     Long recordId = insertDraftRecord(1001L, "2025-2026");
     insertComponent(recordId, "INTELLECTUAL", "INTELLECTUAL_LECTURE", "1.00", "IMPORT", "LECTURE-20252026-20260518143000-ABCDEF123456");
@@ -1121,7 +1291,22 @@ void shouldInsertLectureComponentsWithoutOverwritingPreviousLectureBatches() {
     assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score WHERE final_record_id = ?", Long.class, recordId)).isEqualTo(2L);
     assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
             .isEqualByComparingTo("3.25");
-    assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(2L);
+    assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(1L);
+}
+
+@Test
+void shouldRecalculateTotalsOncePerExistingFinalRecordAndIncrementVersion() {
+    Long recordId = insertDraftRecord(1001L, "2025-2026");
+    insertComponent(recordId, "INTELLECTUAL", "INTELLECTUAL_APPLICATION", "2.00", "APPLICATION", "app-1");
+
+    repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-EXISTING0001", List.of(
+            component(2L, 1001L, "1.25", "讲座A"),
+            component(3L, 1001L, "2.00", "讲座B")
+    ));
+
+    assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
+            .isEqualByComparingTo("5.25");
+    assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(1L);
 }
 
 @Test
@@ -1162,7 +1347,7 @@ Create `LectureImportMapper` with SQL adapted from `MentorScoreImportMapper`:
         JOIN org_unit ou ON ou.id = om.org_unit_id AND ou.status = 'ACTIVE'
         WHERE u.user_no = #{studentNo}
           AND u.status = 'ACTIVE'
-        ORDER BY om.id ASC
+        ORDER BY ou.id ASC
         LIMIT 1
         """)
 LectureImportStudentTargetRow selectTarget(@Param("studentNo") String studentNo);
@@ -1197,8 +1382,10 @@ Create `MybatisLectureImportRepository`:
   - inserts a new DRAFT final record if missing, reloading on unique-key race;
   - if locked record status is not `DRAFT`, add `LectureImportFailedRow` with `FINAL_RECORD_LOCKED` and continue;
   - insert a new `final_component_score` with `category_code='INTELLECTUAL'`, `item_code='INTELLECTUAL_LECTURE'`, `source_type='IMPORT'`, `source_ref_id=lectureBatchId`;
-  - recalculate totals from all current components;
-  - if `updateTotals` returns 0 after a DRAFT lock, throw `ConflictException("最终成绩状态已变更，请刷新后重试")` so the outer transaction rolls back.
+  - remember the touched `final_record_id` in insertion order.
+- After all insertions, recalculate totals once per touched `final_record_id` from all current components. This keeps version increments deterministic when multiple lecture rows target the same student in one repository call.
+- If `updateTotals` returns 0 after a DRAFT lock, throw `ConflictException("最终成绩状态已变更，请刷新后重试")` so the outer transaction rolls back.
+- A partial-success batch is intentionally not idempotent in Minimal D-8: if any component already exists for `lectureBatchId`, `lectureBatchExists` makes a later same-batch request return 409. Operators must change `title` or `heldAt` to create a new deterministic batch id for a retry; D-8 does not add batch deletion or patch-retry semantics.
 
 - [ ] **Step 5: Verify repository**
 
@@ -1490,8 +1677,6 @@ public ApiResponse<LectureImportResultResponse> importLectures(
     byte[] bytes;
     try {
         bytes = file.getBytes();
-    } catch (FileStorageException exception) {
-        throw exception;
     } catch (IOException exception) {
         throw new FileStorageException("文件处理失败，请稍后重试", exception);
     }
@@ -1502,7 +1687,7 @@ public ApiResponse<LectureImportResultResponse> importLectures(
 }
 ```
 
-Use `DateTimeFormatter.ISO_LOCAL_DATE_TIME` for `heldAt` response so whole seconds render as `2026-05-18T14:30:00`.
+Use `DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")` for `heldAt` response so whole seconds always render as `2026-05-18T14:30:00`.
 
 - [ ] **Step 4: Verify controller**
 
