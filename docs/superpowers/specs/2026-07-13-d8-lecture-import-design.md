@@ -75,7 +75,7 @@ Request parameters:
 |---|---:|---|
 | `file` | yes | Non-empty Excel file. |
 | `title` | yes | Non-blank after trim, max 255 characters. Leading and trailing whitespace are removed; internal whitespace, case, and Unicode normalization form are preserved. |
-| `heldAt` | yes | ISO local date-time accepted by `LocalDateTime.parse`; seconds may be omitted, fractional seconds are accepted and truncated, and timezone offsets are not accepted. The value is normalized to whole seconds in the response and batch id. |
+| `heldAt` | yes | ISO local date-time parsed with `LocalDateTime.parse(heldAt)` / `DateTimeFormatter.ISO_LOCAL_DATE_TIME`. Accepted examples include `2026-05-18T14:30`, `2026-05-18T14:30:00`, and `2026-05-18T14:30:00.123`; omitted seconds default to `00`, fractional seconds are truncated, and timezone offsets are not accepted. The value is normalized to whole seconds in the response and batch id. |
 | `academicYear` | yes | Trimmed before validation; must match `^\d{4}-\d{4}$`, and the second year must equal first year + 1. |
 
 Successful response:
@@ -147,7 +147,7 @@ Frozen row-level failure mapping:
 | `studentNo` blank | `STUDENT_NO_REQUIRED` | `studentNo 不能为空` |
 | `scoreValue` blank | `SCORE_VALUE_REQUIRED` | `scoreValue 不能为空` |
 | `scoreValue` does not match strict decimal text | `SCORE_VALUE_INVALID` | `scoreValue 必须是数字` |
-| `scoreValue < 0` or `scoreValue > 99999999.99` | `SCORE_VALUE_OUT_OF_RANGE` | `scoreValue 必须在 0 到 99999999.99 之间` |
+| `scoreValue > 99999999.99` | `SCORE_VALUE_OUT_OF_RANGE` | `scoreValue 必须在 0 到 99999999.99 之间` |
 | `scoreValue` has more than 2 decimal places | `SCORE_VALUE_SCALE_INVALID` | `scoreValue 最多保留 2 位小数` |
 | `displayText` longer than 1000 characters after trim | `DISPLAY_TEXT_TOO_LONG` | `displayText 长度不能超过 1000` |
 | duplicate field-valid `studentNo` in the same workbook | `DUPLICATE_STUDENT` | `同一讲座批次中学生重复` |
@@ -167,7 +167,7 @@ Header row is row 1. Header names are case-sensitive and must appear in this exa
 |---:|---|---:|---|
 | A | `studentNo` | yes | Existing active `iam_user.user_no`. |
 | B | `scoreValue` | yes | Strict decimal text matching `^[0-9]+(\.[0-9]+)?$`, `0 <= value <= 99999999.99`, at most 2 decimal places. Thousand separators, percentages, currency symbols, and scientific notation are invalid. The upper bound follows `DECIMAL(10,2)`. |
-| C | `displayText` | no | Max 1000 characters after trim. Blank becomes the normalized request title followed by ` 讲座签到`. |
+| C | `displayText` | no | Max 1000 characters after trim. When blank, the normalized row display text is the normalized request title followed by ` 讲座签到`. |
 
 Extra columns after column C are ignored.
 
@@ -183,6 +183,7 @@ Header error messages:
 
 - Missing header row: `导入模板错误：缺少表头`.
 - Header mismatch in the first three columns: `导入模板错误：第{columnIndex}列表头应为 {expectedHeader}`.
+- Workbook with no sheets: `导入模板错误：缺少工作表`.
 - Unreadable workbook: `导入模板错误：文件不可解析`.
 
 ## Import Semantics
@@ -233,6 +234,7 @@ Batch-level concurrency:
 
 - The implementation must serialize imports for the same `lectureBatchId` before row mutation.
 - The preferred implementation is an application-level lock backed by the database, such as `SELECT GET_LOCK(CONCAT('D8_LECTURE:', ?), 30)` on MySQL and an H2-test equivalent lock abstraction.
+- The lock must be exposed behind a narrow `LectureImportBatchLock` port. Production wiring must use the MySQL connection-bound named-lock implementation. H2 tests must wire an explicit test implementation, such as a keyed JVM `ReentrantLock`, so service-level same-batch serialization is testable even though H2 has no `GET_LOCK`; that test implementation must not be used in production profiles.
 - The batch lock must be acquired and released on the same database connection that owns the request transaction, so the lock lifetime covers the whole import transaction.
 - An implementation may use an equivalent durable claim or unique-key strategy, but it must not add a general import batch table in this D-8 scope.
 - If the lock cannot be acquired because the same batch is already running or has just been persisted by another transaction, the request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
@@ -251,7 +253,7 @@ Per-student final-record concurrency:
 Transaction scope:
 
 - The whole import runs in one request transaction after request-level validation and parsing pass.
-- Duplicate-batch locking, duplicate-batch pre-check, component inserts, and total updates all occur inside that one transaction and on the same database connection when the chosen lock implementation is connection-bound.
+- Duplicate-batch locking, duplicate-batch pre-check, student eligibility lookup, active primary organization resolution, `score.import` scope matching, component inserts, and total updates all occur inside that one transaction and on the same database connection when the chosen lock implementation is connection-bound.
 - Expected row-level business failures, including missing student, out-of-scope target, locked final record, and duplicate student, are collected in `failedRows` and must not be thrown as transaction-rolling exceptions.
 - Unexpected infrastructure or persistence failures roll back the whole request transaction. In that case the HTTP response is a request-level failure and no partial successful rows are committed.
 - `final_record.version` is an optimistic-change counter for final-record consumers. D-8 increments it on every successful row mutation. D-8 does not require the caller to provide an expected version, but the conditional `status = 'DRAFT'` update protects against concurrent submit/confirm transitions.
@@ -265,7 +267,7 @@ A row can import only when:
 - the user has an `org_membership` row with `is_primary = 1` and `status = 'ACTIVE'`;
 - that primary membership points to an `org_unit` with `status = 'ACTIVE'`.
 
-D-8 imposes no `org_unit.unit_type` filter. Any active primary organization is eligible for lookup; import authorization is then decided by the `score.import` scope rules against that active primary organization.
+D-8 imposes no `org_unit.unit_type` filter. Any active primary organization is eligible for lookup; import authorization is then decided by the `score.import` scope rules against that active primary organization. If dirty data contains more than one active primary membership for the same user, D-8 deterministically selects the row with the smallest `org_membership.id` after joining to active `org_unit`; it does not make authorization depend on undefined SQL row order.
 
 The implementation must not depend on a nonexistent `iam_user.identity` column.
 
@@ -282,6 +284,7 @@ The application service must also build the current `UserAuthorizationContext` a
 
 Scope semantics:
 
+- Multiple active `score.import` scope rules are evaluated with union semantics. A row is allowed when any supported active scope rule matches. Unsupported scope types are ignored for D-8 and must not override a matching supported allow rule. If there is no supported match, the row fails with `OUT_OF_SCOPE`.
 - `ALL` allows all eligible students.
 - `ORG_UNIT` allows only the exact active primary org unit.
 - `ORG_SUBTREE` resolves the root `org_unit.path` and matches the student's active primary org path by real path prefix.
@@ -309,7 +312,7 @@ D-8 never submits or confirms a final record.
 D-8 is insert-only for successful rows:
 
 - Insert one `final_component_score` per successful student row.
-- Use `displayText` when present; otherwise default to the normalized request title followed by ` 讲座签到`.
+- Use the normalized row display text from the Excel Template section.
 - Use the request-derived `lectureBatchId` as `sourceRefId`.
 - Preserve existing imported and application components.
 - Do not update existing D-7 mentor/fixed-score components.
@@ -338,7 +341,7 @@ Totals must still be recalculated from all current components:
 
 `grand_total = moral_total + intellectual_total + physical_total + labor_total`.
 
-All persisted totals use scale 2.
+All persisted totals use scale 2. Totals are calculated with exact `BigDecimal` addition from current component values and persisted with scale 2 using `RoundingMode.HALF_UP` if scaling is needed.
 
 ## Architecture
 
@@ -386,10 +389,12 @@ Add tests proving:
 - valid workbook rows parse with correct `rowNo`;
 - blank rows are skipped and not counted;
 - extra columns after `displayText` are ignored;
+- byte arrays larger than 5 MB fail before POI opens the workbook with the frozen size message;
 - workbooks over 5000 non-blank data rows fail with the frozen size message;
 - missing header fails with `ValidationException`;
 - mismatched header fails with the expected column message;
-- formatted values that are not strict decimal text, such as `1,234.56`, `50%`, or `5E-1`, fail with `SCORE_VALUE_INVALID`;
+- workbooks with no sheets fail with `导入模板错误：缺少工作表`;
+- formatted values that are not strict decimal text, such as `-1`, `1,234.56`, `50%`, or `5E-1`, fail with `SCORE_VALUE_INVALID`;
 - unreadable bytes fail with `导入模板错误：文件不可解析`.
 
 ### Application Tests
@@ -400,6 +405,7 @@ Add tests proving:
 - `academicYear` accepts only the concrete `^\d{4}-\d{4}$` format with the second year equal to first year + 1;
 - blank or overlong `title` fails with the frozen message;
 - invalid `heldAt` fails with `heldAt 格式非法`;
+- `heldAt` accepts omitted seconds, truncates fractional seconds, and rejects timezone offsets;
 - deterministic `lectureBatchId` is returned for the same normalized title, heldAt, and academicYear;
 - title trimming and whole-second heldAt normalization feed both `lectureBatchId` and response `heldAt`;
 - `lectureBatchId` uses the 12-character SHA-256 prefix and fits `source_ref_id VARCHAR(64)`;
@@ -414,6 +420,7 @@ Add tests proving:
 - a field-valid row that later fails student lookup or scope still consumes the duplicate-student key;
 - a row for a missing or inactive student appears in `failedRows`;
 - a row outside `score.import` scope appears in `failedRows`;
+- multiple active `score.import` scopes use union semantics and unsupported scopes do not override a supported match;
 - `SUBMITTED` and `CONFIRMED` targets appear in `failedRows` and are not mutated;
 - successful rows update totals and increment version;
 - mixed valid and invalid rows return a result with accurate counts;
@@ -430,6 +437,7 @@ Use H2 MySQL mode and local test schema to verify:
 
 - active student lookup does not require `iam_user.identity`;
 - active primary membership and active `org_unit` are required, without filtering by `org_unit.unit_type`;
+- multiple active primary memberships are resolved by the smallest `org_membership.id`;
 - inactive users and inactive memberships are excluded;
 - `ORG_SUBTREE` scope uses real path-prefix matching and rejects similar prefixes;
 - inserted draft records satisfy all non-null `final_record` columns;
@@ -437,8 +445,8 @@ Use H2 MySQL mode and local test schema to verify:
 - generated `lectureBatchId` fits `final_component_score.source_ref_id VARCHAR(64)`;
 - two lecture batches for the same student create two components instead of overwriting;
 - duplicate-batch existence checks join through `final_record.academic_year`;
-- duplicate-batch locking or equivalent serialization prevents two same-batch request transactions from both inserting rows;
-- totals are recalculated from all current components.
+- duplicate-batch locking or the explicit H2 test lock adapter prevents two same-batch request transactions from both inserting rows;
+- totals are recalculated from all current components and persisted at scale 2.
 
 ### MVC and Security Tests
 
