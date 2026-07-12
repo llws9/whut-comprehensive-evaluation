@@ -1001,10 +1001,12 @@ void shouldExcludeInactiveUsersInactiveMembershipsAndNonPrimaryMemberships() {
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1004, 'S004', 'InactiveUser', 'INACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1005, 'S005', 'InactiveMembership', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1006, 'S006', 'NonPrimary', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1007, 'S007', 'LockedUser', 'LOCKED')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1008, 'T008', 'TeacherMembership', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4001, 'STUDENT', 1, 'INACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4001, 'STUDENT', 0, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5007, 1007, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5008, 1008, 4001, 'TEACHER', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
@@ -1014,7 +1016,8 @@ void shouldExcludeInactiveUsersInactiveMembershipsAndNonPrimaryMemberships() {
 
     assertThat(page.total()).isEqualTo(3);
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1001L, 1002L, 1003L);
+            .containsExactly(1001L, 1002L, 1003L)
+            .doesNotContain(1007L);
 }
 
 @Test
@@ -1891,6 +1894,31 @@ private void assertCountMatchesFullRecords(FinalRecordAccessContext accessContex
 }
 
 @Test
+void shouldKeepCountAndSelectAlignedWhenGradeAndClassFiltersNarrowCrossGradeMemberships() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3004, 2002, 'GRADE', 'GRADE_ALIGN', '计数对齐年级', '/WHUT/CS/GRADE_ALIGN', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3005, 2002, 'GRADE', 'GRADE_OTHER', '其他年级', '/WHUT/CS/GRADE_OTHER', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4010, 3004, 'CLASS', 'ALIGN_CODE', '计数对齐班', '/WHUT/CS/GRADE_ALIGN/ALIGN_CODE', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4011, 3005, 'CLASS', 'ALIGN_OTHER', '其他命中班', '/WHUT/CS/GRADE_OTHER/ALIGN_OTHER', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1009, 'S009', 'CrossGradeAligned', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1010, 'S010', 'ClassOnlyDistractor', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4001, 1009, 4010, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6001, 1009, 4011, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6002, 1010, 4011, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "GRADE_ALIGN", List.of("ALIGN_CODE", "ALIGN_OTHER"), 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(1);
+    assertThat(page.records()).hasSize(1);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1009L);
+    assertThat(findRow(page, 1009L).getClassName()).isEqualTo("计数对齐班");
+}
+
+@Test
 void shouldReturnEmptyPageWhenCountIsZeroAndFiltersCannotMatchVisibleRows() {
     seedRoster();
 
@@ -1985,10 +2013,13 @@ void shouldSortRowsWithActiveGradeBeforeRowsWithoutActiveGrade() {
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'INACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4003, 3002, 'CLASS', 'CS2301', '计算机2301班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4004, 3002, 'CLASS', 'CS2299', '无有效年级较早班', '/WHUT/CS/CS2023/CS2299', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1005, 'S005', 'NoGradeLowNumber', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1006, 'S006', 'GradeAfterNoGradeNumber', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1007, 'S004', 'NoGradeEarlierClass', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4003, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4001, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5007, 1007, 4004, 'STUDENT', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -1996,9 +2027,11 @@ void shouldSortRowsWithActiveGradeBeforeRowsWithoutActiveGrade() {
     );
 
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1001L, 1002L, 1006L, 1003L, 1005L);
+            .containsExactly(1001L, 1002L, 1006L, 1003L, 1007L, 1005L);
     assertThat(page.records().subList(0, 4)).allSatisfy(row -> assertThat(row.getGrade()).isNotNull());
-    assertThat(page.records().subList(4, 5)).allSatisfy(row -> assertThat(row.getGrade()).isNull());
+    assertThat(page.records().subList(4, 6)).allSatisfy(row -> assertThat(row.getGrade()).isNull());
+    assertThat(page.records().subList(4, 6)).extracting(UnsubmittedStudentRow::getClassName)
+            .containsExactly("无有效年级较早班", "计算机2301班");
 }
 ```
 
@@ -3202,6 +3235,9 @@ Run:
 
 ```bash
 git diff --check
+git status --short
+git diff --stat HEAD
+git diff --name-status HEAD
 BASE_BRANCH="${BASE_BRANCH:-$(git show-ref --verify --quiet refs/heads/main && echo main || (git show-ref --verify --quiet refs/heads/master && echo master || true))}"
 if [ -n "$BASE_BRANCH" ]; then
   git diff --stat "$BASE_BRANCH"...HEAD
@@ -3214,7 +3250,7 @@ else
     exit 1
   fi
 fi
-rg -n "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
+rg -n "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact|application_review_log|import_job|import_error_item|export_job" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 rg -n "status[[:space:]]+IN[[:space:]]*\([[:space:]]*'SUBMITTED'[[:space:]]*,[[:space:]]*'CONFIRMED'[[:space:]]*\)|status[[:space:]]*=[[:space:]]*'SUBMITTED'|status[[:space:]]*=[[:space:]]*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
@@ -3227,7 +3263,7 @@ rg -n "scopeExpression" \
 Prefer the four `rg` scans above. Before running the scan set, execute `command -v rg` once and record whether `rg` is available. If `rg` is unavailable in the execution environment, run the four fallback `grep -RInE` commands below as an equivalent substitute; execute one complete scan set, not both. These use POSIX ERE character classes such as `[[:space:]]` instead of `\s`, so their matching semantics align with the `rg` checks:
 
 ```bash
-grep -RInE "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
+grep -RInE "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact|application_review_log|import_job|import_error_item|export_job" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 grep -RInE "status[[:space:]]+IN[[:space:]]*\([[:space:]]*'SUBMITTED'[[:space:]]*,[[:space:]]*'CONFIRMED'[[:space:]]*\)|status[[:space:]]*=[[:space:]]*'SUBMITTED'|status[[:space:]]*=[[:space:]]*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
@@ -3240,13 +3276,14 @@ grep -RInE "scopeExpression" \
 Expected:
 
 - `git diff --check` prints no whitespace errors.
+- `git status --short`, `git diff --stat HEAD`, and `git diff --name-status HEAD` are run after the last edit and before the final commit. They are the authoritative final working-tree diff review for uncommitted or staged changes. The base-branch or fallback commit-range diff is an additional branch-history view and does not replace the current-working-tree review.
 - The scope, status, numeric-path, and `scopeExpression` scans are mandatory. Run either the four `rg` commands or, when `rg` is unavailable, the four `grep -RInE` fallback commands over the same directories. Task 5 verification is incomplete unless one full scan set has been executed and every hit has been accepted or rejected using the rules below.
 - The `scopeExpression` scan is mandatory. It may find the mapper/provider infrastructure and repository-internal builder, but must not find a D-11 public API, request object, controller, service, repository contract, or DTO that accepts a caller-provided raw SQL fragment.
 - The scans pass only when they produce no new D-11 contract-drift hits in changed files. Any new hit fails the verification unless the execution notes name the file/line and explain why the hit is unrelated to D-11 contract drift.
 - No `PageResult` metadata fields are added.
 - Controller tests assert the D-11 `$.data` object has exactly `total` and `records`, with no `pages`, `pageNum`, `pageNo`, or `pageSize`.
 - No D-11 request or response contract adds `classId`.
-- No D-11 code uses application/import/export tables.
+- No D-11 code uses application/import/export tables, including `application_submission`, `application_fact`, `application_review_log`, `import_job`, `import_error_item`, or `export_job`.
 - No D-11 invalid academic-year path uses `academicYear 不能为空`.
 - Treat the scans as checks on changed files/new hits, not a requirement for the entire repository to have zero historical matches.
 - The status-predicate scan may find intentional D-11 `NOT EXISTS` exclusion of `SUBMITTED`/`CONFIRMED` records in the requested `academicYear`; it must not find D-11 code that requires returned unsubmitted roster rows themselves to have `SUBMITTED` or `CONFIRMED` status.
@@ -3294,6 +3331,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `lastUpdatedAt` is a UTC `Instant` at the mapper/service boundary and is rendered with `Instant.toString()` actual precision, or empty string.
 - Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
 - Rows with an active `GRADE` parent sort before rows whose selected class has no active grade parent.
+- Rows without an active `GRADE` parent have explicit ordering coverage for more than one no-grade student, proving their group continues by class code, student number, and user id.
 - When the lowest numeric visible membership's class has no active grade parent, display `grade = null` for that selected class even if a higher visible membership has an active grade.
 - `ORG_UNIT` is exact class id only.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
@@ -3310,6 +3348,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
 - Cross-grade duplicate memberships are filtered by `grade` before collapse, so count, row selection, and displayed grade/class all come from the visible membership set.
 - Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
+- Count/select alignment tests include a cross-grade duplicate-membership case with both `grade` and `classes` filters active, proving count and select narrow the same visible membership subset.
 - Count and select SQL keep eligibility predicates aligned: active user, student membership, scope, grade/classes, and submitted/confirmed exclusion must change together.
 - Grade/classes exact filters are case-sensitive, use code-or-name OR semantics, include distinct code/name matches, and do not duplicate a student when both sides match the same org unit.
 - Reversing the request order of `classes` values does not change the selected display membership, returned student ids, total count, or grade/class display values.
