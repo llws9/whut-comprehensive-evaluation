@@ -1171,6 +1171,26 @@ void shouldDeduplicateSameStudentWhenClassCodeAndNameMatchDifferentVisibleClasse
 }
 
 @Test
+void shouldUnionGradeCodeAndNameMatchesWithoutDuplicatingStudents() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3003, 2002, 'GRADE', 'GRADE_MATCH', 'GRADE_MATCH', '/WHUT/CS/GRADE_MATCH', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4009, 3003, 'CLASS', 'GM2301', '年级同名班', '/WHUT/CS/GRADE_MATCH/GM2301', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1008, 'S008', 'GradeSameUnitBothSides', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5008, 1008, 4009, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> sameGradeUnit = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "GRADE_MATCH", null, 1, 20)
+    );
+
+    assertThat(sameGradeUnit.total()).isEqualTo(1);
+    assertThat(sameGradeUnit.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1008L);
+    assertThat(sameGradeUnit.records()).filteredOn(row -> row.getStudentUserId() == 1008L)
+            .hasSize(1);
+}
+
+@Test
 void shouldReturnEmptyPageForUnsupportedScopeOnly() {
     seedRoster();
 
@@ -2123,12 +2143,18 @@ public final class D11ScopeSqlShape {
                 + " OR " + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}") + ")";
         String subtreeThenOrg = "(" + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}")
                 + " OR " + orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}") + ")";
+        String multiOrgThenSingleSubtree = "(" + orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}, #{scopeFragment.parameters.d11OrgUnit1}")
+                + " OR " + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}") + ")";
+        String singleOrgThenMultiSubtree = "(" + orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}")
+                + " OR " + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}, #{scopeFragment.parameters.d11Subtree1}") + ")";
         if (!isAllowedScopeExpression(normalize(singleOrgUnit))
                 || !isAllowedScopeExpression(normalize(multiOrgUnit))
                 || !isAllowedScopeExpression(normalize(singleSubtree))
                 || !isAllowedScopeExpression(normalize(multiSubtree))
                 || !isAllowedScopeExpression(normalize(orgThenSubtree))
-                || !isAllowedScopeExpression(normalize(subtreeThenOrg))) {
+                || !isAllowedScopeExpression(normalize(subtreeThenOrg))
+                || !isAllowedScopeExpression(normalize(multiOrgThenSingleSubtree))
+                || !isAllowedScopeExpression(normalize(singleOrgThenMultiSubtree))) {
             throw new IllegalStateException("Generated D-11 scope SQL must match whitelist");
         }
     }
@@ -2173,21 +2199,33 @@ private String scopeExpression(Map<String, Object> params, String classAlias) {
     if (expression == null || expression.isBlank()) {
         return "1 = 0";
     }
-    validateD11ScopeExpression(expression);
+    validateD11ScopeExpression(expression, fragment.getParameters());
     // D-11 only replaces the fixed visible class org_unit alias placeholder.
     return expression.replace("__D11_CLASS_ALIAS__", classAlias);
 }
 
-private void validateD11ScopeExpression(String expression) {
+private void validateD11ScopeExpression(String expression, Map<String, Object> parameters) {
     String normalized = D11ScopeSqlShape.normalize(expression);
-    if (D11ScopeSqlShape.isAllowedScopeExpression(normalized)) {
-        return;
+    if (!D11ScopeSqlShape.isAllowedScopeExpression(normalized)) {
+        throw new IllegalArgumentException("Unsafe D-11 scope expression");
     }
-    throw new IllegalArgumentException("Unsafe D-11 scope expression");
+    if (!referencedScopeParameterNames(normalized).equals(parameters.keySet())) {
+        throw new IllegalArgumentException("Unsafe D-11 scope expression");
+    }
+}
+
+private Set<String> referencedScopeParameterNames(String normalizedExpression) {
+    Pattern pattern = Pattern.compile("#\\{scopeFragment\\.parameters\\.([A-Za-z0-9_]+)\\}");
+    Matcher matcher = pattern.matcher(normalizedExpression);
+    Set<String> names = new LinkedHashSet<>();
+    while (matcher.find()) {
+        names.add(matcher.group(1));
+    }
+    return names;
 }
 ```
 
-Build the classes predicate outside the SQL template: when `query.isClassesEmpty()` is true, render the fixed predicate `TRUE`; otherwise render the two case-sensitive class code/name membership predicates. Add imports for `UnsubmittedFinalRecordQuery`, `D11ScopeSqlShape`, `SqlPredicateFragment`, `ArrayList`, and `List` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value. Add a provider unit/integration test that passes a `SqlPredicateFragment` with expression `(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0})) OR 1 = 1` and asserts `buildCountUnsubmittedStudents(...)` throws `IllegalArgumentException`.
+Build the classes predicate outside the SQL template: when `query.isClassesEmpty()` is true, render the fixed predicate `TRUE`; otherwise render the two case-sensitive class code/name membership predicates. Add imports for `UnsubmittedFinalRecordQuery`, `D11ScopeSqlShape`, `SqlPredicateFragment`, `ArrayList`, `LinkedHashSet`, `List`, `Map`, `Set`, `Matcher`, and `Pattern` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value. Scope-fragment validation must reject both non-whitelisted SQL shapes and fragments whose expression placeholder names do not exactly match `SqlPredicateFragment.getParameters().keySet()`. Add a provider unit/integration test that passes a `SqlPredicateFragment` with expression `(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0})) OR 1 = 1` and asserts `buildCountUnsubmittedStudents(...)` throws `IllegalArgumentException`.
 
 In `SqlPredicateFragment`, add a D-11-specific explicit true fragment while preserving the existing blank-expression `allowAll()` behavior used by existing translators:
 
@@ -2302,6 +2340,24 @@ void shouldRejectUnsafeD11ScopeExpressionFragments() {
 }
 
 @Test
+void shouldRejectD11ScopeFragmentsWhenExpressionAndParameterMapDisagree() {
+    FinalRecordQuerySqlProvider provider = new FinalRecordQuerySqlProvider();
+    Map<String, Object> params = new HashMap<>();
+    params.put("scopeFragment", new SqlPredicateFragment(
+            "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}") + ")",
+            Map.of("d11Typo0", 4001L)
+    ));
+    params.put("query", new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20));
+
+    assertThatThrownBy(() -> provider.buildCountUnsubmittedStudents(params))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessage("Unsafe D-11 scope expression");
+    assertThatThrownBy(() -> provider.buildSelectUnsubmittedStudents(params))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessage("Unsafe D-11 scope expression");
+}
+
+@Test
 void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
     FinalRecordQuerySqlProvider provider = new FinalRecordQuerySqlProvider();
 
@@ -2333,6 +2389,16 @@ void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
             "(" + D11ScopeSqlShape.orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}")
                     + " OR " + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}") + ")",
             Map.of("d11Subtree0", 2002L, "d11OrgUnit0", 4001L)
+    ), " OR ");
+    assertProviderAccepts(provider, new SqlPredicateFragment(
+            "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}, #{scopeFragment.parameters.d11OrgUnit1}")
+                    + " OR " + D11ScopeSqlShape.orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}") + ")",
+            Map.of("d11OrgUnit0", 4001L, "d11OrgUnit1", 4002L, "d11Subtree0", 2002L)
+    ), " OR ");
+    assertProviderAccepts(provider, new SqlPredicateFragment(
+            "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}")
+                    + " OR " + D11ScopeSqlShape.orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}, #{scopeFragment.parameters.d11Subtree1}") + ")",
+            Map.of("d11OrgUnit0", 4001L, "d11Subtree0", 2002L, "d11Subtree1", 3001L)
     ), " OR ");
 }
 
@@ -2689,7 +2755,23 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
+                    .param("pageNo", "")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("pageNo 不合法"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
                     .param("pageSize", "abc")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("pageSize 不合法"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("pageSize", "")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("VAL-4001"))
@@ -3037,10 +3119,12 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `classes` and `classes[]` are merged before `UnsubmittedFinalRecordQuery` performs trim, blank dropping, de-duplication, length checks, and the normalized `MAX_CLASSES = 500` check.
 - Controller tests prove raw `classes` values are merged before raw `classes[]` values, and de-duplication keeps the first normalized value after that merged order.
 - Controller validation tests assert representative `$.message` values for invalid `academicYear`, `grade`, `pageNo`, and `pageSize`, not only `VAL-4001`.
+- Controller validation tests lock empty-string `pageNo` and `pageSize` as `VAL-4001` with `<field> 不合法`; empty strings must not silently fall back to defaults.
 - Commas inside `grade` and `classes` remain ordinary exact-match characters.
 - `PageResult<T>` remains only `total` and `records`.
 - Controller JSON tests lock `PageResult<T>` to exactly `total` and `records`.
 - Roster SQL starts from active `iam_user`, active primary `org_membership`, and active class `org_unit`.
+- Grade and class code-or-name OR filters must not duplicate students when a single org unit matches both code and name.
 - Roster SQL requires `org_membership.membership_type = 'STUDENT'`; it does not depend on an `iam_user.identity` database column.
 - Inactive `iam_user`, inactive `org_membership`, non-primary `org_membership`, and non-STUDENT membership types are excluded by repository tests.
 - Inactive class `org_unit` rows and non-CLASS `org_unit` rows are excluded by repository tests.
