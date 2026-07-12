@@ -4,7 +4,7 @@
 
 **Goal:** Build `GET /api/admin/final-records/unsubmitted` so authorized admins can page current active in-scope students who have not submitted or confirmed final records for an academic year.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, excludes `SUBMITTED` and `CONFIRMED` records, and maps `lastUpdatedAt` from `MAX(updated_at)` across that student/year's `DRAFT` final records. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student number nulls-last, student number, then user id so pagination is stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class/grade from the lowest numeric visible membership id.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student number nulls-last, student number, then user id so pagination is stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class/grade from the lowest numeric visible membership id.
 
 **Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -1040,6 +1040,28 @@ void shouldIgnoreLowerMembershipIdOutsideScopeBeforePickingVisibleMembership() {
 }
 
 @Test
+void shouldKeepCountAndRowsConsistentWhenFiltersLeaveMultipleVisibleMembershipsForOneStudent() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4003, 3001, 'CLASS', 'CS2200', '计算机2200班', '/WHUT/CS/CS2022/CS2200', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4004, 3001, 'CLASS', 'CS2203', '计算机2203班', '/WHUT/CS/CS2022/CS2203', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1001, 4003, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6000, 1001, 4002, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (7000, 1001, 4004, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2200", "CS2202"), 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(1);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .doesNotHaveDuplicates();
+    assertThat(findRow(page, 1001L).getClassName()).isEqualTo("计算机2200班");
+}
+
+@Test
 void shouldPageInStableOrderWithoutDuplicatingStudents() {
     seedRoster();
 
@@ -1707,7 +1729,12 @@ rg -n "pageNum|pages|className.*List|academicYear 不能为空|LIKE '%/|SUBMITTE
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 ```
 
-If `rg` is unavailable in the execution environment, run the same pattern with `grep -RInE` over the listed directories and review the same hits.
+If `rg` is unavailable in the execution environment, run the equivalent `grep -RInE` command with the regex in double quotes:
+
+```bash
+grep -RInE "pageNum|pages|className.*List|academicYear 不能为空|LIKE '%/|SUBMITTED', 'CONFIRMED'.*unsubmitted|application_submission|application_fact" \
+  whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
+```
 
 Expected:
 
