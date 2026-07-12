@@ -76,7 +76,7 @@ Request parameters:
 | `file` | yes | Non-empty Excel file. |
 | `title` | yes | Non-blank after trim, max 255 characters. Leading and trailing whitespace are removed; internal whitespace, case, and Unicode normalization form are preserved. |
 | `heldAt` | yes | ISO local date-time accepted by `LocalDateTime.parse`; normalized to whole seconds in the response and batch id. |
-| `academicYear` | yes | Trimmed before validation; must match `yyyy-yyyy`, and the second year must equal first year + 1. |
+| `academicYear` | yes | Trimmed before validation; must match `^\d{4}-\d{4}$`, and the second year must equal first year + 1. |
 
 Successful response:
 
@@ -110,6 +110,14 @@ Successful response:
 `failedRows` fields are frozen as:
 
 `rowNo`, `code`, `message`, `rawValue`
+
+Response count semantics:
+
+- `totalCount` is the number of non-blank data rows after the header.
+- `successCount` is the number of rows that successfully inserted a lecture component.
+- `failedCount` is `failedRows.size()`.
+- `successCount + failedCount = totalCount`.
+- A workbook that contains only the header returns `200` with `totalCount = 0`, `successCount = 0`, `failedCount = 0`, and `failedRows = []`; it persists no batch marker, so retry is allowed.
 
 Request-level failures:
 
@@ -190,13 +198,13 @@ This is intentionally different from D-7. D-7 upserts one imported component per
 
 `lectureBatchId` is deterministic from normalized request metadata:
 
-`LECTURE-<academicYearWithoutDash>-<heldAt yyyyMMddHHmmss>-<uppercase 6-char hash>`
+`LECTURE-<academicYearWithoutDash>-<heldAt yyyyMMddHHmmss>-<uppercase 12-char hash>`
 
 The hash input is:
 
 `normalizedAcademicYear + "|" + normalizedHeldAt + "|" + normalizedTitle`
 
-Use SHA-256 over the UTF-8 hash input, uppercase the hexadecimal digest, and take the first 6 characters.
+Use SHA-256 over the UTF-8 hash input, uppercase the hexadecimal digest, and take the first 12 characters.
 
 Normalization is fixed as:
 
@@ -205,7 +213,7 @@ Normalization is fixed as:
 - `normalizedHeldAt`: parsed `heldAt` truncated to whole seconds and formatted as `yyyyMMddHHmmss`.
 - response `heldAt`: the same whole-second value formatted as ISO local date-time, for example `2026-05-18T14:30:00`.
 
-The generated `lectureBatchId` format is `^LECTURE-[0-9]{8}-[0-9]{14}-[0-9A-F]{6}$`. Its length is 38 characters, which fits the documented `final_component_score.source_ref_id VARCHAR(64)` constraint.
+The generated `lectureBatchId` format is `^LECTURE-[0-9]{8}-[0-9]{14}-[0-9A-F]{12}$`. Its length is 44 characters, which fits the documented `final_component_score.source_ref_id VARCHAR(64)` constraint.
 
 Before any row mutation, the service checks whether any existing `final_component_score` joined to the same `academicYear` has `category_code = 'INTELLECTUAL'`, `item_code = 'INTELLECTUAL_LECTURE'`, `source_type = 'IMPORT'`, and `source_ref_id = lectureBatchId`. If yes, the whole request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
 
@@ -233,6 +241,7 @@ Per-student final-record concurrency:
 - Component insert and total recalculation must occur while the target record is locked.
 - The totals update must include `WHERE id = ? AND status = 'DRAFT'`.
 - If the conditional totals update affects zero rows, record `FINAL_RECORD_LOCKED` for that row and do not count it as a success.
+- Under this model, a concurrent submit or confirm cannot commit between `SELECT ... FOR UPDATE` and the totals update for the same `final_record`; tests should verify the lock and conditional update behavior, not an impossible mid-lock state transition.
 
 Transaction scope:
 
@@ -248,8 +257,10 @@ A row can import only when:
 
 - `iam_user.user_no = studentNo`;
 - `iam_user.status = 'ACTIVE'`;
-- the user has an active primary `org_membership`;
-- the primary membership points to an active class-like `org_unit`.
+- the user has an `org_membership` row with `is_primary = 1` and `status = 'ACTIVE'`;
+- that primary membership points to an `org_unit` with `status = 'ACTIVE'`.
+
+D-8 imposes no `org_unit.unit_type` filter. Any active primary organization is eligible for lookup; import authorization is then decided by the `score.import` scope rules against that active primary organization.
 
 The implementation must not depend on a nonexistent `iam_user.identity` column.
 
@@ -278,7 +289,7 @@ Scope semantics:
 For each successful row:
 
 1. Locate `final_record` by `(student_user_id, academic_year)`.
-2. If no row exists, create a `DRAFT` final record with zero totals and then insert the lecture component.
+2. If no row exists, create a `DRAFT` final record with zero totals, `version = 0`, and then insert the lecture component. The successful component insertion and total update increments `version` to `1`.
 3. If an existing row is `DRAFT`, insert the lecture component for this lecture batch.
 4. If an existing row is `SUBMITTED` or `CONFIRMED`, the row fails with:
    - `code = "FINAL_RECORD_LOCKED"`;
@@ -381,14 +392,18 @@ Add tests proving:
 Add tests proving:
 
 - invalid `academicYear` fails with `academicYear 不合法`;
+- `academicYear` accepts only the concrete `^\d{4}-\d{4}$` format with the second year equal to first year + 1;
 - blank or overlong `title` fails with the frozen message;
 - invalid `heldAt` fails with `heldAt 格式非法`;
 - deterministic `lectureBatchId` is returned for the same normalized title, heldAt, and academicYear;
 - title trimming and whole-second heldAt normalization feed both `lectureBatchId` and response `heldAt`;
+- `lectureBatchId` uses the 12-character SHA-256 prefix and fits `source_ref_id VARCHAR(64)`;
 - a duplicate existing `lectureBatchId` throws `ConflictException`;
 - a zero-success import leaves no persisted batch marker and allows a later retry;
+- a header-only workbook returns HTTP 200 with all counts zero and no batch marker;
 - a valid row inserts a new draft record and lecture component;
-- blank row `displayText` stores the normalized request title followed by ` 讲座签到`;
+- a new final record starts at `version = 0` and reaches `version = 1` after the successful row mutation;
+- a row with blank `displayText` stores the normalized request title followed by ` 讲座签到`;
 - two distinct lecture batches for the same student accumulate two components and totals;
 - duplicate `studentNo` inside the same workbook produces a `DUPLICATE_STUDENT` failed row;
 - a field-valid row that later fails student lookup or scope still consumes the duplicate-student key;
@@ -400,14 +415,14 @@ Add tests proving:
 - expected row-level business failures are collected without rolling back other successful rows in the same request transaction;
 - an unexpected persistence failure rolls back the whole request transaction and commits no partial successful rows;
 - same-batch concurrent imports result in one successful import and one `ConflictException` mapped to `409 / BIZ-4090`;
-- a concurrent submit/confirm transition between target lookup and totals update is reported as `FINAL_RECORD_LOCKED` and does not mutate that row.
+- final-record row locking prevents a concurrent submit/confirm transition from committing between row lock acquisition and totals update.
 
 ### Repository Integration Tests
 
 Use H2 MySQL mode and local test schema to verify:
 
 - active student lookup does not require `iam_user.identity`;
-- active primary membership is required;
+- active primary membership and active `org_unit` are required, without filtering by `org_unit.unit_type`;
 - inactive users and inactive memberships are excluded;
 - `ORG_SUBTREE` scope uses real path-prefix matching and rejects similar prefixes;
 - inserted draft records satisfy all non-null `final_record` columns;
