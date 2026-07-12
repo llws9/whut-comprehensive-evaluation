@@ -113,7 +113,7 @@ Request:
 | `pageNo` | `long` | no | Exactly one raw `pageNo` value is allowed; repeated values, `pageNo[]`, non-numeric values, or offset overflow return `VAL-4001` with message `pageNo 不合法`. Missing defaults to `1`; values `<= 0` normalize to `1`. |
 | `pageSize` | `long` | no | Exactly one raw `pageSize` value is allowed; repeated values, `pageSize[]`, or non-numeric values return `VAL-4001` with message `pageSize 不合法`. Missing defaults to `20`; values `<= 0` normalize to `20`; values `> 100` normalize to `100`. |
 
-Response `data` remains `PageResult<UnsubmittedStudentView>` with exactly `total` and `records`. Each record has `studentUserId`, `userNo`, `userName`, `grade`, `className`, fixed `status = "UNSUBMITTED"`, and `lastUpdatedAt`. Optional projection values are rendered as empty strings: `grade` is empty when no active grade parent exists, and `lastUpdatedAt` is empty when no DRAFT final record exists. `lastUpdatedAt` uses `Instant.toString()` when a DRAFT final record exists.
+Response `data` remains `PageResult<UnsubmittedStudentView>` with exactly `total` and `records`. Each record has `studentUserId`, `userNo`, `userName`, `grade`, `className`, fixed `status = "UNSUBMITTED"`, and `lastUpdatedAt`. If multiple visible primary class memberships remain for the same student after scope, `grade`, and `classes` filtering, the response returns one student row and displays the class plus active grade parent from the lowest numeric visible membership id. Optional projection values are rendered as empty strings: `grade` is empty when no active grade parent exists for the selected visible membership, and `lastUpdatedAt` is empty when no DRAFT final record exists. `lastUpdatedAt` uses `Instant.toString()` when a DRAFT final record exists.
 
 Error responses:
 
@@ -1226,6 +1226,32 @@ void shouldUnionGradeCodeAndNameMatchesWithoutDuplicatingStudents() {
             .containsExactly(1008L);
     assertThat(sameGradeUnit.records()).filteredOn(row -> row.getStudentUserId() == 1008L)
             .hasSize(1);
+}
+
+@Test
+void shouldDeduplicateSameStudentWhenGradeCodeAndNameMatchDifferentVisibleGrades() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3004, 2002, 'GRADE', 'GRADE_DUAL', '代码命中年级', '/WHUT/CS/GRADE_DUAL_CODE', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3005, 2002, 'GRADE', 'GRADE_OTHER', 'GRADE_DUAL', '/WHUT/CS/GRADE_DUAL_NAME', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4010, 3004, 'CLASS', 'GD_CODE_01', '年级代码命中班', '/WHUT/CS/GRADE_DUAL_CODE/GD_CODE_01', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4011, 3005, 'CLASS', 'GD_NAME_01', '年级名称命中班', '/WHUT/CS/GRADE_DUAL_NAME/GD_NAME_01', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1009, 'S009', 'GradeDualMatch', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4001, 1009, 4011, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6001, 1009, 4010, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "GRADE_DUAL", null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(1);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1009L);
+    assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1009L)
+            .hasSize(1);
+    UnsubmittedStudentRow row = findRow(page, 1009L);
+    assertThat(row.getGrade()).isEqualTo("GRADE_DUAL");
+    assertThat(row.getClassName()).isEqualTo("年级名称命中班");
 }
 
 @Test
