@@ -840,8 +840,9 @@ public class LectureImportApplicationService {
         if (!acquired) {
             throw new ConflictException("同一讲座批次正在导入，请稍后重试");
         }
-        boolean releaseRegistered = registerBatchLockRelease(lectureBatchId);
+        boolean releaseRegistered = false;
         try {
+            releaseRegistered = registerBatchLockRelease(lectureBatchId);
             if (repository.lectureBatchExists(request.academicYear(), lectureBatchId)) {
                 throw new ConflictException("同一讲座批次已导入");
             }
@@ -1027,25 +1028,31 @@ void shouldTreatZeroUpperBoundAndShortScaleScoresAsValidAndDefaultDisplayText() 
             new LectureImportRow(3L, "S2", "0.0", ""),
             new LectureImportRow(4L, "S3", "1", "一".repeat(1000)),
             new LectureImportRow(5L, "S4", "1.5", "讲座"),
-            new LectureImportRow(6L, "S5", "99999999.99", "")
+            new LectureImportRow(6L, "S5", "99999999.99", ""),
+            new LectureImportRow(7L, "S6", "00", ""),
+            new LectureImportRow(8L, "S7", "00.50", "")
     ));
     given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
     given(repository.findTarget(eq("S2"), eq("2025-2026"))).willReturn(Optional.of(target(1002L, "/WHUT/CS/CS2022/CS2202")));
     given(repository.findTarget(eq("S3"), eq("2025-2026"))).willReturn(Optional.of(target(1003L, "/WHUT/CS/CS2022/CS2203")));
     given(repository.findTarget(eq("S4"), eq("2025-2026"))).willReturn(Optional.of(target(1004L, "/WHUT/CS/CS2022/CS2204")));
     given(repository.findTarget(eq("S5"), eq("2025-2026"))).willReturn(Optional.of(target(1005L, "/WHUT/CS/CS2022/CS2205")));
+    given(repository.findTarget(eq("S6"), eq("2025-2026"))).willReturn(Optional.of(target(1006L, "/WHUT/CS/CS2022/CS2206")));
+    given(repository.findTarget(eq("S7"), eq("2025-2026"))).willReturn(Optional.of(target(1007L, "/WHUT/CS/CS2022/CS2207")));
     given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
     given(repository.insertLectureComponents(eq("2025-2026"), any(), any())).willReturn(List.of());
 
     LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
 
-    assertThat(result.successCount()).isEqualTo(5);
+    assertThat(result.successCount()).isEqualTo(7);
     verify(repository).insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components ->
-            components.size() == 5
+            components.size() == 7
                     && components.get(0).scoreValue().compareTo(new BigDecimal("0.00")) == 0
                     && components.get(1).scoreValue().compareTo(new BigDecimal("0.00")) == 0
                     && components.get(2).scoreValue().compareTo(new BigDecimal("1.00")) == 0
                     && components.get(3).scoreValue().compareTo(new BigDecimal("1.50")) == 0
+                    && components.get(5).scoreValue().compareTo(new BigDecimal("0.00")) == 0
+                    && components.get(6).scoreValue().compareTo(new BigDecimal("0.50")) == 0
                     && components.get(0).displayText().equals("讲座 讲座签到")
                     && components.get(1).displayText().equals("讲座 讲座签到")
                     && components.get(2).displayText().equals("一".repeat(1000))
@@ -1687,6 +1694,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -1756,12 +1764,21 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
             mapper.insertDraft(record);
             return record;
         } catch (DataIntegrityViolationException exception) {
+            if (!isDuplicateFinalRecord(exception)) {
+                throw exception;
+            }
             FinalRecordDO concurrentRecord = mapper.selectFinalRecordForUpdate(component.studentUserId(), academicYear);
             if (concurrentRecord == null) {
                 throw new ConflictException("最终成绩保存后读取失败");
             }
             return concurrentRecord;
         }
+    }
+
+    private boolean isDuplicateFinalRecord(DataIntegrityViolationException exception) {
+        String message = String.valueOf(exception.getMostSpecificCause().getMessage()).toLowerCase(Locale.ROOT);
+        return message.contains("uk_final_record_student_year")
+                || (message.contains("duplicate") && message.contains("final_record"));
     }
 
     private FinalRecordDO newDraftRecord(String academicYear, Long studentUserId) {
@@ -2340,7 +2357,7 @@ Add the focused tests below at the named layer:
 - Parser: `rowNo` is worksheet physical row number when blank rows exist.
 - Parser: missing header, CSV/text unreadable content, and unsupported workbook-like formats fail as template/unreadable errors.
 - Service: non-strict decimal score formats (`-1`, `1,234.56`, `50%`, `5E-1`) fail with `SCORE_VALUE_INVALID`.
-- Service: `scoreValue` variants `0`, `0.0`, `0.00`, `1`, and `1.5` are accepted and normalized to scale 2 without rounding.
+- Service: `scoreValue` variants `0`, `0.0`, `0.00`, `1`, `1.5`, `00`, and `00.50` are accepted and normalized to scale 2 without rounding.
 - Service: `displayText` with exactly 1000 Unicode code points is accepted and 1001 is rejected.
 - Service: `heldAt` rejects timezone offsets, accepts omitted seconds, and truncates fractional seconds.
 - Service: `academicYear` rejects `2025-2027`, `2025-2024`, and `9999-0000`.
