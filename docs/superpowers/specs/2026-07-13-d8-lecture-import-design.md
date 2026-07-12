@@ -15,6 +15,7 @@ Source contract:
 - D-8 must not introduce an import/export batch table in this phase. The documented data dependencies remain `final_record` and `final_component_score`.
 - `final_record` has one row per `(student_user_id, academic_year)`.
 - `final_component_score` stores imported lecture components as final-score details.
+- D-8 is a final-score import endpoint only. It does not create the lecture catalog or student-side candidate source-data model required by B-9 `GET /api/student/lectures`.
 
 Current implementation patterns:
 
@@ -48,6 +49,12 @@ Out of scope:
 - Student lecture candidate query implementation.
 - Frontend upload UI.
 - Import batch tables, downloadable failure files, object-storage persistence, or async job status APIs.
+
+Cross-group boundary:
+
+- D-8 records attendance scores for lecture rows that have already been selected outside this endpoint. It does not define or persist the B-9 source-data fields `lectureId`, `maxScore`, or `attendanceStatus`.
+- B-9 cannot derive its candidate list solely from D-8 `final_component_score` rows because D-8 stores only final-score components with `source_ref_id = lectureBatchId`, not stable numeric lecture ids or claim eligibility state.
+- The delivery dependency for "B-9 lecture/activity candidate source data" remains open for a separate cross-group contract. Completing D-8 in this phase means the admin lecture-score import is usable and audited through final-record data; it does not mean the B-9 candidate-query dependency is closed.
 
 ## HTTP Contract
 
@@ -123,7 +130,7 @@ Response count semantics:
 - `successCount` is the number of rows that successfully inserted a lecture component.
 - `failedCount` is `failedRows.size()`.
 - `successCount + failedCount = totalCount`.
-- A workbook that contains only the header returns `200` with `totalCount = 0`, `successCount = 0`, `failedCount = 0`, and `failedRows = []`; it persists no batch marker, so retry is allowed.
+- A workbook that contains only the header still goes through normalized metadata generation, batch-lock acquisition, and duplicate-batch checks. If another same-batch import is running, it returns the in-flight `409`; if the same `lectureBatchId` already has persisted components, it returns the already-imported `409`. Otherwise it returns `200` with `totalCount = 0`, `successCount = 0`, `failedCount = 0`, and `failedRows = []`; it persists no batch marker, so retry is allowed.
 
 Request-level failures:
 
@@ -180,6 +187,8 @@ Blank data rows are ignored and do not count toward `totalCount`. A blank data r
 
 Cell values are read with `DataFormatter`, trimmed, and blank strings become null. The parser must not evaluate formulas beyond POI's formatted value behavior.
 
+`normalizedStudentNo` is the trimmed `DataFormatter` string from column A. D-8 does not apply case folding, zero-width/control-character stripping, Unicode normalization, or leading-zero normalization.
+
 The 5 MB limit applies to the uploaded file bytes before POI parsing. The parser rejects oversized byte arrays before opening the workbook, and rejects workbooks with more than 5000 non-blank data rows using `ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB")`.
 
 Header error messages:
@@ -223,7 +232,7 @@ Normalization is fixed as:
 
 The generated `lectureBatchId` format is `^LECTURE-[0-9]{8}-[0-9]{14}-[0-9A-F]{12}$`. Its length is 44 characters, which fits the documented `final_component_score.source_ref_id VARCHAR(64)` constraint.
 
-Before any row mutation, the service checks whether any existing `final_component_score` joined to the same `academicYear` has `category_code = 'INTELLECTUAL'`, `item_code = 'INTELLECTUAL_LECTURE'`, `source_type = 'IMPORT'`, and `source_ref_id = lectureBatchId`. If yes, the whole request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
+The service may perform an optional duplicate-batch fast-path check before acquiring the batch lock. The authoritative duplicate-batch check must run after acquiring the batch lock and before any row mutation. Both checks use the same predicate: any existing `final_component_score` joined to the same `academicYear` with `category_code = 'INTELLECTUAL'`, `item_code = 'INTELLECTUAL_LECTURE'`, `source_type = 'IMPORT'`, and `source_ref_id = lectureBatchId`. If either check finds a match, the whole request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
 
 Because this phase does not introduce an import batch table, duplicate-batch detection is backed by the existing final-component rows. If a previous import had zero successful rows, there is no persisted batch marker and a retry is accepted.
 
@@ -242,7 +251,7 @@ Batch-level concurrency:
 - An implementation may use an equivalent durable claim or unique-key strategy, but it must not add a general import batch table in this D-8 scope.
 - If the lock cannot be acquired because the same batch is already running, the request fails with `409 / BIZ-4090` and message `同一讲座批次正在导入，请稍后重试`. This is an in-flight conflict, not a persisted imported marker; callers may retry after the running request finishes.
 - If the lock is acquired but the duplicate-batch check finds persisted components for the same `lectureBatchId`, the request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
-- While holding the batch lock, the service performs the existing-component duplicate check again inside the transaction before any row mutation.
+- While holding the batch lock, the service performs the existing-component duplicate check inside the transaction before any row mutation. This check is required even when the optional fast-path check ran earlier.
 
 Per-student final-record concurrency:
 
@@ -250,17 +259,32 @@ Per-student final-record concurrency:
 - If no record exists, insert the DRAFT record and then re-read it with `SELECT ... FOR UPDATE`; concurrent insert races must catch the unique-key conflict on `(student_user_id, academic_year)` and re-read the existing row with `SELECT ... FOR UPDATE`, matching D-7.
 - Component insert and total recalculation must occur while the target record is locked.
 - The totals update must include `WHERE id = ? AND status = 'DRAFT'`.
-- If the conditional totals update affects zero rows, record `FINAL_RECORD_LOCKED` for that row, do not count it as a success, and leave no inserted lecture component for that row. The implementation may satisfy this by confirming `status = 'DRAFT'` before insert under the row lock and treating any later zero-row update as an unexpected persistence failure, or by using a row-level savepoint/delete cleanup before collecting the failure.
+- After locking an existing final record and before inserting the component, if `status <> 'DRAFT'`, collect row-level `FINAL_RECORD_LOCKED` and do not insert a component for that row.
+- If a conditional totals update affects zero rows after the service has locked a DRAFT record and inserted the component, treat it as an unexpected persistence failure. Do not convert this branch into a `failedRows` item. The whole request transaction rolls back and no partial successful rows are committed, because a concurrent submit or confirm cannot commit between the row lock and the totals update under the required locking model.
 - Under this model, a concurrent submit or confirm cannot commit between `SELECT ... FOR UPDATE` and the totals update for the same `final_record`; tests should verify the lock and conditional update behavior, not an impossible mid-lock state transition.
 - To reduce cross-batch deadlocks, field-valid, non-duplicate, eligible candidate rows that need final-record mutation must be locked and mutated in a deterministic order by target `student_user_id` ascending, then `rowNo` ascending. Duplicate-student detection and response counts still use workbook row order, and the final `failedRows` response is sorted by `rowNo`.
 
 Transaction scope:
 
 - The whole import runs in one request transaction after request-level validation and parsing pass.
-- Duplicate-batch locking, duplicate-batch pre-check, student eligibility lookup, active primary organization resolution, `score.import` scope matching, component inserts, and total updates all occur inside that one transaction and on the same database connection when the chosen lock implementation is connection-bound.
+- Batch-lock acquisition, the authoritative duplicate-batch check, student eligibility lookup, active primary organization resolution, `score.import` scope matching, component inserts, and total updates all occur inside that one transaction and on the same database connection when the chosen lock implementation is connection-bound. The optional duplicate-batch fast-path check may run before the transaction, but it is not authoritative.
 - Expected row-level business failures, including missing student, out-of-scope target, locked final record, and duplicate student, are collected in `failedRows` and must not be thrown as transaction-rolling exceptions.
 - Unexpected infrastructure or persistence failures roll back the whole request transaction. In that case the HTTP response is a request-level failure and no partial successful rows are committed.
 - `final_record.version` is a monotonic change counter for final-record consumers. D-8 increments it on every successful row mutation. It does not participate in D-8 concurrency control; D-8 relies on `SELECT ... FOR UPDATE` plus the conditional `status = 'DRAFT'` update to protect against concurrent submit/confirm transitions.
+
+### Processing Steps
+
+The end-to-end order is fixed as:
+
+1. Outside the request transaction, validate required request parameters, normalize `title`, `heldAt`, and `academicYear`, read multipart bytes, and enforce the 5 MB limit.
+2. Outside the request transaction, parse the workbook, validate the first-sheet header, build raw row values, skip blank rows, enforce the 5000-row limit, run field-level row validation, and run duplicate-student detection in workbook row order.
+3. Compute `lectureBatchId` from normalized request metadata. An implementation may run the optional duplicate-batch fast-path check at this point; if it finds persisted components, return the already-imported `409`.
+4. Start the single request transaction and acquire the `LectureImportBatchLock` for `lectureBatchId`. If acquisition fails, return the in-flight `409`.
+5. While holding the batch lock, run the authoritative duplicate-batch check. If it finds persisted components, return the already-imported `409`.
+6. If `totalCount = 0`, commit without row mutation, release the batch lock, and return the zero-count `200` response.
+7. Resolve eligible students, active primary organizations, and `score.import` scope matches for field-valid, non-duplicate rows. Collect `STUDENT_NOT_FOUND` and `OUT_OF_SCOPE` failures without throwing transaction-rolling exceptions.
+8. For rows still eligible for mutation, sort by `student_user_id` ascending and then `rowNo` ascending. For each row, lock or create the target `final_record`, collect `FINAL_RECORD_LOCKED` if the locked record is not DRAFT, otherwise insert the lecture component and recalculate totals while the record remains locked.
+9. Commit the transaction, release the batch lock on the same owner, and return counts plus `failedRows` sorted by ascending `rowNo`.
 
 ### Student Eligibility
 
