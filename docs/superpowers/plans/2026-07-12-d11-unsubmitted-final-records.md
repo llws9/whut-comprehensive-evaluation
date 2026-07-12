@@ -4,9 +4,9 @@
 
 **Goal:** Build `GET /api/admin/final-records/unsubmitted` so authorized admins can page current active in-scope students who have not submitted or confirmed final records for an academic year.
 
-**Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, repeated `classes`, `pageNo`, and `pageSize`; response pagination remains `PageResult<T>` with only `total` and `records`.
+**Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student-number nulls-last, student number, then user id; this plan intentionally extends the design SQL with student-number nulls-last ordering to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student-number nulls-last, student number, then user id; `user_id ASC` is the final tie-breaker and is part of the pagination contract for duplicate or null student numbers. This plan intentionally extends the design SQL with student-number nulls-last ordering to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
 
 ## Pre-Implementation Verification Baseline
 
@@ -17,6 +17,13 @@ mvn test
 ```
 
 Record whether it passes. If it fails before D-11 implementation starts, record the failing test names and failure count in the execution notes. Task 5 may compare against this recorded pre-implementation baseline; if no pre-implementation baseline exists, do not claim "zero new failures" and report the final `mvn test` result as an observed state only.
+
+Execution notes placeholder:
+
+- Baseline Result: `PENDING` before implementation; replace with `PASS` or `FAIL`.
+- Baseline Command: `mvn test`
+- Baseline Failure Count: `0` when PASS; otherwise record the exact count.
+- Baseline Failing Tests: `none` when PASS; otherwise list test class and method names.
 
 **Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -75,6 +82,7 @@ Record whether it passes. If it fails before D-11 implementation starts, record 
   - Adds `/unsubmitted` route before `/{recordId}`.
   - Rejects multi-value `academicYear` and `grade`.
   - Merges repeated `classes` and array-style `classes[]`.
+  - Leaves `classes` trim, blank dropping, de-duplication, value length checks, and `MAX_CLASSES = 500` enforcement to `UnsubmittedFinalRecordQuery` after both encodings are merged.
 
 ### Tests
 
@@ -1194,6 +1202,21 @@ void shouldAllowTopLevelOrgSubtreeRootPath() {
 }
 
 @Test
+void shouldAllowOrgSubtreeRootAtClassLevelOnlyForThatClass() {
+    seedRoster();
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(4001L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(2);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L)
+            .doesNotContain(1003L);
+}
+
+@Test
 void shouldRejectMalformedOrgSubtreeRootPaths() {
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2010, NULL, 'COLLEGE', 'BAD_NULL', '空值路径学院', NULL, 'ACTIVE')");
@@ -1403,6 +1426,39 @@ void shouldPageInStableOrderWithoutDuplicatingStudents() {
             .containsExactly(1003L);
     assertThat(outOfRange.total()).isEqualTo(3);
     assertThat(outOfRange.records()).isEmpty();
+}
+
+@Test
+void shouldUseUserIdAsFinalTieBreakerWhenStudentNumbersAreNullOrDuplicated() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1004, NULL, 'NullUserNoLow', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, NULL, 'NullUserNoHigh', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S099', 'DuplicateNoLow', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1007, 'S099', 'DuplicateNoHigh', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4001, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4001, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4001, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5007, 1007, 4001, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("CS2201"), 1, 20)
+    );
+    PageResult<UnsubmittedStudentRow> firstPage = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("CS2201"), 1, 3)
+    );
+    PageResult<UnsubmittedStudentRow> secondPage = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("CS2201"), 2, 3)
+    );
+
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1006L, 1007L, 1004L, 1005L);
+    assertThat(firstPage.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1006L);
+    assertThat(secondPage.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1007L, 1004L, 1005L);
 }
 
 @Test
@@ -1848,6 +1904,18 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
     verify(queryApplicationService).pageUnsubmittedStudents(captor.capture());
     assertThat(captor.getValue().getClasses()).containsExactly("CS2203", "CS2204");
 
+    reset(queryApplicationService);
+    when(queryApplicationService.pageUnsubmittedStudents(any()))
+            .thenReturn(new PageResult<>(0, List.of()));
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("classes", "CS2205", "CS2206")
+                    .param("classes[]", " CS2205 ", "", "CS2207")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isOk());
+    verify(queryApplicationService).pageUnsubmittedStudents(captor.capture());
+    assertThat(captor.getValue().getClasses()).containsExactly("CS2205", "CS2206", "CS2207");
+
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026", "2026-2027")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
@@ -2102,6 +2170,8 @@ private long parseLongParameter(String name, String value) {
 }
 ```
 
+`mergeClassFilters(...)` only collects raw parameter values from both supported encodings. It must not trim, drop blanks, de-duplicate, enforce length, or enforce `MAX_CLASSES`; the merged list is immediately passed into `UnsubmittedFinalRecordQuery`, which performs the single source-of-truth normalization and validation after both `classes` and `classes[]` have been combined.
+
 - [ ] **Step 4: Run controller and earlier tests**
 
 Run:
@@ -2207,7 +2277,7 @@ Run:
 mvn test
 ```
 
-Expected: PASS. If unrelated pre-existing failures were recorded in the Pre-Implementation Verification Baseline section, compare this run with that recorded baseline and confirm there are zero new failing tests. If no pre-implementation baseline was recorded, do not claim "zero new failures"; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4. Any failure in a D-11-touched module fails verification regardless of baseline availability. D-11-touched modules are `whut-eval-domain`, `whut-eval-application`, `whut-eval-infra`, `whut-eval-interfaces`, and the D-11 test package under `whut-eval-app`; a failure in any of these modules fails D-11 verification even if the full reactor also has unrelated modules.
+Expected: PASS. If unrelated pre-existing failures were recorded in the Pre-Implementation Verification Baseline section, compare this run with that recorded baseline and confirm there are zero new failing tests. If no pre-implementation baseline was recorded, do not claim "zero new failures"; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4. Any failure in a D-11-touched module or D-11-touched final-record test fails verification regardless of baseline availability. D-11-touched modules are `whut-eval-domain`, `whut-eval-application`, `whut-eval-infra`, and `whut-eval-interfaces`. In `whut-eval-app`, every final-record related test that was modified, added, or explicitly run by this plan is D-11-touched for verification purposes, including Step 2 shared-scope regressions, Step 3 focused D-11 tests, and Step 4 `*FinalRecord*Test` regressions; a failure in any of these tests fails D-11 verification even if the full reactor also has unrelated modules.
 
 - [ ] **Step 6: Review diff for contract drift**
 
@@ -2244,7 +2314,7 @@ grep -RInE "scopeExpression" \
 Expected:
 
 - `git diff --check` prints no whitespace errors.
-- The scope, status, numeric-path, and `scopeExpression` scans are mandatory. If `rg` is available, run the four `rg` commands above; if `rg` is unavailable, run the four `grep -RInE` fallback commands above over the same directories before claiming Task 5 verification is complete.
+- The scope, status, numeric-path, and `scopeExpression` scans are mandatory. If `rg` is available, run the four `rg` commands above; if `rg` is unavailable, run the four `grep -RInE` fallback commands above over the same directories. `rg` absence is not a waiver; the grep fallback is an equivalent required verification path. Task 5 verification is incomplete unless all four scans have been executed and every hit has been accepted or rejected using the rules below.
 - The `scopeExpression` scan is mandatory. It may find the mapper/provider infrastructure and repository-internal builder, but must not find a D-11 public API, request object, controller, service, repository contract, or DTO that accepts a caller-provided raw SQL fragment.
 - The scans pass only when they produce no new D-11 contract-drift hits in changed files. Any new hit fails the verification unless the execution notes name the file/line and explain why the hit is unrelated to D-11 contract drift.
 - No `PageResult` metadata fields are added.
@@ -2277,6 +2347,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - Controller and service both require `score.view.assigned`.
 - `academicYear` validation returns `ValidationException("academicYear 不合法")`.
 - `classes` remains `List<String>` and accepts repeated `classes` plus array-style `classes[]`.
+- `classes` and `classes[]` are merged before `UnsubmittedFinalRecordQuery` performs trim, blank dropping, de-duplication, length checks, and the normalized `MAX_CLASSES = 500` check.
 - Commas inside `grade` and `classes` remain ordinary exact-match characters.
 - `PageResult<T>` remains only `total` and `records`.
 - Controller JSON tests lock `PageResult<T>` to exactly `total` and `records`.
@@ -2294,6 +2365,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - Rows without an active `GRADE` parent sort after rows with active grades.
 - `ORG_UNIT` is exact class id only and does not depend on `org_unit.path` being non-null.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
+- `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including a CLASS root; a CLASS root exposes that class only, not sibling classes.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
 - Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
@@ -2301,7 +2373,9 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - Grade/classes exact filters are case-sensitive, use code-or-name OR semantics, include distinct code/name matches, and do not duplicate a student when both sides match the same org unit.
 - If the same student matches the same `classes` filter through one visible class code and another visible class name, the student appears once and displays the lowest numeric visible membership id.
 - Dirty `unit_code = NULL` rows can still match by exact `unit_name`.
+- Sorting uses `user_id ASC` as the final tie-breaker when grade, class, and student number keys are equal or null, so pagination stays stable with dirty duplicate or null student numbers.
 - `pageNo` offset overflow is rejected.
 - `pageNo` and `pageSize` intentionally remain `long` in `UnsubmittedFinalRecordQuery` so offset multiplication can detect overflow before mapper execution.
 - Baseline notes belong in the execution notes for this plan, directly under the Pre-Implementation Verification Baseline section or in the task-run handoff summary; do not bury baseline failures only in terminal scrollback.
+- Any modified, added, or explicitly run final-record related test under `whut-eval-app` is in D-11 verification scope; failures in shared-scope regressions or `*FinalRecord*Test` cannot be waived as outside the D-11 test package.
 - No D-7, D-8, D-9, D-10, import, export, or frontend behavior is introduced.
