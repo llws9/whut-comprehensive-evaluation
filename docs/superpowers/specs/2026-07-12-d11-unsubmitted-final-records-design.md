@@ -97,6 +97,7 @@ The application service must also check the same authority before querying. Miss
 | `pageSize` | long | no | `20` | values `<= 0` normalize to `20`; values `> 100` cap at `100` |
 
 Invalid `academicYear` returns `400 / VAL-4001`.
+The full `academicYear` normalization and validation rules live in section 8.1.
 
 `grade` and `classes` are filter names from the target D-group contract. The implementation maps them to organization metadata:
 
@@ -217,6 +218,8 @@ Scope merging rule:
 - if every granted fragment for `score.view.assigned` is unsupported, the result is an empty page;
 - mixed scopes therefore behave like existing `FinalRecordScopePredicateBuilder`: an `ORG_SUBTREE` plus a category fragment returns the organization-scoped roster, while category-only returns no rows.
 
+Unsupported-only scope fragments are not an authorization failure for this endpoint. The caller still has `score.view.assigned`, so D-11 returns `200` with `total = 0` and `records = []`, matching the existing Minimal D admin list empty-scope behavior.
+
 ### 6.3 ORG_SUBTREE Path Rule
 
 The implementation must not compare an `ORG_SUBTREE` root id directly against `org_unit.path`.
@@ -287,19 +290,15 @@ LEFT JOIN org_unit grade_ou
  AND grade_ou.unit_type = 'GRADE'
  AND grade_ou.status = 'ACTIVE'
 WHERE u.status = 'ACTIVE'
-  AND (
-    #{scopeAllowsAll} = TRUE
-    OR class_ou.id IN (#{orgUnitScopeId1}, #{orgUnitScopeId2})
-    OR EXISTS (
-      SELECT 1
-      FROM org_unit root_ou
-      WHERE root_ou.id IN (#{orgSubtreeRootId1}, #{orgSubtreeRootId2})
-        AND root_ou.status = 'ACTIVE'
-        AND (
-          class_ou.path = root_ou.path
-          OR class_ou.path LIKE CONCAT(root_ou.path, '/%')
-        )
-    )
+  AND EXISTS (
+    SELECT 1
+    FROM org_unit root_ou
+    WHERE root_ou.id IN (#{orgSubtreeRootIds[0]}, #{orgSubtreeRootIds[1]})
+      AND root_ou.status = 'ACTIVE'
+      AND (
+        class_ou.path = root_ou.path
+        OR class_ou.path LIKE CONCAT(root_ou.path, '/%')
+      )
   )
   AND (#{query.grade} IS NULL OR grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})
   AND (#{query.classes} IS NULL OR class_ou.unit_code = #{query.classes} OR class_ou.unit_name = #{query.classes})
@@ -314,6 +313,15 @@ WHERE u.status = 'ACTIVE'
 
 The count query must not join draft records because draft data does not affect membership in the result set and a dirty duplicate draft row must never inflate `total`.
 
+The scope block above shows the `ORG_SUBTREE` branch. It is not a fixed two-parameter contract. The SQL provider must generate the exact supported scope expression from the evaluated scope set with bound parameters only:
+
+- `ALL`: emit `1 = 1` as the whole scope expression and omit `IN` fragments;
+- one or more `ORG_UNIT` rules: emit `class_ou.id IN (...)` with one bound parameter per org-unit id;
+- one or more `ORG_SUBTREE` rules: emit the `EXISTS` fragment with one bound parameter per subtree root id;
+- combined `ORG_UNIT` and `ORG_SUBTREE`: OR the two supported fragments together;
+- no supported scope fragments: emit `1 = 0`;
+- never emit `IN ()` and never concatenate raw ids into SQL text.
+
 Recommended select query uses the same roster, scope, filter, and submitted/confirmed exclusion predicates, plus a one-row-per-student draft aggregate:
 
 ```sql
@@ -326,14 +334,6 @@ LEFT JOIN (
 ) draft_fr
   ON draft_fr.student_user_id = u.id
 ```
-
-The SQL provider must generate the scope block from the evaluated scope set:
-
-- when `ALL` is granted, set `scopeAllowsAll = TRUE` and omit empty `IN` fragments;
-- when one or more `ORG_UNIT` rules exist, add the `class_ou.id IN (...)` fragment with bound parameters;
-- when one or more `ORG_SUBTREE` rules exist, add the `root_ou.id IN (...)` fragment with bound parameters;
-- when no supported scope fragments exist, return a deny-all predicate such as `1 = 0`;
-- never emit `IN ()`.
 
 Recommended select columns:
 
@@ -416,7 +416,12 @@ public record UnsubmittedStudentView(
 
 The service maps every row with `status = "UNSUBMITTED"`.
 
-`lastUpdatedAt` must be serialized in the same external time format used by existing final-record APIs: an ISO-8601 UTC string from `Instant`, not a numeric epoch timestamp. If the global Jackson configuration does not already disable timestamp serialization for Java time values, this DTO must add a local annotation/configuration so the JSON contract remains a string.
+`lastUpdatedAt` must be serialized in the same external time format used by existing final-record APIs: an ISO-8601 UTC string from `Instant`, not a numeric epoch timestamp. If the global Jackson configuration does not already disable timestamp serialization for Java time values, annotate the record component with:
+
+```java
+@JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ss'Z'", timezone = "UTC")
+Instant lastUpdatedAt
+```
 
 ### 8.4 Repository Contract
 
@@ -479,6 +484,7 @@ Route order must keep `/unsubmitted` from being captured by `/{recordId}`. In Sp
 | blank `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
 | malformed `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
 | no `score.view.assigned` authority | `403` | `AUTH-4030` | `AccessDeniedAppException` or method security |
+| only unsupported scope fragments | `200` | - | empty page, not `403` |
 | valid request with no matches | `200` | - | empty page |
 
 D-11 does not return `404` for no data.
@@ -540,13 +546,14 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - returns only the exact class rows for a pure `ORG_UNIT` scope targeting a class id;
 - returns only subtree rows for a pure `ORG_SUBTREE` scope targeting a college id, without relying on a mixed-scope rule;
 - returns organization-scoped rows for a mixed scope containing one supported `ORG_SUBTREE` rule and one unsupported category rule;
-- resolves `ORG_SUBTREE` against real `org_unit.path` code paths, proving a scope rooted at org id `2002` can see classes whose path starts with `/WHUT/CS`.
+- resolves `ORG_SUBTREE` against real `org_unit.path` code paths, proving a scope rooted at org id `2002` can see classes whose path starts with `/WHUT/CS`;
 - proves an org path with a similar prefix but not a real child path, such as `/WHUT/CS2/CS2201`, is not visible to a root path `/WHUT/CS`;
+
+The two `ORG_SUBTREE` path tests are mandatory because a numeric-id path comparison such as `LIKE '%/2002/%'` would return zero rows against the seeded organization path format, while an unsafe prefix comparison would incorrectly include similar-prefix non-child paths.
+
 - verifies a student with duplicate dirty draft final records still appears once and uses `MAX(updated_at)` for `lastUpdatedAt`;
 - verifies a student with no `final_record` has `lastUpdatedAt = null`;
 - verifies a class with no active `GRADE` parent row is excluded when `grade` is provided and can appear with `grade = null` when no `grade` filter is provided.
-
-The last test is mandatory because a numeric-id path comparison such as `LIKE '%/2002/%'` would return zero rows against the seeded organization path format.
 
 The repository integration test schema must include the real A-group columns used by the D-11 SQL path: `org_unit.parent_id`, `org_unit.unit_type`, `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, `org_unit.status`, and `org_membership.id`. Do not keep the older Minimal D simplified `org_unit` test fixture if it hides these contract fields.
 
