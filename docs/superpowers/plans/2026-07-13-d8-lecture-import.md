@@ -239,6 +239,7 @@ public record LectureImportedComponent(
         String studentNo,
         String scoreValueText,
         BigDecimal scoreValue,
+        String rawDisplayText,
         String displayText
 ) {
 }
@@ -483,7 +484,7 @@ import java.util.List;
 @Component
 public class ExcelLectureImportParser implements LectureImportParser {
 
-    private static final int MAX_BYTES = 5 * 1024 * 1024;
+    private static final long MAX_LECTURE_IMPORT_BYTES = 5L * 1024 * 1024;
     private static final int MAX_ROWS = 5000;
     private static final List<String> REQUIRED_HEADERS = List.of("studentNo", "scoreValue", "displayText");
 
@@ -492,7 +493,7 @@ public class ExcelLectureImportParser implements LectureImportParser {
         if (fileContent == null) {
             throw new ValidationException("导入模板错误：文件不可解析");
         }
-        if (fileContent.length > MAX_BYTES) {
+        if (fileContent.length > MAX_LECTURE_IMPORT_BYTES) {
             throw new ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB");
         }
         try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(fileContent))) {
@@ -1279,13 +1280,14 @@ private LectureImportResult processRows(NormalizedRequest request,
             continue;
         }
 
-        String displayText = isBlank(row.displayText()) ? request.title() + " 讲座签到" : row.displayText().trim();
-        resolvedRows.add(new ResolvedLectureRow(row.rowNo(), target.get().studentUserId(), candidate.studentNo(), candidate.scoreValueText(), candidate.scoreValue(), displayText));
+        String rawDisplayText = row.displayText();
+        String displayText = isBlank(rawDisplayText) ? request.title() + " 讲座签到" : rawDisplayText.trim();
+        resolvedRows.add(new ResolvedLectureRow(row.rowNo(), target.get().studentUserId(), candidate.studentNo(), candidate.scoreValueText(), candidate.scoreValue(), rawDisplayText, displayText));
     }
 
     resolvedRows.sort(Comparator.comparing(ResolvedLectureRow::studentUserId).thenComparing(ResolvedLectureRow::rowNo));
     List<LectureImportedComponent> components = resolvedRows.stream()
-            .map(row -> new LectureImportedComponent(row.rowNo(), row.studentUserId(), row.studentNo(), row.scoreValueText(), row.scoreValue(), row.displayText()))
+            .map(row -> new LectureImportedComponent(row.rowNo(), row.studentUserId(), row.studentNo(), row.scoreValueText(), row.scoreValue(), row.rawDisplayText(), row.displayText()))
             .toList();
     if (!components.isEmpty()) {
         failedRows.addAll(repository.insertLectureComponents(request.academicYear(), lectureBatchId, components));
@@ -1412,6 +1414,7 @@ private record ResolvedLectureRow(
         String studentNo,
         String scoreValueText,
         BigDecimal scoreValue,
+        String rawDisplayText,
         String displayText
 ) {
 }
@@ -1466,6 +1469,8 @@ private Long insertFinalRecord(Long studentUserId, String academicYear, String s
 private void insertComponent(Long finalRecordId, String categoryCode, String itemCode, String scoreValue, String sourceType, String sourceRefId)
 private static LectureImportedComponent component(Long rowNo, Long studentUserId, String studentNo, String scoreValue, String displayText)
 ```
+
+The test helper should construct `new LectureImportedComponent(rowNo, studentUserId, studentNo, scoreValue, new BigDecimal(scoreValue), displayText, displayText)`: repository tests pass the same value for `rawDisplayText` and normalized `displayText` because they exercise persistence behavior after service normalization.
 
 Required tests:
 
@@ -1539,7 +1544,10 @@ void shouldReturnFinalRecordLockedFailureAndLeaveNoComponentForSubmittedRecord()
     ));
 
     assertThat(failures).extracting("code").containsExactly("FINAL_RECORD_LOCKED");
-    assertThat(failures.get(0).rawValue()).containsEntry("studentNo", "S1001");
+    assertThat(failures.get(0).rawValue())
+            .containsEntry("studentNo", "S1001")
+            .containsEntry("scoreValue", "1.00")
+            .containsEntry("displayText", "讲座");
     assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score", Long.class)).isZero();
 }
 
@@ -1552,7 +1560,10 @@ void shouldReturnFinalRecordLockedFailureAndLeaveNoComponentForConfirmedRecord()
     ));
 
     assertThat(failures).extracting("code").containsExactly("FINAL_RECORD_LOCKED");
-    assertThat(failures.get(0).rawValue()).containsEntry("studentNo", "S1001");
+    assertThat(failures.get(0).rawValue())
+            .containsEntry("studentNo", "S1001")
+            .containsEntry("scoreValue", "1.00")
+            .containsEntry("displayText", "讲座");
     assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score", Long.class)).isZero();
 }
 ```
@@ -1828,7 +1839,7 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
         Map<String, String> rawValue = new LinkedHashMap<>();
         rawValue.put("studentNo", component.studentNo());
         rawValue.put("scoreValue", component.scoreValueText());
-        rawValue.put("displayText", component.displayText());
+        rawValue.put("displayText", component.rawDisplayText());
         return new LectureImportFailedRow(
                 component.rowNo(),
                 "FINAL_RECORD_LOCKED",
@@ -1872,7 +1883,7 @@ Notes for this implementation:
 - `findTarget` maps `LectureImportStudentTargetRow`.
 - `lectureBatchExists` returns `count > 0`.
 - `insertLectureComponents` returns `List<LectureImportFailedRow>` and loops over already sorted components. For each component, it locks `final_record`, inserts or reloads a DRAFT row if missing, records `FINAL_RECORD_LOCKED` as a row-level failure for non-DRAFT records, inserts a new lecture component, and immediately recalculates totals while the row is still locked.
-- The locked-row failure raw value uses `component.studentNo()` so the response preserves the frozen `rawValue.studentNo` contract from the workbook, not the internal user id.
+- The locked-row failure raw value uses `component.studentNo()`, `component.scoreValueText()`, and `component.rawDisplayText()` so the response preserves the frozen workbook raw value contract, not internal ids or defaulted display text.
 - Recalculate and update totals after every successful lecture component insertion, not once per distinct `final_record_id`. This preserves the frozen D-8 contract that `final_record.version` increments for every successful row mutation, including multiple successful lecture rows for the same student in one repository call.
 - D-8 has two distinct failure modes inside the single request transaction: expected row-level business failures are collected and allow other rows in the same request to commit; unexpected persistence failures throw and roll back the whole request. This is why `FINAL_RECORD_LOCKED` returns a failed row, while `updateTotals == 0` throws.
 - If any `updateTotals` returns 0 after a DRAFT lock and component insert, throw `ConflictException("最终成绩状态已变更，请刷新后重试")` so the outer transaction rolls back. This path is a persistence consistency failure, not a row-level validation failure, so it must not be represented in the returned failure list.
@@ -1890,8 +1901,7 @@ Expected: repository tests pass and formatting check has no output.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportRepository.java \
-  whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/LectureImportMapper.java \
+git add whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/LectureImportMapper.java \
   whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisLectureImportRepository.java \
   whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/row/LectureImportStudentTargetRow.java \
   whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/row/LectureImportedComponentRow.java \
