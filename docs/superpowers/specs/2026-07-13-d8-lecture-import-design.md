@@ -120,6 +120,7 @@ Request-level failures:
 | Title too long | `400` | `VAL-4001` | `title 长度不能超过 255` |
 | Missing or invalid `heldAt` | `400` | `VAL-4001` | `heldAt 格式非法` |
 | Missing or invalid `academicYear` | `400` | `VAL-4001` | `academicYear 不合法` |
+| File too large or too many data rows | `400` | `VAL-4001` | `讲座导入文件最多支持 5000 行且不超过 5MB` |
 | Missing required header, header mismatch, no sheet, unreadable workbook | `400` | `VAL-4001` | Starts with `导入模板错误：` |
 | Missing authority | `403` | `AUTH-4030` | Existing security handler response. |
 | Same lecture batch already imported | `409` | `BIZ-4090` | `同一讲座批次已导入` |
@@ -133,7 +134,7 @@ Frozen row-level failure mapping:
 |---|---|---|
 | `studentNo` blank | `STUDENT_NO_REQUIRED` | `studentNo 不能为空` |
 | `scoreValue` blank | `SCORE_VALUE_REQUIRED` | `scoreValue 不能为空` |
-| `scoreValue` is not a decimal number | `SCORE_VALUE_INVALID` | `scoreValue 必须是数字` |
+| `scoreValue` does not match strict decimal text | `SCORE_VALUE_INVALID` | `scoreValue 必须是数字` |
 | `scoreValue < 0` or `scoreValue > 99999999.99` | `SCORE_VALUE_OUT_OF_RANGE` | `scoreValue 必须在 0 到 99999999.99 之间` |
 | `scoreValue` has more than 2 decimal places | `SCORE_VALUE_SCALE_INVALID` | `scoreValue 最多保留 2 位小数` |
 | `displayText` longer than 1000 characters | `DISPLAY_TEXT_TOO_LONG` | `displayText 长度不能超过 1000` |
@@ -153,14 +154,24 @@ Header row is row 1. Header names are case-sensitive and must appear in this exa
 | Column | Header | Required | Rule |
 |---:|---|---:|---|
 | A | `studentNo` | yes | Existing active `iam_user.user_no`. |
-| B | `scoreValue` | yes | Decimal, `0 <= value <= 99999999.99`, at most 2 decimal places. |
+| B | `scoreValue` | yes | Strict decimal text matching `^[0-9]+(\.[0-9]+)?$`, `0 <= value <= 99999999.99`, at most 2 decimal places. Thousand separators, percentages, currency symbols, and scientific notation are invalid. The upper bound follows `DECIMAL(10,2)`. |
 | C | `displayText` | no | Max 1000 characters after trim. Blank becomes the normalized request title followed by ` 讲座签到`. |
 
-Blank data rows are ignored and do not count toward `totalCount`.
+Extra columns after column C are ignored.
+
+Blank data rows are ignored and do not count toward `totalCount`. A blank data row is a row where columns A, B, and C are all missing or trim to blank after `DataFormatter` conversion.
 
 `totalCount` counts non-blank data rows after the header, including rows that later fail validation.
 
 Cell values are read with `DataFormatter`, trimmed, and blank strings become null. The parser must not evaluate formulas beyond POI's formatted value behavior.
+
+The parser rejects files larger than 5 MB and workbooks with more than 5000 non-blank data rows using `ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB")`.
+
+Header error messages:
+
+- Missing header row: `导入模板错误：缺少表头`.
+- Header mismatch in the first three columns: `导入模板错误：第{columnIndex}列表头应为 {expectedHeader}`.
+- Unreadable workbook: `导入模板错误：文件不可解析`.
 
 ## Import Semantics
 
@@ -194,7 +205,7 @@ Normalization is fixed as:
 - `normalizedHeldAt`: parsed `heldAt` truncated to whole seconds and formatted as `yyyyMMddHHmmss`.
 - response `heldAt`: the same whole-second value formatted as ISO local date-time, for example `2026-05-18T14:30:00`.
 
-The generated `lectureBatchId` format is `^LECTURE-[0-9]{8}-[0-9]{14}-[0-9A-F]{6}$`. Its length is 37 characters, which fits the documented `final_component_score.source_ref_id VARCHAR(64)` constraint.
+The generated `lectureBatchId` format is `^LECTURE-[0-9]{8}-[0-9]{14}-[0-9A-F]{6}$`. Its length is 38 characters, which fits the documented `final_component_score.source_ref_id VARCHAR(64)` constraint.
 
 Before any row mutation, the service checks whether any existing `final_component_score` joined to the same `academicYear` has `category_code = 'INTELLECTUAL'`, `item_code = 'INTELLECTUAL_LECTURE'`, `source_type = 'IMPORT'`, and `source_ref_id = lectureBatchId`. If yes, the whole request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
 
@@ -209,8 +220,8 @@ D-8 must protect the batch and each final record with concrete database-level se
 Batch-level concurrency:
 
 - The implementation must serialize imports for the same `lectureBatchId` before row mutation.
-- The preferred implementation is an application-level lock backed by the database, such as `SELECT GET_LOCK(CONCAT('D8_LECTURE:', ?), timeout)` on MySQL and an H2-test equivalent lock abstraction.
-- The batch lock lifetime must cover the entire import request, including all row-level mutation transactions or savepoints.
+- The preferred implementation is an application-level lock backed by the database, such as `SELECT GET_LOCK(CONCAT('D8_LECTURE:', ?), 30)` on MySQL and an H2-test equivalent lock abstraction.
+- The batch lock must be acquired and released on the same database connection that owns the request transaction, so the lock lifetime covers the whole import transaction.
 - An implementation may use an equivalent durable claim or unique-key strategy, but it must not add a general import batch table in this D-8 scope.
 - If the lock cannot be acquired because the same batch is already running or has just been persisted by another transaction, the request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
 - While holding the batch lock, the service performs the existing-component duplicate check again inside the transaction before any row mutation.
@@ -218,16 +229,17 @@ Batch-level concurrency:
 Per-student final-record concurrency:
 
 - Every successful row mutation must lock the target `final_record` with `SELECT ... FOR UPDATE`.
-- If no record exists, insert the DRAFT record and then re-read it with `SELECT ... FOR UPDATE`; concurrent insert races must be handled the same way D-7 handles the `(student_user_id, academic_year)` unique key.
+- If no record exists, insert the DRAFT record and then re-read it with `SELECT ... FOR UPDATE`; concurrent insert races must catch the unique-key conflict on `(student_user_id, academic_year)` and re-read the existing row with `SELECT ... FOR UPDATE`, matching D-7.
 - Component insert and total recalculation must occur while the target record is locked.
 - The totals update must include `WHERE id = ? AND status = 'DRAFT'`.
-- If the conditional totals update affects zero rows, treat that row as `FINAL_RECORD_LOCKED` when the transaction can continue; if the database operation has already failed the transaction, roll back the current row transaction and surface `FINAL_RECORD_LOCKED` for that row through the service layer.
+- If the conditional totals update affects zero rows, record `FINAL_RECORD_LOCKED` for that row and do not count it as a success.
 
 Transaction scope:
 
-- Request-level validation, parsing, duplicate-batch locking, and duplicate-batch pre-check happen before row mutations.
-- Each row mutation runs in its own transaction or savepoint-equivalent unit so row-level failures do not roll back earlier successful rows.
-- Unexpected infrastructure failures during a row mutation roll back that row's transaction and propagate as a request-level exception; already committed earlier row transactions remain committed.
+- The whole import runs in one request transaction after request-level validation and parsing pass.
+- Duplicate-batch locking, duplicate-batch pre-check, component inserts, and total updates all occur inside that one transaction and on the same database connection when the chosen lock implementation is connection-bound.
+- Expected row-level business failures, including missing student, out-of-scope target, locked final record, and duplicate student, are collected in `failedRows` and must not be thrown as transaction-rolling exceptions.
+- Unexpected infrastructure or persistence failures roll back the whole request transaction. In that case the HTTP response is a request-level failure and no partial successful rows are committed.
 - `final_record.version` is an optimistic-change counter for final-record consumers. D-8 increments it on every successful row mutation. D-8 does not require the caller to provide an expected version, but the conditional `status = 'DRAFT'` update protects against concurrent submit/confirm transitions.
 
 ### Student Eligibility
@@ -357,8 +369,11 @@ Add tests proving:
 
 - valid workbook rows parse with correct `rowNo`;
 - blank rows are skipped and not counted;
+- extra columns after `displayText` are ignored;
+- workbooks over 5000 non-blank data rows fail with the frozen size message;
 - missing header fails with `ValidationException`;
 - mismatched header fails with the expected column message;
+- formatted values that are not strict decimal text, such as `1,234.56`, `50%`, or `5E-1`, fail with `SCORE_VALUE_INVALID`;
 - unreadable bytes fail with `导入模板错误：文件不可解析`.
 
 ### Application Tests
@@ -373,6 +388,7 @@ Add tests proving:
 - a duplicate existing `lectureBatchId` throws `ConflictException`;
 - a zero-success import leaves no persisted batch marker and allows a later retry;
 - a valid row inserts a new draft record and lecture component;
+- blank row `displayText` stores the normalized request title followed by ` 讲座签到`;
 - two distinct lecture batches for the same student accumulate two components and totals;
 - duplicate `studentNo` inside the same workbook produces a `DUPLICATE_STUDENT` failed row;
 - a field-valid row that later fails student lookup or scope still consumes the duplicate-student key;
@@ -381,7 +397,8 @@ Add tests proving:
 - `SUBMITTED` and `CONFIRMED` targets appear in `failedRows` and are not mutated;
 - successful rows update totals and increment version;
 - mixed valid and invalid rows return HTTP 200 with accurate counts;
-- row-level business failures do not roll back previously committed successful row mutations;
+- expected row-level business failures are collected without rolling back other successful rows in the same request transaction;
+- an unexpected persistence failure rolls back the whole request transaction and commits no partial successful rows;
 - same-batch concurrent imports result in one successful import and one `ConflictException` mapped to `409 / BIZ-4090`;
 - a concurrent submit/confirm transition between target lookup and totals update is reported as `FINAL_RECORD_LOCKED` and does not mutate that row.
 
@@ -398,7 +415,7 @@ Use H2 MySQL mode and local test schema to verify:
 - generated `lectureBatchId` fits `final_component_score.source_ref_id VARCHAR(64)`;
 - two lecture batches for the same student create two components instead of overwriting;
 - duplicate-batch existence checks join through `final_record.academic_year`;
-- duplicate-batch locking or equivalent serialization prevents two same-batch transactions from both inserting rows;
+- duplicate-batch locking or equivalent serialization prevents two same-batch request transactions from both inserting rows;
 - totals are recalculated from all current components.
 
 ### MVC and Security Tests
