@@ -1,5 +1,6 @@
 package edu.whut.eval.app.iam;
 
+import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
@@ -124,6 +125,12 @@ class TeamDeliverySqlConsistencyTest {
             assertThat(countRows(connection, "iam_role_permission", "role_id = 4004 AND permission_id = (SELECT id FROM iam_permission WHERE permission_code = 'score.confirm.assigned')")).isEqualTo(1);
             assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7010 AND permission_code = 'score.confirm.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
             assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7011 AND permission_code = 'score.confirm.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
+            assertThat(AuthorizationPermissionCodes.SCORE_IMPORT).isEqualTo("score.import");
+            assertThat(countRows(connection, "iam_permission", "permission_code = 'score.import'")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4003 AND permission_id = (SELECT id FROM iam_permission WHERE permission_code = 'score.import')")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4004 AND permission_id = (SELECT id FROM iam_permission WHERE permission_code = 'score.import')")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7010 AND permission_code = 'score.import' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7011 AND permission_code = 'score.import' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
             assertThat(countRows(connection, "application_submission", "application_id = " + applicationId + " AND title = 'runtime full-chain application'")).isEqualTo(1);
             assertThat(countRows(connection, "application_fact", "application_id = " + applicationId + " AND display_text = 'runtime approved score'")).isEqualTo(1);
             assertThat(countRows(connection, "final_record", "id = " + finalRecordId + " AND status = 'SUBMITTED'")).isEqualTo(1);
@@ -303,6 +310,11 @@ class TeamDeliverySqlConsistencyTest {
         assertThat(sql).contains("INSERT INTO iam_permission (id, permission_code, permission_name, permission_group, status, created_at)");
         assertThat(sql).contains("INSERT INTO iam_role_permission (id, role_id, permission_id, created_at)");
         assertThat(sql).contains("INSERT INTO iam_scope_rule (id, assignment_id, permission_code, scope_type, org_unit_id, category_code, item_code, expression_json, priority, status, created_at)");
+        assertThat(sql).contains("SELECT 5024, 'score.import', '导入导师/固定成绩', 'score', 'ACTIVE', CURRENT_TIMESTAMP()");
+        assertThat(sql).contains("SELECT 6050, 4003, p.id, CURRENT_TIMESTAMP()");
+        assertThat(sql).contains("SELECT 6051, 4004, p.id, CURRENT_TIMESTAMP()");
+        assertThat(sql).contains("SELECT 8021, 7010, 'score.import', 'ORG_SUBTREE', 2002");
+        assertThat(sql).contains("SELECT 8022, 7011, 'score.import', 'ORG_SUBTREE', 2002");
         assertThat(extractCreateTableBlock(sql, "final_record"))
                 .contains("`id` BIGINT NOT NULL AUTO_INCREMENT")
                 .contains("`student_user_id` BIGINT NOT NULL")
@@ -365,12 +377,16 @@ class TeamDeliverySqlConsistencyTest {
     }
 
     @Test
-    void shouldSeedScoreConfirmPermissionUsingExistingNaturalKeyWhenIdDiffers() throws Exception {
+    void shouldSeedDScorePermissionsUsingExistingNaturalKeyWhenIdDiffers() throws Exception {
         try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:d_confirm_permission_existing_code;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")) {
             createMinimalIamTables(connection);
             connection.createStatement().executeUpdate("""
                     INSERT INTO iam_permission (id, permission_code, permission_name, permission_group, status, created_at)
                     VALUES (9099, 'score.confirm.assigned', '已有确认权限', 'score', 'ACTIVE', CURRENT_TIMESTAMP())
+                    """);
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO iam_permission (id, permission_code, permission_name, permission_group, status, created_at)
+                    VALUES (9100, 'score.import', '已有导入权限', 'score', 'ACTIVE', CURRENT_TIMESTAMP())
                     """);
 
             executeStatements(connection, Files.readString(D_GROUP_SAFE_INIT_SQL));
@@ -380,6 +396,11 @@ class TeamDeliverySqlConsistencyTest {
             assertThat(countRows(connection, "iam_role_permission", "role_id = 4003 AND permission_id = 9099")).isEqualTo(1);
             assertThat(countRows(connection, "iam_role_permission", "role_id = 4004 AND permission_id = 9099")).isEqualTo(1);
             assertThat(countRows(connection, "iam_role_permission", "permission_id = 5023")).isEqualTo(0);
+            assertThat(singleLong(connection, "SELECT id FROM iam_permission WHERE permission_code = 'score.import'"))
+                    .isEqualTo(9100L);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4003 AND permission_id = 9100")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4004 AND permission_id = 9100")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "permission_id = 5024")).isEqualTo(0);
         }
     }
 
@@ -398,6 +419,13 @@ class TeamDeliverySqlConsistencyTest {
             assertThat(countRows(connection, "iam_role_permission", "role_id = 4004 AND permission_id = " + permissionId)).isEqualTo(1);
             assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7010 AND permission_code = 'score.confirm.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
             assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7011 AND permission_code = 'score.confirm.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
+            long importPermissionId = singleLong(connection, "SELECT id FROM iam_permission WHERE permission_code = 'score.import'");
+            assertThat(importPermissionId).isEqualTo(5024L);
+            assertThat(countRows(connection, "iam_permission", "permission_code = 'score.import'")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4003 AND permission_id = " + importPermissionId)).isEqualTo(1);
+            assertThat(countRows(connection, "iam_role_permission", "role_id = 4004 AND permission_id = " + importPermissionId)).isEqualTo(1);
+            assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7010 AND permission_code = 'score.import' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
+            assertThat(countRows(connection, "iam_scope_rule", "assignment_id = 7011 AND permission_code = 'score.import' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002")).isEqualTo(1);
         }
     }
 
@@ -408,6 +436,20 @@ class TeamDeliverySqlConsistencyTest {
             connection.createStatement().executeUpdate("""
                     INSERT INTO iam_permission (id, permission_code, permission_name, permission_group, status, created_at)
                     VALUES (5023, 'unrelated.permission', '占用固定编号', 'test', 'ACTIVE', CURRENT_TIMESTAMP())
+                    """);
+
+            assertThatThrownBy(() -> executeStatements(connection, Files.readString(D_GROUP_SAFE_INIT_SQL)))
+                    .isInstanceOf(SQLException.class);
+        }
+    }
+
+    @Test
+    void shouldFailDImportPermissionSeedWhenReservedIdsAreOccupiedByUnrelatedRows() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:d_import_permission_collision;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")) {
+            createMinimalIamTables(connection);
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO iam_permission (id, permission_code, permission_name, permission_group, status, created_at)
+                    VALUES (5024, 'unrelated.import.permission', '占用导入固定编号', 'test', 'ACTIVE', CURRENT_TIMESTAMP())
                     """);
 
             assertThatThrownBy(() -> executeStatements(connection, Files.readString(D_GROUP_SAFE_INIT_SQL)))
