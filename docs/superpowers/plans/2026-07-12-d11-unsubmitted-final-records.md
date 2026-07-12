@@ -635,7 +635,7 @@ void shouldExcludeSubmittedAndConfirmedStudents() {
 }
 ```
 
-Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithAllScope()`, and `accessContextWithUnsupportedCategoryOnly()` by following the existing `AuthorizationScope` test construction style.
+Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithAllScope()`, `accessContextWithUnsupportedCategoryOnly()`, `accessContextWithOrgUnitAndOrgSubtree(Long orgUnitId, Long orgSubtreeRootId)`, and `accessContextWithOrgSubtreeAndUnsupportedCategory(Long orgSubtreeRootId)` by following the existing `AuthorizationScope` test construction style.
 
 - [ ] **Step 3: Write failing scope and filter tests**
 
@@ -700,6 +700,103 @@ void shouldReturnEmptyPageForUnsupportedScopeOnly() {
 
     assertThat(page.total()).isZero();
     assertThat(page.records()).isEmpty();
+}
+
+@Test
+void shouldReturnAllCurrentRosterRowsForAllScope() {
+    seedRoster();
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithAllScope(),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(3);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L);
+}
+
+@Test
+void shouldUnionOrgUnitAndOrgSubtreeWithoutDuplicatingStudents() {
+    seedRoster();
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgUnitAndOrgSubtree(4001L, 2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(3);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L);
+}
+
+@Test
+void shouldIgnoreUnsupportedFragmentsWhenSupportedOrgSubtreeExists() {
+    seedRoster();
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtreeAndUnsupportedCategory(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(3);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L);
+}
+
+@Test
+void shouldAllowTopLevelOrgSubtreeRootPath() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (1000, NULL, 'SCHOOL', 'WHUT', '武汉理工大学', '/WHUT', 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(1000L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(3);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L);
+}
+
+@Test
+void shouldRejectMalformedOrgSubtreeRootPaths() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2011, NULL, 'COLLEGE', 'BAD_BLANK', '空路径学院', '', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2012, NULL, 'COLLEGE', 'BAD_PREFIX', '缺少前缀学院', 'WHUT/CS', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2013, NULL, 'COLLEGE', 'BAD_TRAILING', '尾斜杠学院', '/WHUT/CS/', 'ACTIVE')");
+
+    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2011L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records())
+            .isEmpty();
+    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2012L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records())
+            .isEmpty();
+    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2013L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records())
+            .isEmpty();
+}
+
+@Test
+void shouldRejectMalformedClassPathsForOrgSubtreeMatching() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4011, 3001, 'CLASS', 'BAD_BLANK', '空路径班', '', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4012, 3001, 'CLASS', 'BAD_PREFIX', '缺少前缀班', 'WHUT/CS/CS2022/BAD_PREFIX', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4013, 3001, 'CLASS', 'BAD_TRAILING', '尾斜杠班', '/WHUT/CS/CS2022/BAD_TRAILING/', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1011, 'S011', 'BadBlank', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1012, 'S012', 'BadPrefix', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1013, 'S013', 'BadTrailing', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5011, 1011, 4011, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5012, 1012, 4012, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5013, 1013, 4013, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L);
 }
 ```
 
