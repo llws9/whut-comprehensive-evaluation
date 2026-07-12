@@ -109,6 +109,8 @@ No fuzzy match, prefix match, contains match, or case normalization is performed
 
 If a filter value exactly matches one organization unit's `unit_code` and another organization unit's `unit_name`, both matching units are included because the filter uses OR semantics. If `grade` is provided, students whose selected class has no active parent grade row are excluded because there is no grade code/name to match. Without a `grade` filter, those students may still appear with `grade = ""`.
 
+If dirty organization data has a null `unit_code`, the code side of the `grade` or `classes` exact-match predicate does not match that row. The same row may still match through the corresponding `unit_name` predicate when `unit_name` is present.
+
 ### 4.4 Success Response
 
 `ApiResponse<PageResult<UnsubmittedStudentView>>`
@@ -121,7 +123,7 @@ If a filter value exactly matches one organization unit's `unit_code` and anothe
 | `userNo` | string | `iam_user.user_no`; active student rows are expected to be non-null, and dirty null values map to empty string in the view |
 | `userName` | string | `iam_user.user_name`; active student rows are expected to be non-null, and dirty null values map to empty string in the view |
 | `grade` | string | active parent grade `org_unit.unit_name`; empty string if the class has no active `GRADE` parent |
-| `className` | string | active primary class `org_unit.unit_name` |
+| `className` | string | active primary class `org_unit.unit_name`; dirty null values map to empty string in the view |
 | `status` | string | fixed `UNSUBMITTED` |
 | `lastUpdatedAt` | string | ISO-8601 UTC string serialized from `MAX(final_record.updated_at)` across `DRAFT` rows for the academic year; empty string when the student has no `DRAFT` final record or dirty `DRAFT` rows have only null `updated_at` values |
 
@@ -447,7 +449,7 @@ ORDER BY CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
          u.id ASC
 ```
 
-This order is stable for pagination and matches the existing organization code ordering used by management views. The response still displays grade and class names, but sorting intentionally uses `unit_code` because codes are designed to be stable and unique; switching to `unit_name` sorting would require a separate product decision about display-name uniqueness and rename behavior. Rows with no active grade parent sort after rows with a grade. The class-code null guard is only defensive ordering for dirty class rows with a null `unit_code`; it does not imply a student can be returned without an active class row.
+This order is stable for pagination and matches the existing organization code ordering used by management views. The response still displays grade and class names, but sorting intentionally uses `unit_code` because codes are designed to be stable and unique; switching to `unit_name` sorting would require a separate product decision about display-name uniqueness and rename behavior. Rows with no active grade parent sort after rows with a grade. The class-code null guard is only defensive ordering for dirty class rows with a null `unit_code`; those rows sort after non-null class codes within the same grade ordering and remain stable through `u.user_no` and `u.id`. It does not imply a student can be returned without an active class row.
 
 Pagination is applied only in the outermost select query after visible membership selection, draft aggregation, display joins, and the stable `ORDER BY`. The count query uses the same roster/scope/filter/exclusion predicates without `LIMIT` or `OFFSET`, so `total` remains the full matching row count while `records` contains only the requested page.
 
@@ -517,9 +519,9 @@ public record UnsubmittedStudentView(
 }
 ```
 
-The service maps every row with `status = "UNSUBMITTED"`, maps missing `grade` to an empty string, and maps missing `lastUpdatedAt` to an empty string to preserve the frozen response-field type contract.
+The service maps every row with `status = "UNSUBMITTED"`, maps missing `userNo`, `userName`, `grade`, `className`, and `lastUpdatedAt` values to empty strings, and preserves the frozen response-field type contract.
 
-When present, `lastUpdatedAt` must be formatted as an ISO-8601 UTC string from `Instant`, not a numeric epoch timestamp. The formatting must preserve the actual `Instant` precision returned from `MAX(final_record.updated_at)` instead of truncating to whole seconds.
+When present, `lastUpdatedAt` must be formatted as an ISO-8601 UTC string from `Instant`, not a numeric epoch timestamp. The output format matches `Instant.toString()`: it uses `Z` for UTC and preserves the actual fractional precision returned from `MAX(final_record.updated_at)` instead of truncating to whole seconds.
 
 ### 8.4 Repository Contract
 
@@ -597,7 +599,7 @@ Helper contracts:
 |---|---:|---|---|
 | missing `academicYear` | `400` | `VAL-4001` | `ValidationException("academicYear 不合法")` from query object |
 | blank `academicYear` | `400` | `VAL-4001` | `ValidationException("academicYear 不合法")` from query object |
-| malformed, unparsable, or non-consecutive `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
+| malformed, unparsable, or non-consecutive `academicYear` | `400` | `VAL-4001` | `ValidationException("academicYear 不合法")` from query object |
 | `classes` exceeds 500 normalized values | `400` | `VAL-4001` | `ValidationException("classes 不合法")` from query object |
 | `pageNo` causes offset overflow | `400` | `VAL-4001` | `ValidationException("pageNo 不合法")` from query object |
 | unsupported multi-value `academicYear` or `grade` input | `400` | `VAL-4001` | `ValidationException` from controller raw-parameter check |
@@ -643,6 +645,7 @@ Extend `FinalRecordQueryApplicationServiceTest`:
 - returns `lastUpdatedAt = ""` for an unsubmitted student with no `final_record`;
 - returns `lastUpdatedAt = ""` when draft rows exist but the aggregate timestamp is null;
 - maps raw row `grade = null` to view `grade = ""`;
+- maps raw row `className = null` to view `className = ""`;
 - maps raw row `userNo = null` or `userName = null` to empty strings;
 - returns an empty page without throwing;
 - maps every row to `status = "UNSUBMITTED"` without trusting mapper data for that value.
@@ -666,6 +669,7 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - filters by `grade` and `classes` together using intersection semantics;
 - proves `grade` and `classes` filters match organization code and organization name by exact equality;
 - proves `grade` and `classes` exact matches are case-sensitive and do not rely on database default collation;
+- proves dirty null `unit_code` rows do not match through the code predicate, can still match through `unit_name`, and sort after non-null class codes with stable `user_no` / `id` tie-breakers;
 - proves a partial name such as `计算机` does not match `计算机 2022 级`;
 - proves a filter value that matches one org unit's code and another org unit's name includes both exact matches while still returning each student once;
 - proves a filter value that matches both `unit_code` and `unit_name` of the same org unit returns each student once;
