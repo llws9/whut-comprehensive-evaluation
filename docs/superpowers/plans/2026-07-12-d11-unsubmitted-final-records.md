@@ -845,7 +845,7 @@ void shouldReturnEmptyWhenGradeFilterDoesNotMatchAnyActiveVisibleGrade() {
 }
 ```
 
-Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithAllScope()`, `accessContextWithUnsupportedCategoryOnly()`, `accessContextWithOrgUnitAndOrgSubtree(Long orgUnitId, Long orgSubtreeRootId)`, and `accessContextWithOrgSubtreeAndUnsupportedCategory(Long orgSubtreeRootId)` by following the existing `AuthorizationScope` test construction style.
+Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithAllScope()`, `accessContextWithUnsupportedCategoryOnly()`, `accessContextWithEmptyGrantedScopes()`, `accessContextWithOrgUnitAndOrgSubtree(Long orgUnitId, Long orgSubtreeRootId)`, and `accessContextWithOrgSubtreeAndUnsupportedCategory(Long orgSubtreeRootId)` by following the existing `AuthorizationScope` test construction style.
 
 - [ ] **Step 3: Write failing scope and filter tests**
 
@@ -981,6 +981,19 @@ void shouldReturnEmptyPageForUnsupportedScopeOnly() {
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithUnsupportedCategoryOnly(),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isZero();
+    assertThat(page.records()).isEmpty();
+}
+
+@Test
+void shouldReturnEmptyPageForGrantedButEmptyScopes() {
+    seedRoster();
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithEmptyGrantedScopes(),
             new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
     );
 
@@ -1168,7 +1181,7 @@ void shouldKeepCountAndRowsConsistentWhenFiltersLeaveMultipleVisibleMembershipsF
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
-            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2200", "CS2202"), 1, 20)
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2200", "CS2203"), 1, 20)
     );
 
     assertThat(page.total()).isEqualTo(1);
@@ -1190,11 +1203,11 @@ void shouldKeepCountAndPagedRowsConsistentWhenManyVisibleMembershipsCollapseToOn
 
     PageResult<UnsubmittedStudentRow> firstPage = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
-            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2200", "CS2202", "CS2203"), 1, 1)
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2200", "CS2203"), 1, 1)
     );
     PageResult<UnsubmittedStudentRow> secondPage = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
-            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2200", "CS2202", "CS2203"), 2, 1)
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2200", "CS2203"), 2, 1)
     );
 
     assertThat(firstPage.total()).isEqualTo(1);
@@ -1686,6 +1699,34 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("pageNo", "1", "2")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("pageNo[]", "1")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("pageSize", "20", "50")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("pageSize[]", "20")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
 }
 
 @Test
@@ -1953,7 +1994,7 @@ Run:
 ```bash
 git diff --check
 git diff --stat main...HEAD
-rg -n "pageNum|pages|className.*List|academicYear 不能为空|application_submission|application_fact" \
+rg -n "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 rg -n "status\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'CONFIRMED'\s*\)|status\s*=\s*'SUBMITTED'|status\s*=\s*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
@@ -1964,7 +2005,7 @@ rg -n "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*LIKE.*
 If `rg` is unavailable in the execution environment, run the equivalent `grep -RInE` command with the regex in double quotes:
 
 ```bash
-grep -RInE "pageNum|pages|className.*List|academicYear 不能为空|application_submission|application_fact" \
+grep -RInE "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 grep -RInE "status\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'CONFIRMED'\s*\)|status\s*=\s*'SUBMITTED'|status\s*=\s*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
@@ -1978,6 +2019,7 @@ Expected:
 - The scope, status, and numeric-path scans are mandatory. If `rg` is available, run the three `rg` commands above; if `rg` is unavailable, run the three `grep -RInE` fallback commands above over the same directories before claiming Task 5 verification is complete.
 - The scans pass only when they produce no new D-11 contract-drift hits in changed files. Any new hit fails the verification unless the execution notes name the file/line and explain why the hit is unrelated to D-11 contract drift.
 - No `PageResult` metadata fields are added.
+- No D-11 request or response contract adds `classId`.
 - No D-11 code uses application/import/export tables.
 - No D-11 invalid academic-year path uses `academicYear 不能为空`.
 - Treat the scans as checks on changed files/new hits, not a requirement for the entire repository to have zero historical matches.
