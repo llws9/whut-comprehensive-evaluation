@@ -920,6 +920,23 @@ void shouldIsolateSubmittedConfirmedAndDraftRecordsByAcademicYear() {
 }
 
 @Test
+void shouldKeepCurrentYearDraftVisibleWhenOtherYearSubmittedExists() {
+    seedRoster();
+    insertFinalRecord(28L, 1001L, "2024-2025", "SUBMITTED", "2026-07-12 10:15:30");
+    insertFinalRecord(29L, 1001L, "2025-2026", "DRAFT", "2026-07-12 13:15:30");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .contains(1001L);
+    assertThat(findRow(page, 1001L).getLastUpdatedAt())
+            .isEqualTo(Instant.parse("2026-07-12T13:15:30Z"));
+}
+
+@Test
 void shouldExcludeCurrentYearSubmittedStudentsEvenWhenPreviousYearDraftExists() {
     seedRoster();
     insertFinalRecord(24L, 1001L, "2024-2025", "DRAFT", "2026-07-12 10:15:30");
@@ -1764,7 +1781,7 @@ List<UnsubmittedStudentRow> selectUnsubmittedStudents(@Param("scopeFragment") Sq
                                                       @Param("query") UnsubmittedFinalRecordQuery query);
 ```
 
-Add an import for `SqlPredicateFragment`. D-11 mapper methods must accept the typed scope fragment rather than separate raw `String`/`Map` parameters so callers cannot casually supply a raw SQL expression plus arbitrary parameter map.
+Add an import for `SqlPredicateFragment`. D-11 mapper methods must accept the typed scope fragment rather than separate raw `String`/`Map` parameters so callers cannot casually supply a raw SQL expression plus arbitrary parameter map. If the existing `FinalRecordQueryMapper` is already registered through `@Mapper` or repository-level `@MapperScan`, append these methods to the existing mapper interface and do not add duplicate mapper registration.
 
 - [ ] **Step 7: Add D-11 SQL provider methods**
 
@@ -2101,21 +2118,22 @@ void shouldRejectUnsafeD11ScopeExpressionFragments() {
     assertThatThrownBy(() -> provider.buildCountUnsubmittedStudents(params))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessage("Unsafe D-11 scope expression");
+    assertThatThrownBy(() -> provider.buildSelectUnsubmittedStudents(params))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessage("Unsafe D-11 scope expression");
 }
 
 @Test
 void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
     FinalRecordQuerySqlProvider provider = new FinalRecordQuerySqlProvider();
 
-    assertThat(provider.buildCountUnsubmittedStudents(providerParams(SqlPredicateFragment.denyAll())))
-            .contains("1 = 0");
-    assertThat(provider.buildCountUnsubmittedStudents(providerParams(SqlPredicateFragment.alwaysTrue())))
-            .contains("1 = 1");
-    assertThat(provider.buildCountUnsubmittedStudents(providerParams(new SqlPredicateFragment(
+    assertProviderAccepts(provider, SqlPredicateFragment.denyAll(), "1 = 0");
+    assertProviderAccepts(provider, SqlPredicateFragment.alwaysTrue(), "1 = 1");
+    assertProviderAccepts(provider, new SqlPredicateFragment(
             "(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}, #{scopeFragment.parameters.d11OrgUnit1}))",
             Map.of("d11OrgUnit0", 4001L, "d11OrgUnit1", 4002L)
-    )))).contains("class_ou.id IN");
-    assertThat(provider.buildCountUnsubmittedStudents(providerParams(new SqlPredicateFragment(
+    ), "class_ou.id IN");
+    assertProviderAccepts(provider, new SqlPredicateFragment(
             """
             ( EXISTS (
                 SELECT 1
@@ -2137,15 +2155,23 @@ void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
             ) )
             """,
             Map.of("d11Subtree0", 2002L)
-    )))).contains("EXISTS");
-    assertThat(provider.buildCountUnsubmittedStudents(providerParams(new SqlPredicateFragment(
+    ), "EXISTS");
+    assertProviderAccepts(provider, new SqlPredicateFragment(
             "(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}) OR EXISTS ( SELECT 1 FROM org_unit root_ou WHERE root_ou.id IN (#{scopeFragment.parameters.d11Subtree0}) AND root_ou.status = 'ACTIVE' AND root_ou.path IS NOT NULL AND root_ou.path <> '' AND root_ou.path LIKE '/%' AND root_ou.path NOT LIKE '%/' AND __D11_CLASS_ALIAS__.path IS NOT NULL AND __D11_CLASS_ALIAS__.path <> '' AND __D11_CLASS_ALIAS__.path LIKE '/%' AND __D11_CLASS_ALIAS__.path NOT LIKE '%/' AND ( __D11_CLASS_ALIAS__.path = root_ou.path OR __D11_CLASS_ALIAS__.path LIKE CONCAT(root_ou.path, '/%') ) ))",
             Map.of("d11OrgUnit0", 4001L, "d11Subtree0", 2002L)
-    )))).contains(" OR ");
-    assertThat(provider.buildCountUnsubmittedStudents(providerParams(new SqlPredicateFragment(
+    ), " OR ");
+    assertProviderAccepts(provider, new SqlPredicateFragment(
             "(EXISTS ( SELECT 1 FROM org_unit root_ou WHERE root_ou.id IN (#{scopeFragment.parameters.d11Subtree0}) AND root_ou.status = 'ACTIVE' AND root_ou.path IS NOT NULL AND root_ou.path <> '' AND root_ou.path LIKE '/%' AND root_ou.path NOT LIKE '%/' AND __D11_CLASS_ALIAS__.path IS NOT NULL AND __D11_CLASS_ALIAS__.path <> '' AND __D11_CLASS_ALIAS__.path LIKE '/%' AND __D11_CLASS_ALIAS__.path NOT LIKE '%/' AND ( __D11_CLASS_ALIAS__.path = root_ou.path OR __D11_CLASS_ALIAS__.path LIKE CONCAT(root_ou.path, '/%') ) ) OR __D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}))",
             Map.of("d11Subtree0", 2002L, "d11OrgUnit0", 4001L)
-    )))).contains(" OR ");
+    ), " OR ");
+}
+
+private void assertProviderAccepts(FinalRecordQuerySqlProvider provider,
+                                   SqlPredicateFragment fragment,
+                                   String expectedSql) {
+    Map<String, Object> params = providerParams(fragment);
+    assertThat(provider.buildCountUnsubmittedStudents(params)).contains(expectedSql);
+    assertThat(provider.buildSelectUnsubmittedStudents(params)).contains(expectedSql);
 }
 
 private Map<String, Object> providerParams(SqlPredicateFragment fragment) {
@@ -2682,7 +2708,7 @@ Keep these tests aligned with actual helper names and access-validation flow in 
 Run:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: PASS.
@@ -2729,7 +2755,7 @@ rg -n "scopeExpression" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 ```
 
-If `rg` is unavailable in the execution environment, run the fallback `grep -RInE` commands below. These use POSIX ERE character classes such as `[[:space:]]` instead of `\s`, so their matching semantics align with the `rg` checks:
+Prefer the four `rg` scans above. If `rg` is unavailable in the execution environment, run the four fallback `grep -RInE` commands below as an equivalent substitute; execute one complete scan set, not both. These use POSIX ERE character classes such as `[[:space:]]` instead of `\s`, so their matching semantics align with the `rg` checks:
 
 ```bash
 grep -RInE "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
@@ -2745,7 +2771,7 @@ grep -RInE "scopeExpression" \
 Expected:
 
 - `git diff --check` prints no whitespace errors.
-- The scope, status, numeric-path, and `scopeExpression` scans are mandatory. If `rg` is available, run the four `rg` commands above; if `rg` is unavailable, run the four `grep -RInE` fallback commands above over the same directories. `rg` absence is not a waiver; the grep fallback is an equivalent required verification path. Task 5 verification is incomplete unless all four scans have been executed and every hit has been accepted or rejected using the rules below.
+- The scope, status, numeric-path, and `scopeExpression` scans are mandatory. Run either the four `rg` commands or, when `rg` is unavailable, the four `grep -RInE` fallback commands over the same directories. Task 5 verification is incomplete unless one full scan set has been executed and every hit has been accepted or rejected using the rules below.
 - The `scopeExpression` scan is mandatory. It may find the mapper/provider infrastructure and repository-internal builder, but must not find a D-11 public API, request object, controller, service, repository contract, or DTO that accepts a caller-provided raw SQL fragment.
 - The scans pass only when they produce no new D-11 contract-drift hits in changed files. Any new hit fails the verification unless the execution notes name the file/line and explain why the hit is unrelated to D-11 contract drift.
 - No `PageResult` metadata fields are added.
