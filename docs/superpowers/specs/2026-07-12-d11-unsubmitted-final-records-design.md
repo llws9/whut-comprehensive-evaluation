@@ -236,7 +236,7 @@ The seeded A-group organization path stores code paths:
 - grade: `/WHUT/CS/CS2022`;
 - class: `/WHUT/CS/CS2022/CS2201`.
 
-Valid organization paths start with `/`, are not blank, and do not end with `/`. A malformed root path is treated as no match. The top-level school path `/WHUT` is valid and may match all descendants when granted through `ORG_SUBTREE`.
+Valid organization paths start with `/`, are not blank, and do not end with `/`. A malformed root path is treated as no match. The top-level school path `/WHUT` is valid and may match all descendants when granted through `ORG_SUBTREE`. A class org path must also satisfy the same basic validity rules to participate in `ORG_SUBTREE`; if `class_ou.path` is `NULL`, blank, missing the leading `/`, or ends with `/`, that class is treated as outside every subtree scope.
 
 An `ORG_SUBTREE` rule rooted at org id `2002` must resolve the root org path (`/WHUT/CS`) and match:
 
@@ -259,6 +259,10 @@ EXISTS (
     AND root_ou.path <> ''
     AND root_ou.path LIKE '/%'
     AND root_ou.path NOT LIKE '%/'
+    AND class_ou.path IS NOT NULL
+    AND class_ou.path <> ''
+    AND class_ou.path LIKE '/%'
+    AND class_ou.path NOT LIKE '%/'
     AND (
       class_ou.path = root_ou.path
       OR class_ou.path LIKE CONCAT(root_ou.path, '/%')
@@ -304,6 +308,10 @@ FROM (
         AND root_ou.path <> ''
         AND root_ou.path LIKE '/%'
         AND root_ou.path NOT LIKE '%/'
+        AND class_ou.path IS NOT NULL
+        AND class_ou.path <> ''
+        AND class_ou.path LIKE '/%'
+        AND class_ou.path NOT LIKE '%/'
         AND (
           class_ou.path = root_ou.path
           OR class_ou.path LIKE CONCAT(root_ou.path, '/%')
@@ -362,6 +370,10 @@ FROM (
           AND root_ou.path <> ''
           AND root_ou.path LIKE '/%'
           AND root_ou.path NOT LIKE '%/'
+          AND class_ou1.path IS NOT NULL
+          AND class_ou1.path <> ''
+          AND class_ou1.path LIKE '/%'
+          AND class_ou1.path NOT LIKE '%/'
           AND (
             class_ou1.path = root_ou.path
             OR class_ou1.path LIKE CONCAT(root_ou.path, '/%')
@@ -422,7 +434,7 @@ ORDER BY CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
          u.id ASC
 ```
 
-This order is stable for pagination and matches how admins scan a roster. Rows with no active grade parent sort after rows with a grade.
+This order is stable for pagination and matches the existing organization code ordering used by management views. The response still displays grade and class names, but sorting intentionally uses `unit_code` because codes are designed to be stable and unique; switching to `unit_name` sorting would require a separate product decision about display-name uniqueness and rename behavior. Rows with no active grade parent sort after rows with a grade.
 
 ## 8. Application Model
 
@@ -486,12 +498,7 @@ public record UnsubmittedStudentView(
 
 The service maps every row with `status = "UNSUBMITTED"`.
 
-`lastUpdatedAt` must be serialized in the same external time format used by existing final-record APIs: an ISO-8601 UTC string from `Instant`, not a numeric epoch timestamp. If the global Jackson configuration does not already disable timestamp serialization for Java time values, annotate the record component with:
-
-```java
-@JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ssX", timezone = "UTC")
-Instant lastUpdatedAt
-```
+`lastUpdatedAt` must be serialized in the same external time format used by existing final-record APIs: an ISO-8601 UTC string from `Instant`, not a numeric epoch timestamp. The serialization must preserve the actual `Instant` precision returned from `MAX(final_record.updated_at)` instead of truncating to whole seconds. Prefer the project-wide Java Time serialization configuration; do not add a fixed second-level `@JsonFormat` pattern such as `yyyy-MM-dd'T'HH:mm:ssX` to this field.
 
 ### 8.4 Repository Contract
 
@@ -625,6 +632,7 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - proves an org path with a similar prefix but not a real child path, such as `/WHUT/CS2/CS2201`, is not visible to a root path `/WHUT/CS`;
 - proves an `ORG_SUBTREE` scope rooted at the top-level path `/WHUT` can see descendant class rows;
 - proves a malformed root path, such as blank, not starting with `/`, or ending with `/`, matches no rows;
+- proves a malformed class path, such as blank, not starting with `/`, or ending with `/`, is not matched by `ORG_SUBTREE`;
 
 The two `ORG_SUBTREE` path tests are mandatory because a numeric-id path comparison such as `LIKE '%/2002/%'` would return zero rows against the seeded organization path format, while an unsafe prefix comparison would incorrectly include similar-prefix non-child paths.
 
@@ -642,6 +650,7 @@ Add or extend admin final-record controller tests to prove:
 
 - `GET /api/admin/final-records/unsubmitted?academicYear=2025-2026` returns the page shape;
 - a draft `lastUpdatedAt` value is rendered as an ISO-8601 UTC JSON string, not a numeric timestamp;
+- a draft `lastUpdatedAt` value with fractional seconds preserves the serialized fractional precision instead of truncating to whole seconds;
 - missing `academicYear` returns `400 / VAL-4001`;
 - blank `academicYear` returns `400 / VAL-4001`;
 - malformed `academicYear` returns `400 / VAL-4001`;
@@ -686,11 +695,11 @@ If shared scope translation is fixed to resolve `ORG_SUBTREE` by real org paths,
 - Pagination order is deterministic and stable across pages.
 - Null grade rows sort after non-null grade rows.
 - ORG_SUBTREE path matching rejects similar-prefix non-child paths.
-- ORG_SUBTREE path matching rejects malformed root paths and supports valid top-level paths such as `/WHUT`.
+- ORG_SUBTREE path matching rejects malformed root and class paths and supports valid top-level paths such as `/WHUT`.
 - Duplicate dirty draft final records do not duplicate students in the result.
 - Unknown dirty final-record statuses are ignored.
 - Any `SUBMITTED` or `CONFIRMED` row excludes the student even if dirty `DRAFT` rows also exist.
-- `lastUpdatedAt` is the draft aggregate `MAX(final_record.updated_at)` or `null`.
+- `lastUpdatedAt` is the draft aggregate `MAX(final_record.updated_at)` or `null`, serialized without losing `Instant` precision.
 - No data returns an empty page, not `404`.
 - `ORG_SUBTREE` matches the real code-path format in `org_unit.path`.
 - The implementation does not introduce D-7, D-8, D-9, or D-10 behavior.
