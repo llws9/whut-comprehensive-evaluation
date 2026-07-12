@@ -637,6 +637,21 @@ void shouldExcludeSubmittedAndConfirmedStudents() {
 }
 
 @Test
+void shouldTreatNullFinalRecordStatusAsUnsubmittedWithoutLastUpdatedAtContribution() {
+    seedRoster();
+    insertFinalRecord(24L, 1003L, "2025-2026", null, "2026-07-12 10:15:30");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("CS2202"), 1, 20)
+    );
+
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1003L);
+    assertThat(findRow(page, 1003L).getLastUpdatedAt()).isNull();
+}
+
+@Test
 void shouldExcludeStudentsThatHaveDraftAndSubmittedOrConfirmedRecords() {
     seedRoster();
     insertFinalRecord(31L, 1001L, "2025-2026", "DRAFT", "2026-07-12 10:15:30");
@@ -737,6 +752,21 @@ void shouldApplyOrgUnitAsExactClassOnly() {
 }
 
 @Test
+void shouldApplyOrgUnitExactClassEvenWhenClassPathIsNull() {
+    seedRoster();
+    jdbcTemplate.update("UPDATE org_unit SET path = NULL WHERE id = 4001");
+
+    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgUnit(4001L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records())
+            .extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L);
+    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records())
+            .extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1003L);
+}
+
+@Test
 void shouldFilterGradeAndClassesByCaseSensitiveExactCodeOrNameIntersection() {
     seedRoster();
 
@@ -751,6 +781,18 @@ void shouldFilterGradeAndClassesByCaseSensitiveExactCodeOrNameIntersection() {
             new UnsubmittedFinalRecordQuery("2025-2026", "计算机2022级", List.of("计算机2202班"), 1, 20)).records())
             .extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1003L);
+    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "计算机", null, 1, 20)).records())
+            .as("grade must not use contains matching")
+            .isEmpty();
+    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("CS22"), 1, 20)).records())
+            .as("classes must not use prefix matching")
+            .isEmpty();
+    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("2201"), 1, 20)).records())
+            .as("classes must not use contains matching")
+            .isEmpty();
 }
 
 @Test
@@ -1282,6 +1324,12 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
             .andExpect(jsonPath("$.code").value("VAL-4001"));
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear[]", "2025-2026")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
                     .param("grade[]", "CS2022")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
@@ -1305,6 +1353,12 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2027")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "   ")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("VAL-4001"));
@@ -1549,10 +1603,10 @@ If no files changed, do not create an empty commit.
 - `DRAFT` records keep students unsubmitted, appear once per student, and only contribute `MAX(updated_at)`.
 - A student with both `DRAFT` and `SUBMITTED` or `CONFIRMED` records for the same year is excluded.
 - `SUBMITTED` and `CONFIRMED` records exclude students.
-- Unknown final-record statuses are ignored.
+- Unknown and `NULL` final-record statuses are ignored and do not contribute to `lastUpdatedAt`.
 - `lastUpdatedAt` is rendered with `Instant.toString()` or empty string.
 - Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
-- `ORG_UNIT` is exact class id only.
+- `ORG_UNIT` is exact class id only and does not depend on `org_unit.path` being non-null.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
