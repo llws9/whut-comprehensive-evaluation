@@ -6,7 +6,7 @@
 
 **Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`. D-11 does not introduce dirty-data support that violates the frozen A/D SQL contracts, including missing `iam_user` columns, nullable organization path/code fields, nullable final-record status/update timestamps, or duplicate `final_record` rows for the same student and academic year. Nullable projection values from optional joins, such as no DRAFT record or no active grade parent, remain valid and are rendered as empty response strings where the API contract says so.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. Rows without an active grade parent are placed after all rows with an active grade parent; within that no-active-grade group, the null grade key does not define relative order, so ordering continues by class code, student number, and user id. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
 
 **Frozen Schema Precedence:** If the source design and frozen SQL schema conflict, the frozen A/D schema wins for D-11 implementation and tests. `docs/team-delivery/group-a-identity-user-admin.sql` defines `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, and `org_unit.status` as `NOT NULL`; `docs/team-delivery/group-d-score-finalization-import-export.safe-init.sql` defines `final_record.status` and `final_record.updated_at` as `NOT NULL` and enforces `UNIQUE KEY uk_final_record_student_year (student_user_id, academic_year)`. Therefore D-11 must not add duplicate final-record rows for one student/year, nullable organization path/code cases, nullable final-record status/update timestamps, or missing IAM columns as tests or production behavior. Malformed but schema-valid path strings, such as empty strings, missing leading `/`, trailing `/`, or embedded SQL `LIKE` wildcard characters `%` and `_`, are still valid boundary cases for D-11 subtree guards and must be tested. D-11 treats such malformed subtree paths as non-matching instead of trying to repair or escape them at query time.
 
@@ -2723,7 +2723,8 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
     }
     mockMvc.perform(tooManyClasses)
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.code").value("VAL-4001"));
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("classes 不合法"));
 
     MockHttpServletRequestBuilder tooManyMergedClasses = get("/api/admin/final-records/unsubmitted")
             .param("academicYear", "2025-2026")
@@ -2736,7 +2737,8 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
     }
     mockMvc.perform(tooManyMergedClasses)
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.code").value("VAL-4001"));
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("classes 不合法"));
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
@@ -3118,7 +3120,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `classes` remains `List<String>` and accepts repeated `classes` plus array-style `classes[]`.
 - `classes` and `classes[]` are merged before `UnsubmittedFinalRecordQuery` performs trim, blank dropping, de-duplication, length checks, and the normalized `MAX_CLASSES = 500` check.
 - Controller tests prove raw `classes` values are merged before raw `classes[]` values, and de-duplication keeps the first normalized value after that merged order.
-- Controller validation tests assert representative `$.message` values for invalid `academicYear`, `grade`, `pageNo`, and `pageSize`, not only `VAL-4001`.
+- Controller validation tests assert representative `$.message` values for invalid `academicYear`, `grade`, `classes`, `pageNo`, and `pageSize`, not only `VAL-4001`.
 - Controller validation tests lock empty-string `pageNo` and `pageSize` as `VAL-4001` with `<field> 不合法`; empty strings must not silently fall back to defaults.
 - Commas inside `grade` and `classes` remain ordinary exact-match characters.
 - `PageResult<T>` remains only `total` and `records`.
