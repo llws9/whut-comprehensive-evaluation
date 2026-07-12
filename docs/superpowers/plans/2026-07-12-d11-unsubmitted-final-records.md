@@ -148,7 +148,7 @@ class UnsubmittedFinalRecordQueryTest {
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=UnsubmittedFinalRecordQueryTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: compile failure because `UnsubmittedFinalRecordQuery` does not exist.
@@ -215,6 +215,8 @@ void shouldRejectMoreThanFiveHundredNormalizedClasses() {
 - [ ] **Step 4: Implement `UnsubmittedFinalRecordQuery`**
 
 Create `UnsubmittedFinalRecordQuery`:
+
+Do not add length validation for `grade` or individual `classes` values in D-11. They remain exact-match filter strings, are bound through MyBatis parameters, and naturally produce no matches when no `org_unit.unit_code` or `org_unit.unit_name` equals the value. The only D-11 request-size guard is `MAX_CLASSES = 500`.
 
 ```java
 package edu.whut.eval.domain.finalrecord.query;
@@ -316,7 +318,7 @@ public class UnsubmittedFinalRecordQuery {
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=UnsubmittedFinalRecordQueryTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: PASS.
@@ -433,7 +435,7 @@ void shouldReturnEmptyUnsubmittedPage() {
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: compile failure because row/view types and repository method do not exist.
@@ -532,7 +534,7 @@ private String valueOrEmpty(String value) {
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: PASS.
@@ -1167,7 +1169,7 @@ void shouldSortNullUnitCodesAfterNonNullCodesWithStableTieBreakers() {
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: compile failure because D-11 repository/mapper methods do not exist, or assertion failures while SQL is still missing.
@@ -1467,7 +1469,7 @@ Use imports for `ApplicationScopeClause`, `ArrayList`, `LinkedHashMap`, `Map`, a
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: PASS. The provider must use `CAST(... AS BINARY)` for exact `grade` and `classes` comparisons so the same SQL path is deterministic on H2 MySQL-mode and MySQL.
@@ -1630,7 +1632,7 @@ void shouldProtectUnsubmittedRouteWithScoreViewAssigned() throws Exception {
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=AdminFinalRecordControllerWebMvcTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: 404 or path-variable capture failure because `/unsubmitted` route does not exist.
@@ -1700,7 +1702,7 @@ private List<String> mergeClassFilters(List<String> classes, List<String> arrayS
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=AdminFinalRecordControllerWebMvcTest,UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: PASS.
@@ -1769,7 +1771,7 @@ Keep these tests aligned with actual helper names and access-validation flow in 
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,AdminFinalRecordControllerWebMvcTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,AdminFinalRecordControllerWebMvcTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: PASS.
@@ -1779,7 +1781,7 @@ Expected: PASS.
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: PASS.
@@ -1822,20 +1824,21 @@ Expected:
 - No `PageResult` metadata fields are added.
 - No D-11 code uses application/import/export tables.
 - No D-11 invalid academic-year path uses `academicYear 不能为空`.
-- The numeric-path anti-pattern check has zero D-11 hits, or every hit is manually confirmed unrelated to D-11 `ORG_SUBTREE` SQL. Correct D-11 subtree matching must compare `class_ou.path` to `root_ou.path` with `CONCAT(root_ou.path, '/%')`, never numeric org ids embedded in path strings.
+- Treat the anti-pattern scans as checks on changed files/new hits, not a requirement for the entire repository to have zero historical matches.
+- The numeric-path anti-pattern check has zero new D-11 hits, or every hit is manually confirmed unrelated to D-11 `ORG_SUBTREE` SQL. Correct D-11 subtree matching must compare `class_ou.path` to `root_ou.path` with `CONCAT(root_ou.path, '/%')`, never numeric org ids embedded in path strings.
 
 - [ ] **Step 7: Commit final fixes if any**
 
 If Task 5 added regression tests or fixes:
 
 ```bash
-git add whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java \
-  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordQueryApplicationServiceTest.java \
-  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordScopePredicateBuilderTest.java
+git status --short
+git add <all Task 5 files shown by git status, including any shared scope implementation files and regression tests>
+git status --short
 git commit -m "test: cover final record scope regressions"
 ```
 
-If no files changed, do not create an empty commit.
+If no files changed, do not create an empty commit. If `git status --short` still shows unstaged Task 5 files after `git add`, stop and stage the missing files before committing.
 
 ---
 
