@@ -702,6 +702,8 @@ void shouldKeepClassWithoutActiveGradeWhenGradeFilterAbsentAndExcludeWhenPresent
     );
 
     assertThat(withoutGradeFilter.total()).isEqualTo(4);
+    assertThat(withoutGradeFilter.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L, 1004L);
     assertThat(findRow(withoutGradeFilter, 1004L).getGrade()).isNull();
 
     PageResult<UnsubmittedStudentRow> withGradeFilter = repository.pageUnsubmittedStudents(
@@ -793,6 +795,55 @@ void shouldFilterGradeAndClassesByCaseSensitiveExactCodeOrNameIntersection() {
             new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("2201"), 1, 20)).records())
             .as("classes must not use contains matching")
             .isEmpty();
+}
+
+@Test
+void shouldUnionCodeAndNameMatchesWithoutDuplicatingStudents() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4005, 3001, 'CLASS', 'CS2205', 'CS2201', '/WHUT/CS/CS2022/CS2205', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, 'S005', 'NameMatchesCode', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4005, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> crossUnit = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("CS2201"), 1, 20)
+    );
+
+    assertThat(crossUnit.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1005L);
+
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4006, 3001, 'CLASS', 'DUP2201', 'DUP2201', '/WHUT/CS/CS2022/DUP2201', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S006', 'SameUnitBothSides', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4006, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> sameUnit = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("DUP2201"), 1, 20)
+    );
+
+    assertThat(sameUnit.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1006L);
+}
+
+@Test
+void shouldMatchDirtyNullUnitCodesThroughExactUnitNames() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3005, 2002, 'GRADE', NULL, '无代码年级', '/WHUT/CS/NO_CODE_GRADE', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4005, 3001, 'CLASS', NULL, '无代码班', '/WHUT/CS/CS2022/NO_CODE_CLASS', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4006, 3005, 'CLASS', 'NC2201', '无代码年级一班', '/WHUT/CS/NO_CODE_GRADE/NC2201', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, 'S005', 'NullClassCode', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S006', 'NullGradeCode', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4005, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4006, 'STUDENT', 1, 'ACTIVE')");
+
+    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("无代码班"), 1, 20)).records())
+            .extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1005L);
+    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "无代码年级", null, 1, 20)).records())
+            .extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1006L);
 }
 
 @Test
@@ -1606,10 +1657,12 @@ If no files changed, do not create an empty commit.
 - Unknown and `NULL` final-record statuses are ignored and do not contribute to `lastUpdatedAt`.
 - `lastUpdatedAt` is rendered with `Instant.toString()` or empty string.
 - Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
+- Rows without an active `GRADE` parent sort after rows with active grades.
 - `ORG_UNIT` is exact class id only and does not depend on `org_unit.path` being non-null.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
-- Grade/classes exact filters are case-sensitive and use code-or-name OR semantics.
+- Grade/classes exact filters are case-sensitive, use code-or-name OR semantics, include distinct code/name matches, and do not duplicate a student when both sides match the same org unit.
+- Dirty `unit_code = NULL` rows can still match by exact `unit_name`.
 - `pageNo` offset overflow is rejected.
 - No D-7, D-8, D-9, D-10, import, export, or frontend behavior is introduced.
