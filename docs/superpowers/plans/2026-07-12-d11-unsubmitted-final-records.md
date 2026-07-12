@@ -46,11 +46,11 @@ This focused baseline is only a fallback for pre-implementation comparison. It d
 
 Execution notes are recorded in this plan document, not only in terminal scrollback or a handoff summary. Update the fields in this section in place before D-11 implementation starts. Keep the updated fields in the D-11 branch so Task 5 can compare against the same source of truth. Do not create a separate baseline-only commit unless explicitly requested; the recorded values may be committed together with the implementation or final verification changes. Whenever any baseline or execution-note field in this plan changes, include this plan file in the next verified commit that depends on that evidence; no Task 1-5 code/test commit may leave required plan evidence only in the working tree.
 
-- Full Baseline Result: `PENDING` before implementation; replace with `PASS`, `FAIL`, or `BLOCKED`.
+- Full Baseline Result: `PASS` (2026-07-13T02:28:06+08:00).
 - Full Baseline Command: `mvn test`
-- Full Baseline Failure Count: `0` when PASS; otherwise record the exact count.
-- Full Baseline Failing Tests: `none` when PASS; otherwise list test class and method names.
-- Full Baseline Blocker: `none` unless the full baseline is `BLOCKED`; otherwise record the concrete runtime blocker.
+- Full Baseline Failure Count: `0`; Maven reported `Tests run: 493, Failures: 0, Errors: 0, Skipped: 0`.
+- Full Baseline Failing Tests: `none`.
+- Full Baseline Blocker: `none`.
 - Focused Fallback Baseline Result: `NOT_RUN` by default; replace with `PASS` or `FAIL` only if the full baseline is temporarily blocked.
 - Focused Fallback Baseline Command: `mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpecifiedTests=false`
 - Focused Fallback Baseline Failure Count: `0` when PASS; otherwise record the exact count.
@@ -62,7 +62,7 @@ Comparison rule: only a recorded full `mvn test` baseline allows a full-suite "z
 
 Update these fields as the implementation proceeds. Every field starts as `PENDING`, `NOT_RUN`, or `NOT_REQUIRED`; replace it with the observed command, result, and short evidence before using it for a completion or zero-new-failure claim.
 
-- Baseline Source: `Pre-Implementation Verification Baseline` fields above.
+- Baseline Source: `Pre-Implementation Verification Baseline` fields above; module check `mvn -pl whut-eval-app -am help:evaluate -Dexpression=project.artifactId -q -DforceStdout` exited 0 and printed the reactor root artifactId, while focused `mvn -pl whut-eval-app help:evaluate -Dexpression=project.artifactId -q -DforceStdout` printed `whut-eval-app`, confirming the module exists.
 - Task 3 `rg` Availability: `PENDING`.
 - Task 3 Scope/Provider Verification Command and Result: `PENDING`.
 - Task 5 Shared-Scope Diff Classification: `PENDING`; record which scope-related files changed and whether Step 2 regressions are required.
