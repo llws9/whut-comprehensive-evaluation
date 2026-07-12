@@ -385,6 +385,23 @@ void shouldPageUnsubmittedStudentsWithFixedStatusAndStringFallbacks() {
 }
 
 @Test
+void shouldRenderNullLastUpdatedAtAsEmptyString() {
+    UserAuthorizationContext admin = adminWithAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED);
+    when(userAuthorizationContextAssembler.requiredAuthorizationContext()).thenReturn(admin);
+    UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20);
+    when(finalRecordQueryRepository.pageUnsubmittedStudents(any(), same(query)))
+            .thenReturn(new PageResult<>(1, List.of(
+                    unsubmittedRow(1001L, "S001", "Alice", "2022级", "CS2201", null)
+            )));
+
+    PageResult<UnsubmittedStudentView> page = service.pageUnsubmittedStudents(query);
+
+    assertThat(page.records()).containsExactly(
+            new UnsubmittedStudentView(1001L, "S001", "Alice", "2022级", "CS2201", "UNSUBMITTED", "")
+    );
+}
+
+@Test
 void shouldDenyUnsubmittedListWithoutScoreViewAssigned() {
     UserAuthorizationContext admin = adminWithAuthority("other.permission");
     when(userAuthorizationContextAssembler.requiredAuthorizationContext()).thenReturn(admin);
@@ -574,7 +591,7 @@ CREATE TABLE org_membership (
 );
 ```
 
-Also ensure the test `final_record.status` column accepts `NULL`, because D-11 explicitly covers legacy dirty rows with null status. Keep all existing Minimal D columns needed by submitted/confirmed list/detail tests. If the current fixture uses simplified `org_unit` or `org_membership` tables, replace only the test fixture setup and update old inserts to populate the new columns.
+Also ensure the test `final_record.status` and `final_record.updated_at` columns accept `NULL`, because D-11 explicitly covers legacy dirty rows with null status and DRAFT rows whose `updated_at` is null. Keep all existing Minimal D columns needed by submitted/confirmed list/detail tests. If the current fixture uses simplified `org_unit` or `org_membership` tables, replace only the test fixture setup and update old inserts to populate the new columns.
 
 - [ ] **Step 2: Write failing no-record, draft, and submitted/confirmed tests**
 
@@ -595,16 +612,24 @@ private void seedRoster() {
 }
 
 private void insertFinalRecord(Long id, Long studentUserId, String academicYear, String status, String updatedAt) {
+    String timestampExpression = updatedAt == null ? "NULL" : "CAST(? AS DATETIME)";
     jdbcTemplate.update("""
             INSERT INTO final_record (id, student_user_id, academic_year, status,
                                       moral_total, intellectual_total, physical_total, labor_total, grand_total,
                                       submitted_at, confirmed_at, confirm_comment, version, created_at, updated_at)
             VALUES (?, ?, ?, ?, 0.00, 0.00, 0.00, 0.00, 0.00,
-                    CASE WHEN ? = 'SUBMITTED' THEN CAST(? AS DATETIME) ELSE NULL END,
-                    CASE WHEN ? = 'CONFIRMED' THEN CAST(? AS DATETIME) ELSE NULL END,
-                    NULL, 1, CAST(? AS DATETIME), CAST(? AS DATETIME))
-            """, id, studentUserId, academicYear, status,
-            status, updatedAt, status, updatedAt, updatedAt, updatedAt);
+                    CASE WHEN ? = 'SUBMITTED' THEN %s ELSE NULL END,
+                    CASE WHEN ? = 'CONFIRMED' THEN %s ELSE NULL END,
+                    NULL, 1, CURRENT_TIMESTAMP(), %s)
+            """.formatted(timestampExpression, timestampExpression, timestampExpression),
+            bindNullableTimestamp(id, studentUserId, academicYear, status, updatedAt));
+}
+
+private Object[] bindNullableTimestamp(Long id, Long studentUserId, String academicYear, String status, String updatedAt) {
+    if (updatedAt == null) {
+        return new Object[]{id, studentUserId, academicYear, status, status, status};
+    }
+    return new Object[]{id, studentUserId, academicYear, status, status, updatedAt, status, updatedAt, updatedAt};
 }
 
 private UnsubmittedStudentRow findRow(PageResult<UnsubmittedStudentRow> page, Long studentUserId) {
@@ -650,6 +675,23 @@ void shouldKeepDraftStudentsUnsubmittedAndExposeMaxDraftUpdatedAt() {
             .contains(1001L);
     assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1001L)
             .hasSize(1);
+}
+
+@Test
+void shouldKeepDraftStudentsWithNullUpdatedAtAndExposeNullLastUpdatedAt() {
+    seedRoster();
+    insertFinalRecord(13L, 1001L, "2025-2026", "DRAFT", null);
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("CS2201"), 1, 20)
+    );
+
+    UnsubmittedStudentRow alice = findRow(page, 1001L);
+    assertThat(page.total()).isEqualTo(2);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L);
+    assertThat(alice.getLastUpdatedAt()).isNull();
 }
 
 @Test
@@ -1148,6 +1190,10 @@ List<UnsubmittedStudentRow> selectUnsubmittedStudents(@Param("scopeExpression") 
 
 In `FinalRecordQuerySqlProvider`, add:
 
+Count and select SQL must keep the same eligibility predicates: active user, `u.identity = 'STUDENT'`, active primary STUDENT membership, active class, scope expression, grade/classes filters, and the submitted/confirmed `NOT EXISTS` exclusion. If you add or change one predicate in either SQL, update the other SQL in the same task. Prefer extracting a small helper for shared predicate fragments if the final implementation starts to drift from the snippets below.
+
+The select `ORDER BY` intentionally adds `CASE WHEN u.user_no IS NULL THEN 1 ELSE 0 END` before `u.user_no ASC`; this extends the design SQL to make dirty `user_no = NULL` data sort after numbered students consistently on H2 and MySQL. The outer `class_ou` / `grade_ou` type and status predicates duplicate inner eligibility checks defensively so future edits to the inner visible subquery cannot silently display inactive or wrong-type org units.
+
 ```java
 public String buildCountUnsubmittedStudents(Map<String, Object> params) {
     String scopeExpression = scopeExpression(params, "class_ou");
@@ -1439,6 +1485,8 @@ git commit -m "feat: query unsubmitted final record roster"
 
 Add controller tests:
 
+Use Mockito imports for `anyLong()` and `never()` if the test file does not already import them.
+
 ```java
 @Test
 void shouldReturnUnsubmittedFinalRecordPage() throws Exception {
@@ -1455,6 +1503,25 @@ void shouldReturnUnsubmittedFinalRecordPage() throws Exception {
             .andExpect(jsonPath("$.data.records[0].studentUserId").value(1001))
             .andExpect(jsonPath("$.data.records[0].status").value("UNSUBMITTED"))
             .andExpect(jsonPath("$.data.records[0].lastUpdatedAt").value("2026-07-12T10:15:30.123Z"));
+}
+
+@Test
+void shouldRouteStaticUnsubmittedPathBeforeRecordIdDetailPath() throws Exception {
+    when(queryApplicationService.pageUnsubmittedStudents(any()))
+            .thenReturn(new PageResult<>(1, List.of(new UnsubmittedStudentView(
+                    1001L, "S001", "Alice", "计算机2022级", "计算机2201班",
+                    "UNSUBMITTED", ""))));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.records[0].status").value("UNSUBMITTED"))
+            .andExpect(jsonPath("$.data.record").doesNotExist())
+            .andExpect(jsonPath("$.data.student").doesNotExist());
+
+    verify(queryApplicationService).pageUnsubmittedStudents(any());
+    verify(queryApplicationService, never()).getAdminFinalRecordDetail(anyLong());
 }
 
 @Test
@@ -1775,6 +1842,7 @@ If no files changed, do not create an empty commit.
 - `SUBMITTED` and `CONFIRMED` records exclude students.
 - Unknown and `NULL` final-record statuses are ignored and do not contribute to `lastUpdatedAt`.
 - `lastUpdatedAt` is rendered with `Instant.toString()` or empty string.
+- DRAFT rows with `updated_at = NULL` keep the student unsubmitted, expose raw `lastUpdatedAt = null`, and render API `lastUpdatedAt` as an empty string.
 - Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
 - Rows without an active `GRADE` parent sort after rows with active grades.
 - `ORG_UNIT` is exact class id only and does not depend on `org_unit.path` being non-null.
@@ -1782,6 +1850,7 @@ If no files changed, do not create an empty commit.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
 - Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
+- Count and select SQL keep eligibility predicates aligned: identity, membership, scope, grade/classes, and submitted/confirmed exclusion must change together.
 - Grade/classes exact filters are case-sensitive, use code-or-name OR semantics, include distinct code/name matches, and do not duplicate a student when both sides match the same org unit.
 - Dirty `unit_code = NULL` rows can still match by exact `unit_name`.
 - `pageNo` offset overflow is rejected.
