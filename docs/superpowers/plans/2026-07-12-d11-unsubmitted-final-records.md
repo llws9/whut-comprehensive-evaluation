@@ -1353,6 +1353,7 @@ void shouldRejectMalformedOrgSubtreeRootAndClassPaths() {
             accessContextWithOrgSubtree(2002L),
             new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
     );
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/CS/CS2022/CS2201' WHERE id = 4001");
 
     assertThat(blankRootPath.records()).isEmpty();
     assertThat(missingLeadingSlashRootPath.records()).isEmpty();
@@ -1911,7 +1912,7 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
 
 Then add helper methods. The provider builds indexed MyBatis placeholders and never concatenates raw class values. `scopeExpression`, `caseSensitiveEquals(...)`, and `caseSensitiveIn(...)` may be injected into SQL strings only when they are built from fixed alias names plus MyBatis placeholders generated in this provider/repository; never pass raw request values, grade values, class values, or caller-provided SQL through these helpers. Use `CAST(... AS BINARY)` for filter equality because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`. Sorting intentionally follows the configured column collation for `grade_ou.unit_code` and `class_ou.unit_code`; D-11 only requires deterministic ordering with `user_id ASC` as final tie-breaker, not bytewise sorting:
 
-`scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. The only allowed expression forms are assembled from fixed strings in `rosterScopeFragment(...)`: `__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters...})`, the fixed `EXISTS (SELECT 1 FROM org_unit root_ou ...)` path predicate, `1 = 0`, or `1 = 1`. Provider validation must normalize whitespace and then use full-expression matching against this closed whitelist: deny-all, allow-all, ORG_UNIT only, ORG_SUBTREE only, ORG_UNIT OR ORG_SUBTREE, and ORG_SUBTREE OR ORG_UNIT. Prefix matching is not allowed.
+`scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. The only allowed expression forms are assembled from fixed strings in `rosterScopeFragment(...)`: `__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters...})`, the fixed `EXISTS (SELECT 1 FROM org_unit root_ou ...)` path predicate, `1 = 0`, or `1 = 1`. `rosterScopeFragment(...)` must wrap every dynamic non-static expression in one outer pair of parentheses, including a single ORG_UNIT fragment and a single ORG_SUBTREE fragment, so the provider whitelist sees one consistent shape. Provider validation must normalize whitespace and then use full-expression matching against this closed whitelist: deny-all, allow-all, ORG_UNIT only, ORG_SUBTREE only, ORG_UNIT OR ORG_SUBTREE, and ORG_SUBTREE OR ORG_UNIT. Prefix matching is not allowed. The `root_ou.path IS NOT NULL` and class-path `IS NOT NULL` checks are defensive-in-depth guards and remain part of the generated SQL and whitelist even though the frozen A schema declares `org_unit.path NOT NULL`; the empty, leading slash, and trailing slash checks cover malformed but schema-valid path strings. If any subtree SQL shape in `rosterScopeFragment(...)` changes, update `validateD11ScopeExpression(...)` and `shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes` in the same change.
 
 ```java
 private String classPredicate(Map<String, Object> params, String classAlias) {
@@ -1956,6 +1957,7 @@ private void validateD11ScopeExpression(String expression) {
     if ("1 = 0".equals(normalized) || "1 = 1".equals(normalized)) {
         return;
     }
+    // This whitelist intentionally mirrors rosterScopeFragment(...). Update both together.
     String orgUnitFragmentPattern = "__D11_CLASS_ALIAS__\\.id IN \\(" + parameterListPattern("d11OrgUnit") + "\\)";
     String subtreeFragmentPattern = "EXISTS \\( SELECT 1 FROM org_unit root_ou WHERE root_ou\\.id IN \\("
             + parameterListPattern("d11Subtree")
@@ -2102,7 +2104,7 @@ Use imports for `ApplicationScopeClause`, `ArrayList`, `LinkedHashMap`, `Map`, a
 
 - [ ] **Step 9: Add provider scope-expression safety regression test**
 
-Add this test to `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` so the D-11 SQL provider's raw-fragment defense is executable and tracked with the repository SQL work:
+Add these tests to `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` so the D-11 SQL provider's raw-fragment defense is executable and tracked with the repository SQL work. The positive whitelist test must cover `denyAll`, `alwaysTrue`, single ORG_UNIT with one and multiple parameters, single ORG_SUBTREE, ORG_UNIT OR ORG_SUBTREE, and ORG_SUBTREE OR ORG_UNIT through both count and select provider entrypoints.
 
 ```java
 @Test
@@ -2129,6 +2131,10 @@ void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
 
     assertProviderAccepts(provider, SqlPredicateFragment.denyAll(), "1 = 0");
     assertProviderAccepts(provider, SqlPredicateFragment.alwaysTrue(), "1 = 1");
+    assertProviderAccepts(provider, new SqlPredicateFragment(
+            "(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}))",
+            Map.of("d11OrgUnit0", 4001L)
+    ), "class_ou.id IN");
     assertProviderAccepts(provider, new SqlPredicateFragment(
             "(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}, #{scopeFragment.parameters.d11OrgUnit1}))",
             Map.of("d11OrgUnit0", 4001L, "d11OrgUnit1", 4002L)
@@ -2192,7 +2198,7 @@ Run:
 mvn -pl whut-eval-app -am -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: PASS. The provider must use `CAST(... AS BINARY)` for exact `grade` and `classes` comparisons so the same SQL path is deterministic on H2 MySQL-mode and MySQL.
+Expected: PASS. The provider must use `CAST(... AS BINARY)` for exact `grade` and `classes` comparisons so the same SQL path is deterministic on H2 MySQL-mode and MySQL. The ORG_SUBTREE path tests above also verify the `CONCAT(root_ou.path, '/%')` subtree predicate on the H2 MySQL-mode integration path used by this repository.
 
 Before committing, run this local contract scan and inspect every hit:
 
@@ -2525,7 +2531,7 @@ void shouldMapUnsubmittedServiceAccessDeniedToAuth4030() throws Exception {
 }
 ```
 
-Also update the existing `FinalRecordControllerSecurityAnnotationTest` so controller-level method security cannot be accidentally omitted while service-level checks still pass. Extend the admin expected map:
+Also update the existing `FinalRecordControllerSecurityAnnotationTest` so controller-level method security cannot be accidentally omitted while service-level checks still pass. This reflection test only locks the controller `@PreAuthorize` expression for `pageUnsubmittedFinalRecords -> SCORE_VIEW_ASSIGNED`; the real anonymous, missing-authority, and service-denied 401/403 behavior belongs in `FinalRecordSecurityIntegrationTest` above. Extend the admin expected map:
 
 ```java
 @Test
@@ -2744,6 +2750,7 @@ if [ -n "$BASE_BRANCH" ]; then
   git diff --stat "$BASE_BRANCH"...HEAD
 else
   echo "BASE_BRANCH not found; skipping informational diff stat"
+  echo "Optional: run git diff --stat HEAD~<D-11-commit-count>..HEAD if this checkout lacks main/master"
 fi
 rg -n "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
