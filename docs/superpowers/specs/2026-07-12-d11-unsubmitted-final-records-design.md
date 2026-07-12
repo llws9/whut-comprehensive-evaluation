@@ -93,7 +93,7 @@ The application service must also check the same authority before querying. Miss
 | `academicYear` | string | yes | - | trim; must match `YYYY-YYYY` and the second year must equal the first year plus 1 |
 | `grade` | string | no | - | trim; blank normalizes to `null` and is ignored; exact match against grade organization code or name |
 | `classes` | string[] | no | - | class collection, maximum 500 normalized values; trim each value; blank entries are ignored; exact match against class organization code or name; if every supplied value is blank after trimming, the normalized collection is empty and the class filter is ignored |
-| `pageNo` | long | no | `1` | values `<= 0` normalize to `1` |
+| `pageNo` | long | no | `1` | values `<= 0` normalize to `1`; values that make `(pageNo - 1) * pageSize` overflow are invalid |
 | `pageSize` | long | no | `20` | values `<= 0` normalize to `20`; values `> 100` cap at `100` |
 
 Invalid `academicYear` returns `400 / VAL-4001`.
@@ -105,7 +105,7 @@ The full `academicYear` normalization and validation rules live in section 8.1.
 - `grade` filters the active parent grade unit with exact equality: `grade_ou.unit_code = grade OR grade_ou.unit_name = grade`;
 - blank values are ignored.
 
-No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. `academicYear` and `grade` are single-value parameters; repeated or array-style input for either returns `400 / VAL-4001`. Commas are ordinary characters inside exact-match values, not multi-value separators. `classes` accepts array-style input as required by the frozen contract: repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` both normalize to the same class collection. Normalization trims each item, removes blanks, then de-duplicates while preserving first-seen order. If the normalized class collection is empty, the class filter is ignored. If it contains more than 500 values after de-duplication, return `400 / VAL-4001` with `ValidationException("classes 不合法")`. The `classes` request filter matches the same class organizations whose names are returned as `className` in the response.
+No fuzzy match, prefix match, contains match, or case normalization is performed by application code. `grade` and `classes` exact matches are case-sensitive for D-11; SQL must use a deterministic case-sensitive comparison such as `BINARY` or another project-approved equivalent instead of relying on the database default collation. `academicYear` and `grade` are single-value parameters; repeated or array-style input for either returns `400 / VAL-4001`. Commas are ordinary characters inside exact-match values, not multi-value separators. `classes` accepts array-style input as required by the frozen contract: repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` both normalize to the same class collection. Normalization trims each item, removes blanks, then de-duplicates while preserving first-seen order. If the normalized class collection is empty, the class filter is ignored. If it contains more than 500 values after de-duplication, return `400 / VAL-4001` with `ValidationException("classes 不合法")`. The `classes` request filter matches the same class organizations whose names are returned as `className` in the response.
 
 If a filter value exactly matches one organization unit's `unit_code` and another organization unit's `unit_name`, both matching units are included because the filter uses OR semantics. If `grade` is provided, students whose selected class has no active parent grade row are excluded because there is no grade code/name to match. Without a `grade` filter, those students may still appear with `grade = ""`.
 
@@ -337,8 +337,8 @@ FROM (
    AND grade_ou.status = 'ACTIVE'
   WHERE u.status = 'ACTIVE'
     AND (/* scopePredicate: ALL => (1 = 1); ORG_UNIT => (class_ou.id IN (...)); ORG_SUBTREE => (EXISTS(root path match)); combined supported fragments are ORed */)
-    AND (#{query.grade} IS NULL OR grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})
-    AND (#{query.classesEmpty} = TRUE OR class_ou.unit_code IN (/* one bound parameter per normalized class value */) OR class_ou.unit_name IN (/* same class parameters */))
+    AND (#{query.grade} IS NULL OR BINARY grade_ou.unit_code = #{query.grade} OR BINARY grade_ou.unit_name = #{query.grade})
+    AND (#{query.classesEmpty} = TRUE OR BINARY class_ou.unit_code IN (/* one bound parameter per normalized class value */) OR BINARY class_ou.unit_name IN (/* same class parameters */))
     AND NOT EXISTS (
       SELECT 1
       FROM final_record submitted_fr
@@ -382,8 +382,8 @@ FROM (
       AND om1.is_primary = 1
       AND om1.status = 'ACTIVE'
       AND (/* scopePredicate: ALL => (1 = 1); ORG_UNIT => (class_ou1.id IN (...)); ORG_SUBTREE => (EXISTS(root path match)); combined supported fragments are ORed */)
-      AND (#{query.grade} IS NULL OR grade_ou1.unit_code = #{query.grade} OR grade_ou1.unit_name = #{query.grade})
-      AND (#{query.classesEmpty} = TRUE OR class_ou1.unit_code IN (/* one bound parameter per normalized class value */) OR class_ou1.unit_name IN (/* same class parameters */))
+      AND (#{query.grade} IS NULL OR BINARY grade_ou1.unit_code = #{query.grade} OR BINARY grade_ou1.unit_name = #{query.grade})
+      AND (#{query.classesEmpty} = TRUE OR BINARY class_ou1.unit_code IN (/* one bound parameter per normalized class value */) OR BINARY class_ou1.unit_name IN (/* same class parameters */))
       AND NOT EXISTS (
         SELECT 1
         FROM final_record submitted_fr
@@ -465,7 +465,7 @@ Fields:
 - `long pageNo`;
 - `long pageSize`.
 - derived `boolean classesEmpty`, true when the normalized `classes` list is empty; SQL uses this getter to skip class filtering and avoid `IN ()`.
-- derived `long offset`, calculated as `(pageNo - 1) * pageSize` after pagination normalization.
+- derived `long offset`, calculated with checked arithmetic as `(pageNo - 1) * pageSize` after pagination normalization.
 
 Validation:
 
@@ -476,6 +476,7 @@ Validation:
 - expose an empty normalized `classes` list as no class filter; never emit `IN ()`;
 - reject more than 500 normalized class values with `ValidationException("classes 不合法")`;
 - reject repeated or array-style `academicYear` and `grade` parameter shapes before query object construction;
+- compute `offset` with overflow detection; if `(pageNo - 1) * pageSize` cannot fit in `long`, throw `ValidationException("pageNo 不合法")`;
 - normalize pagination like existing `FinalRecordPageQuery`.
 
 `UnsubmittedFinalRecordQuery` validates and normalizes in its constructor. Controller and service code must not rely on a later explicit `validate()` call.
@@ -578,7 +579,7 @@ public PageResult<UnsubmittedStudentView> pageUnsubmittedStudents(UnsubmittedFin
 
 Route order must keep `/unsubmitted` from being captured by `/{recordId}`. In Spring MVC, a static segment is more specific than a path variable, but placing `/unsubmitted` before `/{recordId}` keeps the file readable and avoids accidental ambiguity.
 
-The controller `defaultValue` settings only handle missing pagination parameters. All pagination normalization, including `pageNo <= 0` and `pageSize` capping, is centralized in `UnsubmittedFinalRecordQuery` so behavior stays aligned with `FinalRecordPageQuery`.
+The controller `defaultValue` settings only handle missing pagination parameters. Pagination normalization is centralized in `UnsubmittedFinalRecordQuery`: `pageNo <= 0`, `pageSize <= 0`, and `pageSize > 100` follow `FinalRecordPageQuery`, while D-11 additionally validates offset overflow before exposing `query.offset`.
 
 Because `academicYear` and `grade` are single-value parameters, the controller must inspect raw request parameter names before constructing `UnsubmittedFinalRecordQuery`. `rejectUnsupportedSingleValueParameterShape(HttpServletRequest request, String name)` is a private controller helper returning `void`; it rejects `request.getParameterValues(name).length > 1` and unsupported parameter names such as `name + "[]"` by throwing `ValidationException(name + " 不合法")`. A comma inside a single `academicYear` or `grade` value is not a request-shape error; normal value validation or exact-match filtering handles it.
 
@@ -597,6 +598,8 @@ Helper contracts:
 | missing `academicYear` | `400` | `VAL-4001` | `ValidationException("academicYear 不合法")` from query object |
 | blank `academicYear` | `400` | `VAL-4001` | `ValidationException("academicYear 不合法")` from query object |
 | malformed, unparsable, or non-consecutive `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
+| `classes` exceeds 500 normalized values | `400` | `VAL-4001` | `ValidationException("classes 不合法")` from query object |
+| `pageNo` causes offset overflow | `400` | `VAL-4001` | `ValidationException("pageNo 不合法")` from query object |
 | unsupported multi-value `academicYear` or `grade` input | `400` | `VAL-4001` | `ValidationException` from controller raw-parameter check |
 | no `score.view.assigned` authority | `403` | `AUTH-4030` | method-level authorization or service-level `ensurePermission` |
 | only unsupported scope fragments | `200` | - | empty page, not `403` |
@@ -620,7 +623,9 @@ Add tests that prove:
 - class values containing commas are preserved as single exact-match values;
 - more than 500 normalized class values throw `ValidationException("classes 不合法")`;
 - nonblank `grade` and class values are trimmed but not case-normalized;
+- `grade` and class exact matches are case-sensitive;
 - `pageNo <= 0` becomes `1`;
+- extremely large `pageNo` values that would overflow `offset` throw `ValidationException("pageNo 不合法")`;
 - `pageSize <= 0` becomes `20`;
 - `pageSize = 100` remains `100`;
 - `pageSize > 100` becomes `100`.
@@ -660,6 +665,7 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - filters by `classes`;
 - filters by `grade` and `classes` together using intersection semantics;
 - proves `grade` and `classes` filters match organization code and organization name by exact equality;
+- proves `grade` and `classes` exact matches are case-sensitive and do not rely on database default collation;
 - proves a partial name such as `计算机` does not match `计算机 2022 级`;
 - proves a filter value that matches one org unit's code and another org unit's name includes both exact matches while still returning each student once;
 - proves a filter value that matches both `unit_code` and `unit_name` of the same org unit returns each student once;
@@ -690,6 +696,8 @@ The two `ORG_SUBTREE` path tests are mandatory because a numeric-id path compari
 
 The repository integration test schema must include the real A-group columns used by the D-11 SQL path: `org_unit.parent_id`, `org_unit.unit_type`, `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, `org_unit.status`, and `org_membership.id`. Do not keep the older Minimal D simplified `org_unit` test fixture if it hides these contract fields.
 
+If the D-11 implementation changes shared scope translation, `FinalRecordScopePredicateBuilder`, or any shared final-record query scope fragment, existing admin final-record list and detail tests must also be extended in the same change. Those regression tests must prove submitted/confirmed list and detail visibility still resolve `ORG_SUBTREE` through real `org_unit.path` values and still preserve existing `ORG_UNIT` exact-unit semantics.
+
 ### 11.4 Controller Tests
 
 Add or extend admin final-record controller tests to prove:
@@ -702,6 +710,8 @@ Add or extend admin final-record controller tests to prove:
 - `grade` values containing commas are forwarded as one exact-match value rather than rejected as request-shape errors;
 - repeated and array-style `classes` input is accepted and forwarded as the normalized class collection;
 - `classes` values containing commas are forwarded as exact-match values rather than split;
+- `classes` with more than 500 normalized values returns `400 / VAL-4001`;
+- extremely large `pageNo` values that overflow `offset` return `400 / VAL-4001`;
 - missing `academicYear` returns `400 / VAL-4001`;
 - blank `academicYear` returns `400 / VAL-4001`;
 - malformed, unparsable, or non-consecutive `academicYear` returns `400 / VAL-4001`;
