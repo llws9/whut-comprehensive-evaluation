@@ -103,7 +103,7 @@ Response `data` remains `PageResult<UnsubmittedStudentView>` with exactly `total
 - Create `whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/query/UnsubmittedFinalRecordQuery.java`
   - Validates `academicYear`.
   - Normalizes `grade`, `classes`, `pageNo`, and `pageSize`.
-  - Exposes `classesEmpty` and checked `offset`.
+  - Exposes `isClassesEmpty()` and checked `offset`.
 
 ### Application Layer
 
@@ -901,7 +901,7 @@ void shouldIsolateSubmittedConfirmedAndDraftRecordsByAcademicYear() {
     assertThat(page.total()).isEqualTo(3);
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1001L, 1002L, 1003L);
-    assertThat(findRow(page, 1003L).getLastUpdatedAt()).isNull();
+    assertThat(page.records()).allSatisfy(row -> assertThat(row.getLastUpdatedAt()).isNull());
 }
 
 @Test
@@ -1607,6 +1607,27 @@ void shouldSortByGradeClassStudentNumberAndUserIdWithStableTieBreakers() {
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1005L, 1001L, 1002L, 1006L, 1007L, 1003L);
 }
+
+@Test
+void shouldSortRowsWithActiveGradeBeforeRowsWithoutActiveGrade() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'INACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4003, 3002, 'CLASS', 'CS2301', '计算机2301班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1005, 'S005', 'NoGradeLowNumber', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1006, 'S006', 'GradeAfterNoGradeNumber', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4003, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4001, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1006L, 1003L, 1005L);
+    assertThat(page.records().subList(0, 4)).allSatisfy(row -> assertThat(row.getGrade()).isNotNull());
+    assertThat(page.records().subList(4, 5)).allSatisfy(row -> assertThat(row.getGrade()).isNull());
+}
 ```
 
 - [ ] **Step 5: Run repository tests to verify they fail**
@@ -1957,7 +1978,30 @@ private String bindList(Map<String, Object> parameters, String prefix, List<Long
 
 Use imports for `ApplicationScopeClause`, `ArrayList`, `LinkedHashMap`, `Map`, and `Objects`. Prefer `SqlPredicateFragment.alwaysTrue()` and `SqlPredicateFragment.denyAll()` for the static allow/deny branches; use the public constructor only for dynamic D-11 fragments that carry generated SQL and parameters. D-11 must not use an empty string to mean allow-all because `FinalRecordQuerySqlProvider.scopeExpression(...)` treats blank input as defensive deny-all. `SqlPredicateFragment.alwaysTrue()` must return expression `1 = 1` with an empty parameter map.
 
-- [ ] **Step 9: Run repository integration tests**
+- [ ] **Step 9: Add provider scope-expression safety regression test**
+
+Add this test to `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` so the D-11 SQL provider's raw-fragment defense is executable and tracked with the repository SQL work:
+
+```java
+@Test
+void shouldRejectUnsafeD11ScopeExpressionFragments() {
+    FinalRecordQuerySqlProvider provider = new FinalRecordQuerySqlProvider();
+    Map<String, Object> params = new HashMap<>();
+    params.put("scopeFragment", new SqlPredicateFragment(
+            "(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0})) OR 1 = 1",
+            Map.of("d11OrgUnit0", 4001L)
+    ));
+    params.put("query", new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20));
+
+    assertThatThrownBy(() -> provider.buildCountUnsubmittedStudents(params))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessage("Unsafe D-11 scope expression");
+}
+```
+
+Add imports for `FinalRecordQuerySqlProvider`, `SqlPredicateFragment`, `HashMap`, `Map`, and `assertThatThrownBy` if the test file does not already have them.
+
+- [ ] **Step 10: Run repository integration tests**
 
 Run:
 
@@ -1981,7 +2025,7 @@ grep -RInE "scopeExpression" whut-eval-infra whut-eval-application whut-eval-dom
 
 Expected: hits are limited to `FinalRecordQueryMapper`, `FinalRecordQuerySqlProvider`, `MybatisPlusFinalRecordQueryRepository`, and D-11 tests/plan references. There must be no public controller/service/repository-interface/query-object path that accepts caller-provided raw SQL for `scopeExpression`.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/FinalRecordQueryMapper.java \
