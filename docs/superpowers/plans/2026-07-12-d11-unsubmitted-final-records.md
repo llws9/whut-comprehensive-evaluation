@@ -1381,6 +1381,22 @@ void shouldUnionMultipleOrgSubtreeRootsWithoutDuplicatingStudents() {
 }
 
 @Test
+void shouldKeepValidOrgSubtreeRootWhenAnotherSubtreeRootIsInvalid() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'BADROOT', '无效根', '/WHUT/CS/BADROOT', 'ACTIVE')");
+    jdbcTemplate.update("UPDATE org_unit SET path = 'WHUT/CS/BADROOT' WHERE id = 3002");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtrees(3001L, 3002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(3);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L);
+}
+
+@Test
 void shouldUnionMultipleOrgUnitRulesWithoutDuplicatingStudents() {
     seedRoster();
 
@@ -1592,7 +1608,7 @@ void shouldRejectOrgSubtreePathsContainingLikeWildcards() {
 
 - [ ] **Step 4: Write mandatory scope-parity, duplicate-membership, and pagination tests**
 
-D-11 has a private `rosterScopeFragment(...)` translator. This is a mandatory verification point, not conditional on shared scope code changing: add tests proving D-11 roster visibility stays aligned with the existing whole-record final-record scope semantics for denied permission, `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths. Use the same `FinalRecordAccessContext` helpers to query both the existing submitted/confirmed admin list and the new unsubmitted roster path against equivalent student/class fixtures.
+D-11 has a private `rosterScopeFragment(...)` translator. This is a mandatory verification point, not conditional on shared scope code changing: add tests proving D-11 roster visibility stays aligned with the existing whole-record final-record scope semantics for denied permission, `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths. Use the same `FinalRecordAccessContext` helpers to query both the existing submitted/confirmed admin list and the new unsubmitted roster path against equivalent student/class fixtures. The parity check intentionally compares existing submitted/confirmed rows in academic year `2024-2025` with D-11 unsubmitted rows in academic year `2025-2026`: scope visibility is independent of academic year, and using different years avoids violating the frozen `final_record(student_user_id, academic_year)` unique key. The fixture must therefore keep the active roster identical for both years, and `assertParityFixtureHasOneSubmittedRecordPerActiveRosterStudent()` is the guard for that precondition.
 
 Add the scope-parity test before the duplicate-membership tests:
 
@@ -3311,9 +3327,11 @@ rg -n "LIKE[[:space:]]+'%{1,2}/[0-9]|LIKE[[:space:]]+CONCAT\('%{1,2}/',|org_unit
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 rg -n "scopeExpression" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
+rg -n "alwaysTrue[[:space:]]*\(" \
+  whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 ```
 
-Prefer the four `rg` scans above. Before running the scan set, execute `command -v rg` once and record whether `rg` is available. If `rg` is unavailable in the execution environment, run the four fallback `grep -RInE` commands below as an equivalent substitute; execute one complete scan set, not both. These use POSIX ERE character classes such as `[[:space:]]` instead of `\s`, so their matching semantics align with the `rg` checks:
+Prefer the five `rg` scans above. Before running the scan set, execute `command -v rg` once and record whether `rg` is available. If `rg` is unavailable in the execution environment, run the five fallback `grep -RInE` commands below as an equivalent substitute; execute one complete scan set, not both. These use POSIX ERE character classes such as `[[:space:]]` instead of `\s`, so their matching semantics align with the `rg` checks:
 
 ```bash
 grep -RInE "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact|application_review_log|import_job|import_error_item|export_job" \
@@ -3324,14 +3342,17 @@ grep -RInE "LIKE[[:space:]]+'%{1,2}/[0-9]|LIKE[[:space:]]+CONCAT\('%{1,2}/',|org
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 grep -RInE "scopeExpression" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
+grep -RInE "alwaysTrue[[:space:]]*\(" \
+  whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 ```
 
 Expected:
 
 - `git diff --check` prints no whitespace errors.
 - `git status --short`, `git diff --stat HEAD`, and `git diff --name-status HEAD` are run after the last edit and before the final commit. They are the authoritative final working-tree diff review for uncommitted or staged changes. The base-branch or fallback commit-range diff is an additional branch-history view and does not replace the current-working-tree review.
-- The scope, status, numeric-path, and `scopeExpression` scans are mandatory. Run either the four `rg` commands or, when `rg` is unavailable, the four `grep -RInE` fallback commands over the same directories. Task 5 verification is incomplete unless one full scan set has been executed and every hit has been accepted or rejected using the rules below.
+- The scope, status, numeric-path, `scopeExpression`, and `alwaysTrue` scans are mandatory. Run either the five `rg` commands or, when `rg` is unavailable, the five `grep -RInE` fallback commands over the same directories. Task 5 verification is incomplete unless one full scan set has been executed and every hit has been accepted or rejected using the rules below.
 - The `scopeExpression` scan is mandatory. It may find the mapper/provider infrastructure and repository-internal builder, but must not find a D-11 public API, request object, controller, service, repository contract, or DTO that accepts a caller-provided raw SQL fragment.
+- The `alwaysTrue` scan may find `SqlPredicateFragment.alwaysTrue()`, D-11 `rosterScopeFragment(...)`, and D-11 provider whitelist tests. It must not find new `alwaysTrue()` call sites in existing submitted/confirmed final-record paths, `ApplicationScopeSqlTranslator`, or other shared authorization translators unless the execution notes name the file/line and justify why the use cannot bypass scope checks.
 - The scans pass only when they produce no new D-11 contract-drift hits in changed files. Any new hit fails the verification unless the execution notes name the file/line and explain why the hit is unrelated to D-11 contract drift.
 - No `PageResult` metadata fields are added.
 - Controller tests assert the D-11 `$.data` object has exactly `total` and `records`, with no `pages`, `pageNum`, `pageNo`, or `pageSize`.
