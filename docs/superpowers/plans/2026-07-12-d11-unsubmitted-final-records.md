@@ -707,9 +707,13 @@ void shouldExcludeInactiveUsersInactiveMembershipsAndNonPrimaryMemberships() {
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1004, 'S004', 'InactiveUser', 'STUDENT', 'INACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, 'S005', 'InactiveMembership', 'STUDENT', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S006', 'NonPrimary', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1007, 'T007', 'TeacherIdentity', 'TEACHER', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1008, 'T008', 'TeacherMembership', 'STUDENT', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4001, 'STUDENT', 1, 'INACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4001, 'STUDENT', 0, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5007, 1007, 4001, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5008, 1008, 4001, 'TEACHER', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -1007,11 +1011,32 @@ void shouldChooseLowestNumericVisibleMembershipIdAfterScopeAndFilters() {
     );
 
     UnsubmittedStudentRow alice = findRow(page, 1001L);
+    assertThat(page.total()).isEqualTo(3);
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1001L, 1002L, 1003L);
     assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1001L)
             .hasSize(1);
     assertThat(alice.getClassName()).isEqualTo("计算机2200班");
+}
+
+@Test
+void shouldIgnoreLowerMembershipIdOutsideScopeBeforePickingVisibleMembership() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2998, NULL, 'COLLEGE', 'MATH', '数学学院', '/WHUT/MATH', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4998, 2998, 'CLASS', 'MATH2201', '数学2201班', '/WHUT/MATH/MATH2201', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1001, 4998, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6000, 1001, 4002, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("CS2202"), 1, 20)
+    );
+
+    UnsubmittedStudentRow alice = findRow(page, 1001L);
+    assertThat(page.total()).isEqualTo(2);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1003L);
+    assertThat(alice.getClassName()).isEqualTo("计算机2202班");
 }
 
 @Test
@@ -1124,6 +1149,7 @@ public String buildCountUnsubmittedStudents(Map<String, Object> params) {
                AND grade_ou.unit_type = 'GRADE'
                AND grade_ou.status = 'ACTIVE'
               WHERE u.status = 'ACTIVE'
+                AND u.identity = 'STUDENT'
                 AND (%s)
                 AND (#{query.grade} IS NULL OR %s OR %s)
                 AND (#{query.classesEmpty} = TRUE OR %s OR %s)
@@ -1162,6 +1188,7 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
                 JOIN iam_user u1
                   ON u1.id = om1.user_id
                  AND u1.status = 'ACTIVE'
+                 AND u1.identity = 'STUDENT'
                 JOIN org_unit class_ou1
                   ON class_ou1.id = om1.org_unit_id
                  AND class_ou1.unit_type = 'CLASS'
@@ -1228,6 +1255,7 @@ Then add helper methods. The helper must never output `IN ()`; when classes are 
 private String castClassPlaceholders(Map<String, Object> params) {
     UnsubmittedFinalRecordQuery query = (UnsubmittedFinalRecordQuery) params.get("query");
     if (query == null || query.isClassesEmpty()) {
+        // Defensive placeholder only; query.classesEmpty short-circuits the IN predicates.
         return "NULL";
     }
     List<String> placeholders = new ArrayList<>();
@@ -1311,6 +1339,7 @@ private SqlPredicateFragment rosterScopeFragment(FinalRecordAccessContext access
             .toList();
     if (!subtreeIds.isEmpty()) {
         String inSql = bindList(parameters, "d11Subtree", subtreeIds);
+        // Double percent signs are Java String.formatted() escapes; the emitted SQL uses single % wildcards.
         fragments.add("""
                 EXISTS (
                   SELECT 1
@@ -1712,7 +1741,8 @@ If no files changed, do not create an empty commit.
 - Commas inside `grade` and `classes` remain ordinary exact-match characters.
 - `PageResult<T>` remains only `total` and `records`.
 - Roster SQL starts from active `iam_user`, active primary `org_membership`, and active class `org_unit`.
-- Inactive `iam_user`, inactive `org_membership`, and non-primary `org_membership` rows are excluded by repository tests.
+- Roster SQL requires both `iam_user.identity = 'STUDENT'` and `org_membership.membership_type = 'STUDENT'`.
+- Inactive `iam_user`, inactive `org_membership`, non-primary `org_membership`, non-STUDENT identities, and non-STUDENT membership types are excluded by repository tests.
 - `DRAFT` records keep students unsubmitted, appear once per student, and only contribute `MAX(updated_at)`.
 - A student with both `DRAFT` and `SUBMITTED` or `CONFIRMED` records for the same year is excluded.
 - `SUBMITTED` and `CONFIRMED` records exclude students.
@@ -1724,6 +1754,7 @@ If no files changed, do not create an empty commit.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
+- Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
 - Grade/classes exact filters are case-sensitive, use code-or-name OR semantics, include distinct code/name matches, and do not duplicate a student when both sides match the same org unit.
 - Dirty `unit_code = NULL` rows can still match by exact `unit_name`.
 - `pageNo` offset overflow is rejected.
