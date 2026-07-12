@@ -680,6 +680,8 @@ Add imports for `UnsubmittedStudentRow` and `UnsubmittedFinalRecordQuery`.
 
 Transaction note: keep `pageUnsubmittedStudents(...)` consistent with the existing `FinalRecordQueryApplicationService` query-method style in this repository. At plan time the current query methods in this class are plain service methods without `@Transactional(readOnly = true)`. Do not add a one-off read-only transaction annotation only to D-11; if the team decides to add read-only transactions, do it as a separate service-wide consistency refactor with tests for all query methods.
 
+Authorization boundary: D-11 does not call `FinalRecordAccessValidator` per returned roster row. That validator protects single existing final-record resources and builds `FinalRecordResourceContext` from `FinalRecordQueryRow` values, including an actual `finalRecordId`. D-11 starts from active roster membership and intentionally includes students with no final record for the requested academic year, so fabricating validator rows would either invent resource ids or drop the core unsubmitted cases. The D-11 list path must enforce `score.view.assigned` in the service and enforce scope in SQL through the D-11 `rosterScopeFragment(...)`/`D11ScopeSqlShape` path built from the same `FinalRecordAccessContext` rules. The mandatory scope-parity integration test below is the regression guard proving that D-11 roster visibility stays aligned with existing whole-record submitted/confirmed scope semantics.
+
 In `FinalRecordQueryApplicationService`, add imports and this method:
 
 ```java
@@ -1517,6 +1519,8 @@ void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSema
     insertFinalRecord(9104L, 1004L, "2024-2025", "SUBMITTED", "2026-07-12 10:03:00");
     insertFinalRecord(9199L, 1099L, "2024-2025", "SUBMITTED", "2026-07-12 10:03:00");
 
+    assertParityFixtureHasOneSubmittedRecordPerActiveRosterStudent();
+
     assertScopeParity(accessContextWithAllScope());
     assertScopeParity(accessContextWithOrgUnit(4001L));
     assertScopeParity(accessContextWithOrgUnits(4001L, 4002L));
@@ -1529,6 +1533,29 @@ void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSema
     assertScopeParity(accessContextWithUnsupportedCategoryOnly());
     assertScopeParity(accessContextWithEmptyGrantedScopes());
     assertScopeParity(accessContextWithoutScoreViewAssigned());
+}
+
+private void assertParityFixtureHasOneSubmittedRecordPerActiveRosterStudent() {
+    List<Long> activeRosterFixture = jdbcTemplate.queryForList("""
+            SELECT DISTINCT om.user_id
+            FROM org_membership om
+            JOIN iam_user u ON u.id = om.user_id
+            JOIN org_unit ou ON ou.id = om.org_unit_id
+            WHERE om.membership_type = 'STUDENT'
+              AND om.is_primary = 1
+              AND om.status = 'ACTIVE'
+              AND u.status = 'ACTIVE'
+              AND ou.status = 'ACTIVE'
+            """, Long.class);
+    List<Long> submittedFixture = jdbcTemplate.queryForList("""
+            SELECT fr.student_user_id
+            FROM final_record fr
+            WHERE fr.academic_year = '2024-2025'
+              AND fr.status IN ('SUBMITTED', 'CONFIRMED')
+            """, Long.class);
+
+    assertThat(activeRosterFixture).containsExactlyInAnyOrder(1001L, 1002L, 1003L, 1004L, 1099L);
+    assertThat(submittedFixture).containsExactlyInAnyOrderElementsOf(activeRosterFixture);
 }
 
 private void assertScopeParity(FinalRecordAccessContext accessContext) {
