@@ -86,11 +86,14 @@ Comparison rule: only a recorded full `mvn test` baseline allows a full-suite "z
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordQueryApplicationServiceTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java`
+  - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordControllerSecurityAnnotationTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordScopePredicateBuilderTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/security/ScopeSqlTranslatorTest.java`
 
 ## API Contract Summary
+
+Endpoint: `GET /api/admin/final-records/unsubmitted`
 
 Request:
 
@@ -1480,13 +1483,18 @@ Add the scope-parity test before the duplicate-membership tests:
 @Test
 void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSemantics() {
     seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4003, 3002, 'CLASS', 'CS2301', '计算机2301班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2999, NULL, 'COLLEGE', 'CS2', '相似学院', '/WHUT/CS2', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4999, 2999, 'CLASS', 'CS2X', '相似班', '/WHUT/CS2/CS2201', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1004, 'S004', 'Dora', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1099, 'S099', 'Similar', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4003, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5099, 1099, 4999, 'STUDENT', 1, 'ACTIVE')");
     insertFinalRecord(9101L, 1001L, "2024-2025", "SUBMITTED", "2026-07-12 10:00:00");
     insertFinalRecord(9102L, 1002L, "2024-2025", "SUBMITTED", "2026-07-12 10:01:00");
     insertFinalRecord(9103L, 1003L, "2024-2025", "SUBMITTED", "2026-07-12 10:02:00");
+    insertFinalRecord(9104L, 1004L, "2024-2025", "SUBMITTED", "2026-07-12 10:03:00");
     insertFinalRecord(9199L, 1099L, "2024-2025", "SUBMITTED", "2026-07-12 10:03:00");
 
     assertScopeParity(accessContextWithAllScope());
@@ -1494,6 +1502,7 @@ void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSema
     assertScopeParity(accessContextWithOrgUnits(4001L, 4002L));
     assertScopeParity(accessContextWithOrgSubtree(2002L));
     assertScopeParity(accessContextWithOrgSubtree(3001L));
+    assertScopeParity(accessContextWithOrgSubtree(3002L));
     assertScopeParity(accessContextWithOrgSubtrees(3001L, 3002L));
     assertScopeParity(accessContextWithOrgSubtree(4001L));
     assertScopeParity(accessContextWithOrgUnitAndOrgSubtree(4001L, 2002L));
@@ -2861,7 +2870,7 @@ git commit -m "feat: expose unsubmitted final record endpoint"
 Review the actual final diff, not only file names. Record the result of each check in the execution notes before continuing:
 
 - `ApplicationScopeSqlTranslator` changed: add Step 2 regressions.
-- `SqlPredicateFragment` changed: add Step 2 regressions and run `ScopeSqlTranslatorTest`, even if the visible change is a D-11-specific helper such as `alwaysTrue()`.
+- `SqlPredicateFragment` changed: add Step 2 regressions and run `ScopeSqlTranslatorTest`, even if the visible change is a D-11-specific helper such as `alwaysTrue()`. D-11 plans to add `SqlPredicateFragment.alwaysTrue()`, so this item is mandatory for this implementation.
 - `FinalRecordScopePredicateBuilder` output structure or clause mapping changed: add Step 2 regressions.
 - Any public/shared method named with `scope`, `Scope`, `predicate`, `Predicate`, or org-path matching changed outside a D-11-only private helper: add Step 2 regressions.
 - Existing `pageAdminFinalRecords(...)`, `buildSelectAdminFinalRecords(...)`, `buildCountAdminFinalRecords(...)`, `findAdminFinalRecordDetail(...)`, or submitted/confirmed list/detail SQL changed: add Step 2 regressions.
@@ -2917,10 +2926,10 @@ Expected: PASS. This command is mandatory whenever Step 1 marks shared scope tra
 Run:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest,ScopeSqlTranslatorTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: PASS.
+Expected: PASS. `ScopeSqlTranslatorTest` is included here unconditionally because D-11 changes `SqlPredicateFragment`.
 
 - [ ] **Step 4: Run final-record regression tests**
 
