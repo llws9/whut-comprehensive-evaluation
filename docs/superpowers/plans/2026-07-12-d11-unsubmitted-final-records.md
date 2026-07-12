@@ -4,9 +4,9 @@
 
 **Goal:** Build `GET /api/admin/final-records/unsubmitted` so authorized admins can page current active in-scope students who have not submitted or confirmed final records for an academic year.
 
-**Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`.
+**Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`. D-11 deliberately defines dirty `user_no = NULL` rows as sorting after non-null student numbers, then by `user_id ASC`, so pagination is stable across H2 and MySQL.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student-number nulls-last, student number, then user id; `user_id ASC` is the final tie-breaker and is part of the pagination contract for duplicate or null student numbers. This plan intentionally extends the design SQL with student-number nulls-last ordering to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student-number nulls-last, student number, then user id; `user_id ASC` is the final tie-breaker and is part of the pagination contract for duplicate or null student numbers. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
 
 ## Pre-Implementation Verification Baseline
 
@@ -17,6 +17,14 @@ mvn test
 ```
 
 Record whether it passes. If it fails before D-11 implementation starts, record the failing test names and failure count in the execution notes. Task 5 may compare against this recorded pre-implementation baseline; if no pre-implementation baseline exists, do not claim "zero new failures" and report the final `mvn test` result as an observed state only.
+
+If the full pre-implementation `mvn test` baseline is temporarily impractical because of local runtime constraints, record that blocker and also run the focused final-record baseline below before implementation:
+
+```bash
+mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+This focused baseline is only a fallback for pre-implementation comparison. It does not replace the final Task 5 full `mvn test` attempt and does not allow D-11-touched tests to fail.
 
 Execution notes placeholder:
 
@@ -93,6 +101,8 @@ Execution notes placeholder:
 - Modify `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java`
 
 This plan intentionally keeps `UnsubmittedFinalRecordQueryTest` in the existing `whut-eval-app` aggregate test module because the current repository has no `whut-eval-domain/src/test` tree and existing module-level tests are concentrated under `whut-eval-app/src/test`. Do not create a new domain test module layout as part of D-11 unless the repository-wide test organization is changed in a separate task.
+
+Module naming note: `whut-eval-application` contains application-layer production sources, while `whut-eval-app` is the aggregate test module used by this repository for cross-module service, web, security, and persistence tests.
 
 ---
 
@@ -1795,7 +1805,7 @@ private SqlPredicateFragment rosterScopeFragment(FinalRecordAccessContext access
         return SqlPredicateFragment.denyAll();
     }
     if (predicate.isAllowAll()) {
-        return SqlPredicateFragment.allowAll();
+        return SqlPredicateFragment.alwaysTrue();
     }
     Map<String, Object> parameters = new LinkedHashMap<>();
     List<String> fragments = new ArrayList<>();
@@ -1861,7 +1871,7 @@ private String bindList(Map<String, Object> parameters, String prefix, List<Long
 }
 ```
 
-Use imports for `ApplicationScopeClause`, `ArrayList`, `LinkedHashMap`, `Map`, and `Objects`. Prefer `SqlPredicateFragment.allowAll()` and `SqlPredicateFragment.denyAll()` for the static allow/deny branches; use the public constructor only for dynamic D-11 fragments that carry generated SQL and parameters.
+Use imports for `ApplicationScopeClause`, `ArrayList`, `LinkedHashMap`, `Map`, and `Objects`. Prefer `SqlPredicateFragment.alwaysTrue()` and `SqlPredicateFragment.denyAll()` for the static allow/deny branches; use the public constructor only for dynamic D-11 fragments that carry generated SQL and parameters. D-11 must not use an empty string to mean allow-all because `FinalRecordQuerySqlProvider.scopeExpression(...)` treats blank input as defensive deny-all. `SqlPredicateFragment.alwaysTrue()` must return expression `1 = 1` with an empty parameter map.
 
 - [ ] **Step 9: Run repository integration tests**
 
@@ -2075,6 +2085,20 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    when(queryApplicationService.pageUnsubmittedStudents(any()))
+            .thenReturn(new PageResult<>(0, List.of()));
+    MockHttpServletRequestBuilder exactlyFiveHundredClasses = get("/api/admin/final-records/unsubmitted")
+            .param("academicYear", "2025-2026")
+            .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED)));
+    for (int i = 0; i < 250; i++) {
+        exactlyFiveHundredClasses.param("classes", "CS" + i);
+    }
+    for (int i = 250; i < 500; i++) {
+        exactlyFiveHundredClasses.param("classes[]", "CS" + i);
+    }
+    mockMvc.perform(exactlyFiveHundredClasses)
+            .andExpect(status().isOk());
 
     MockHttpServletRequestBuilder tooManyClasses = get("/api/admin/final-records/unsubmitted")
             .param("academicYear", "2025-2026")
@@ -2377,20 +2401,20 @@ rg -n "pageNum|pages|classId|className.*List|academicYear 不能为空|applicati
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 rg -n "status\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'CONFIRMED'\s*\)|status\s*=\s*'SUBMITTED'|status\s*=\s*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
-rg -n "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
+rg -n "LIKE\s+'%{1,2}/[0-9]|LIKE\s+CONCAT\('%{1,2}/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 rg -n "scopeExpression" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 ```
 
-If `rg` is unavailable in the execution environment, run the equivalent `grep -RInE` command with the regex in double quotes:
+If `rg` is unavailable in the execution environment, run the fallback `grep -RInE` commands below. These use POSIX ERE character classes such as `[[:space:]]` instead of `\s`, so their matching semantics align with the `rg` checks:
 
 ```bash
 grep -RInE "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
-grep -RInE "status\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'CONFIRMED'\s*\)|status\s*=\s*'SUBMITTED'|status\s*=\s*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
+grep -RInE "status[[:space:]]+IN[[:space:]]*\([[:space:]]*'SUBMITTED'[[:space:]]*,[[:space:]]*'CONFIRMED'[[:space:]]*\)|status[[:space:]]*=[[:space:]]*'SUBMITTED'|status[[:space:]]*=[[:space:]]*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
-grep -RInE "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
+grep -RInE "LIKE[[:space:]]+'%{1,2}/[0-9]|LIKE[[:space:]]+CONCAT\('%{1,2}/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 grep -RInE "scopeExpression" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
