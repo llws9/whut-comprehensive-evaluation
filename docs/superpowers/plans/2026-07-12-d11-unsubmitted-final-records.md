@@ -216,13 +216,25 @@ void shouldRejectMoreThanFiveHundredNormalizedClasses() {
             .isInstanceOf(ValidationException.class)
             .hasMessage("classes 不合法");
 }
+
+@Test
+void shouldRejectOverlongGradeAndClassValues() {
+    String overlong = "A".repeat(257);
+
+    assertThatThrownBy(() -> new UnsubmittedFinalRecordQuery("2025-2026", overlong, null, 1, 20))
+            .isInstanceOf(ValidationException.class)
+            .hasMessage("grade 不合法");
+    assertThatThrownBy(() -> new UnsubmittedFinalRecordQuery("2025-2026", null, List.of(overlong), 1, 20))
+            .isInstanceOf(ValidationException.class)
+            .hasMessage("classes 不合法");
+}
 ```
 
 - [ ] **Step 4: Implement `UnsubmittedFinalRecordQuery`**
 
 Create `UnsubmittedFinalRecordQuery`:
 
-Do not add length validation for `grade` or individual `classes` values in D-11. They remain exact-match filter strings, are bound through MyBatis parameters, and naturally produce no matches when no `org_unit.unit_code` or `org_unit.unit_name` equals the value. The only D-11 request-size guard is `MAX_CLASSES = 500`.
+D-11 keeps `grade` and `classes` as exact-match filter strings without comma splitting or case folding. They are bound through MyBatis parameters and naturally produce no matches when no `org_unit.unit_code` or `org_unit.unit_name` equals the value. To cap request size, keep `MAX_CLASSES = 500` and reject any single normalized `grade` or `classes` value longer than 256 characters.
 
 ```java
 package edu.whut.eval.domain.finalrecord.query;
@@ -239,6 +251,7 @@ public class UnsubmittedFinalRecordQuery {
 
     private static final Pattern ACADEMIC_YEAR = Pattern.compile("^\\d{4}-\\d{4}$");
     private static final int MAX_CLASSES = 500;
+    private static final int MAX_FILTER_VALUE_LENGTH = 256;
 
     private final String academicYear;
     private final String grade;
@@ -249,7 +262,7 @@ public class UnsubmittedFinalRecordQuery {
 
     public UnsubmittedFinalRecordQuery(String academicYear, String grade, List<String> classes, long pageNo, long pageSize) {
         this.academicYear = normalizeAcademicYear(academicYear);
-        this.grade = normalizeOptional(grade);
+        this.grade = normalizeFilterValue(grade, "grade");
         this.classes = normalizeClasses(classes);
         this.pageNo = pageNo <= 0 ? 1 : pageNo;
         this.pageSize = pageSize <= 0 ? 20 : Math.min(pageSize, 100);
@@ -281,7 +294,18 @@ public class UnsubmittedFinalRecordQuery {
             return null;
         }
         String trimmed = value.trim();
-        return trimmed.isBlank() ? null : trimmed;
+        if (trimmed.isBlank()) {
+            return null;
+        }
+        return trimmed;
+    }
+
+    private String normalizeFilterValue(String value, String name) {
+        String trimmed = normalizeOptional(value);
+        if (trimmed != null && trimmed.length() > MAX_FILTER_VALUE_LENGTH) {
+            throw new ValidationException(name + " 不合法");
+        }
+        return trimmed;
     }
 
     private List<String> normalizeClasses(List<String> values) {
@@ -290,7 +314,7 @@ public class UnsubmittedFinalRecordQuery {
         }
         Set<String> normalized = new LinkedHashSet<>();
         for (String value : values) {
-            String trimmed = normalizeOptional(value);
+            String trimmed = normalizeFilterValue(value, "classes");
             if (trimmed != null) {
                 normalized.add(trimmed);
             }
@@ -410,6 +434,23 @@ void shouldRenderNullLastUpdatedAtAsEmptyString() {
 }
 
 @Test
+void shouldRenderLastUpdatedAtWithFixedUtcMillisecondPrecision() {
+    UserAuthorizationContext admin = adminWithAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED);
+    when(userAuthorizationContextAssembler.requiredAuthorizationContext()).thenReturn(admin);
+    UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20);
+    when(finalRecordQueryRepository.pageUnsubmittedStudents(any(), same(query)))
+            .thenReturn(new PageResult<>(1, List.of(
+                    unsubmittedRow(1001L, "S001", "Alice", "2022级", "CS2201", Instant.parse("2026-07-12T10:15:30Z"))
+            )));
+
+    PageResult<UnsubmittedStudentView> page = service.pageUnsubmittedStudents(query);
+
+    assertThat(page.records()).containsExactly(
+            new UnsubmittedStudentView(1001L, "S001", "Alice", "2022级", "CS2201", "UNSUBMITTED", "2026-07-12T10:15:30.000Z")
+    );
+}
+
+@Test
 void shouldDenyUnsubmittedListWithoutScoreViewAssigned() {
     UserAuthorizationContext admin = adminWithAuthority("other.permission");
     when(userAuthorizationContextAssembler.requiredAuthorizationContext()).thenReturn(admin);
@@ -510,6 +551,10 @@ Add imports for `UnsubmittedStudentRow` and `UnsubmittedFinalRecordQuery`.
 In `FinalRecordQueryApplicationService`, add imports and this method:
 
 ```java
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+
 public PageResult<UnsubmittedStudentView> pageUnsubmittedStudents(UnsubmittedFinalRecordQuery query) {
     UserAuthorizationContext admin = userAuthorizationContextAssembler.requiredAuthorizationContext();
     ensurePermission(admin, AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED, "当前用户无未提交最终成绩名单查询权限");
@@ -524,10 +569,17 @@ public PageResult<UnsubmittedStudentView> pageUnsubmittedStudents(UnsubmittedFin
 Add helpers:
 
 ```java
+private static final DateTimeFormatter UNSUBMITTED_LAST_UPDATED_FORMATTER =
+        DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
+
 private UnsubmittedStudentView toUnsubmittedView(UnsubmittedStudentRow row) {
     return new UnsubmittedStudentView(row.getStudentUserId(), valueOrEmpty(row.getUserNo()),
             valueOrEmpty(row.getUserName()), valueOrEmpty(row.getGrade()), valueOrEmpty(row.getClassName()),
-            "UNSUBMITTED", row.getLastUpdatedAt() == null ? "" : row.getLastUpdatedAt().toString());
+            "UNSUBMITTED", formatLastUpdatedAt(row.getLastUpdatedAt()));
+}
+
+private String formatLastUpdatedAt(Instant value) {
+    return value == null ? "" : UNSUBMITTED_LAST_UPDATED_FORMATTER.format(value);
 }
 
 private String valueOrEmpty(String value) {
@@ -680,6 +732,7 @@ void shouldKeepDraftStudentsUnsubmittedAndExposeMaxDraftUpdatedAt() {
     );
 
     UnsubmittedStudentRow alice = findRow(page, 1001L);
+    assertThat(page.total()).isEqualTo(3);
     assertThat(alice.getLastUpdatedAt()).isEqualTo(Instant.parse("2026-07-12T11:15:30.456Z"));
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .contains(1001L);
@@ -716,6 +769,7 @@ void shouldExcludeSubmittedAndConfirmedStudents() {
             new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
     );
 
+    assertThat(page.total()).isEqualTo(1);
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1003L);
     assertThat(findRow(page, 1003L).getLastUpdatedAt()).isNull();
@@ -2056,7 +2110,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - A student with both `DRAFT` and `SUBMITTED` or `CONFIRMED` records for the same year is excluded.
 - `SUBMITTED` and `CONFIRMED` records exclude students.
 - Unknown and `NULL` final-record statuses are ignored and do not contribute to `lastUpdatedAt`.
-- `lastUpdatedAt` is rendered with `Instant.toString()` or empty string.
+- `lastUpdatedAt` is rendered as UTC `yyyy-MM-dd'T'HH:mm:ss.SSS'Z'` with fixed millisecond precision, or empty string.
 - DRAFT rows with `updated_at = NULL` keep the student unsubmitted, expose raw `lastUpdatedAt = null`, and render API `lastUpdatedAt` as an empty string.
 - Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
 - Rows without an active `GRADE` parent sort after rows with active grades.
