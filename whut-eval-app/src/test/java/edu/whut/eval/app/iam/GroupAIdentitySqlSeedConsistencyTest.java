@@ -56,6 +56,17 @@ class GroupAIdentitySqlSeedConsistencyTest {
     }
 
     @Test
+    void shouldKeepScoreImportOutOfAGroupIdentitySeed() throws Exception {
+        String groupASql = Files.readString(SQL_PATH);
+        Path dGroupSafeInitSql = TEAM_DELIVERY.resolve("group-d-score-finalization-import-export.safe-init.sql");
+        String dSafeInitSql = Files.exists(dGroupSafeInitSql) ? Files.readString(dGroupSafeInitSql) : "";
+
+        assertThat(AuthorizationPermissionCodes.SCORE_IMPORT).isEqualTo("score.import");
+        assertThat(groupASql).doesNotContain("score.import");
+        assertThat(dSafeInitSql).contains("score.import");
+    }
+
+    @Test
     void shouldKeepFinalSelfPermissionsOwnedByAGroupIdentitySeed() throws Exception {
         String groupASql = Files.readString(SQL_PATH);
         Path dGroupSafeInitSql = TEAM_DELIVERY.resolve("group-d-score-finalization-import-export.safe-init.sql");
@@ -151,6 +162,7 @@ class GroupAIdentitySqlSeedConsistencyTest {
     private static Set<String> groupAOwnedPermissionCodeConstants() {
         Set<String> codes = permissionCodeConstants();
         codes.remove(AuthorizationPermissionCodes.SCORE_CONFIRM_ASSIGNED);
+        codes.remove(AuthorizationPermissionCodes.SCORE_IMPORT);
         return codes;
     }
 
