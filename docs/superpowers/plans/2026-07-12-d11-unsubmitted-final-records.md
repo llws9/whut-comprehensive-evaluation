@@ -21,6 +21,8 @@
 - Existing query repository contract: `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/repository/FinalRecordQueryRepository.java`
 - Existing mapper/provider: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/FinalRecordQueryMapper.java`, `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/FinalRecordQuerySqlProvider.java`
 - Existing repository implementation: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusFinalRecordQueryRepository.java`
+- Existing global exception handler: `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/exception/GlobalExceptionHandler.java`
+  - `ValidationException` extends the common app-exception path handled by `handleBaseAppException(...)`, so controller-bound validation failures must return `VAL-4001`.
 - Existing final-record query tests:
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordQueryApplicationServiceTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java`
@@ -720,6 +722,26 @@ void shouldExcludeSubmittedAndConfirmedStudents() {
 }
 
 @Test
+void shouldIsolateSubmittedConfirmedAndDraftRecordsByAcademicYear() {
+    seedRoster();
+    insertFinalRecord(25L, 1001L, "2024-2025", "SUBMITTED", "2026-07-12 10:15:30");
+    insertFinalRecord(26L, 1002L, "2024-2025", "CONFIRMED", "2026-07-12 10:15:30");
+    insertFinalRecord(27L, 1003L, "2024-2025", "DRAFT", "2026-07-12 12:15:30");
+    insertFinalRecord(28L, 1003L, "2024-2025", "UNKNOWN", "2026-07-12 13:15:30");
+    insertFinalRecord(29L, 1003L, "2024-2025", null, "2026-07-12 14:15:30");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(3);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L);
+    assertThat(findRow(page, 1003L).getLastUpdatedAt()).isNull();
+}
+
+@Test
 void shouldTreatNullFinalRecordStatusAsUnsubmittedWithoutLastUpdatedAtContribution() {
     seedRoster();
     insertFinalRecord(24L, 1003L, "2025-2026", null, "2026-07-12 10:15:30");
@@ -776,7 +798,7 @@ void shouldExcludeInactiveUsersInactiveMembershipsAndNonPrimaryMemberships() {
 }
 
 @Test
-void shouldKeepClassWithoutActiveGradeWhenGradeFilterAbsentAndExcludeWhenPresent() {
+void shouldKeepClassWithoutActiveGradeWhenGradeFilterAbsentAndExcludeWhenGradeRequested() {
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'INACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4004, 3002, 'CLASS', 'CS2301', '计算机2301班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
@@ -797,7 +819,7 @@ void shouldKeepClassWithoutActiveGradeWhenGradeFilterAbsentAndExcludeWhenPresent
             accessContextWithOrgSubtree(2002L),
             new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", null, 1, 20)
     );
-    PageResult<UnsubmittedStudentRow> withNonMatchingGradeFilter = repository.pageUnsubmittedStudents(
+    PageResult<UnsubmittedStudentRow> withInactiveGradeFilter = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
             new UnsubmittedFinalRecordQuery("2025-2026", "CS2023", null, 1, 20)
     );
@@ -805,8 +827,21 @@ void shouldKeepClassWithoutActiveGradeWhenGradeFilterAbsentAndExcludeWhenPresent
     assertThat(withMatchingGradeFilter.total()).isEqualTo(3);
     assertThat(withMatchingGradeFilter.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1001L, 1002L, 1003L);
-    assertThat(withNonMatchingGradeFilter.total()).isZero();
-    assertThat(withNonMatchingGradeFilter.records()).isEmpty();
+    assertThat(withInactiveGradeFilter.total()).isZero();
+    assertThat(withInactiveGradeFilter.records()).isEmpty();
+}
+
+@Test
+void shouldReturnEmptyWhenGradeFilterDoesNotMatchAnyActiveVisibleGrade() {
+    seedRoster();
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2099", null, 1, 20)
+    );
+
+    assertThat(page.total()).isZero();
+    assertThat(page.records()).isEmpty();
 }
 ```
 
@@ -1078,6 +1113,28 @@ void shouldChooseLowestNumericVisibleMembershipIdAfterScopeAndFilters() {
     assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1001L)
             .hasSize(1);
     assertThat(alice.getClassName()).isEqualTo("计算机2200班");
+    assertThat(alice.getGrade()).isEqualTo("计算机2022级");
+}
+
+@Test
+void shouldDisplayGradeAndClassFromSameLowestVisibleMembership() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4004, 3002, 'CLASS', 'CS2301', '计算机2301班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4005, 3001, 'CLASS', 'CS2205', '计算机2205班', '/WHUT/CS/CS2022/CS2205', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1001, 4004, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6000, 1001, 4005, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    UnsubmittedStudentRow alice = findRow(page, 1001L);
+    assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1001L)
+            .hasSize(1);
+    assertThat(alice.getGrade()).isEqualTo("计算机2023级");
+    assertThat(alice.getClassName()).isEqualTo("计算机2301班");
 }
 
 @Test
@@ -1209,9 +1266,11 @@ List<UnsubmittedStudentRow> selectUnsubmittedStudents(@Param("scopeExpression") 
 
 In `FinalRecordQuerySqlProvider`, add:
 
-Count and select SQL must keep the same eligibility predicates: active user, `u.identity = 'STUDENT'`, active primary STUDENT membership, active class, scope expression, grade/classes filters, and the submitted/confirmed `NOT EXISTS` exclusion. If you add or change one predicate in either SQL, update the other SQL in the same task. Prefer extracting a small helper for shared predicate fragments if the final implementation starts to drift from the snippets below.
+Count and select SQL must keep the same eligibility predicates: active user, `u.identity = 'STUDENT'`, active primary STUDENT membership, active class, scope expression, grade/classes filters, and the submitted/confirmed `NOT EXISTS` exclusion. This is a hard invariant: the count query's grouped visible-student subquery and the select query's inner `visible` subquery must be isomorphic for all eligibility predicates, including scope, grade, classes, final-record exclusion, membership status, user status, and user identity. If you add, delete, or change one predicate in either SQL, update the other SQL in the same task and add or adjust a count/select alignment assertion. Prefer extracting a small helper for shared predicate fragments if the final implementation starts to drift from the snippets below.
 
 The select `ORDER BY` intentionally adds `CASE WHEN u.user_no IS NULL THEN 1 ELSE 0 END` before `u.user_no ASC`; this extends the design SQL to make dirty `user_no = NULL` data sort after numbered students consistently on H2 and MySQL. The outer `class_ou` / `grade_ou` type and status predicates duplicate inner eligibility checks defensively so future edits to the inner visible subquery cannot silently display inactive or wrong-type org units.
+
+For `scopeExpression`, the placeholder `__D11_CLASS_ALIAS__` always represents the current visible class `org_unit` alias. In `buildCountUnsubmittedStudents(...)` it is replaced only with `class_ou`. In `buildSelectUnsubmittedStudents(...)` it is replaced only with the inner visible subquery alias `class_ou1`. It must never point at `grade_ou`, `grade_ou1`, the outer display `class_ou`, or caller-provided SQL. Grade and class request filters remain separate fixed expressions over `grade_ou1`/`class_ou1` inside select and `grade_ou`/`class_ou` inside count.
 
 ```java
 public String buildCountUnsubmittedStudents(Map<String, Object> params) {
@@ -1365,6 +1424,7 @@ private String scopeExpression(Map<String, Object> params, String classAlias) {
     if (expression == null || expression.isBlank()) {
         return "1 = 0";
     }
+    // D-11 only replaces the fixed visible class org_unit alias placeholder.
     return expression.replace("__D11_CLASS_ALIAS__", classAlias);
 }
 ```
@@ -1846,6 +1906,8 @@ grep -RInE "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*L
 Expected:
 
 - `git diff --check` prints no whitespace errors.
+- The two anti-pattern scans are mandatory. If `rg` is available, run the two `rg` commands above; if `rg` is unavailable, run the two `grep -RInE` fallback commands above over the same directories before claiming Task 5 verification is complete.
+- The anti-pattern scans pass only when they produce no new D-11 hits in changed files. Any new hit fails the verification unless the execution notes name the file/line and explain why the hit is unrelated to D-11 contract drift.
 - No `PageResult` metadata fields are added.
 - No D-11 code uses application/import/export tables.
 - No D-11 invalid academic-year path uses `academicYear 不能为空`.
