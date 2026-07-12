@@ -6,6 +6,9 @@ import edu.whut.eval.application.finalrecord.importing.LectureImportApplicationS
 import edu.whut.eval.application.finalrecord.importing.LectureImportBatchLock;
 import edu.whut.eval.application.finalrecord.importing.LectureImportParser;
 import edu.whut.eval.application.finalrecord.importing.LectureImportRepository;
+import edu.whut.eval.application.finalrecord.importing.LectureImportStudentTarget;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportFailedRow;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportRow;
 import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ValidationException;
@@ -15,9 +18,15 @@ import edu.whut.eval.domain.iam.model.IamScopeRule;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionOperations;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -26,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -126,6 +136,250 @@ class LectureImportApplicationServiceTest {
         assertThat(lock.releases.get()).isZero();
     }
 
+    @Test
+    void shouldCollectFieldFailuresInFrozenOrderAndRawValueShape() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of(
+                new LectureImportRow(2L, null, null, "x"),
+                new LectureImportRow(3L, "S0", null, "x"),
+                new LectureImportRow(4L, "S1", "99999999.999", "x"),
+                new LectureImportRow(5L, "S2", "1.234", "x"),
+                new LectureImportRow(6L, "S3", "1.230", "x"),
+                new LectureImportRow(7L, "S4", "1.00", "一".repeat(1001))
+        ));
+
+        LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.failedRows()).extracting("code")
+                .containsExactly("STUDENT_NO_REQUIRED", "SCORE_VALUE_REQUIRED", "SCORE_VALUE_OUT_OF_RANGE", "SCORE_VALUE_SCALE_INVALID", "SCORE_VALUE_SCALE_INVALID", "DISPLAY_TEXT_TOO_LONG");
+        assertThat(result.failedRows().get(0).rawValue()).containsOnlyKeys("studentNo", "scoreValue", "displayText");
+    }
+
+    @Test
+    void shouldValidateTitleLengthCodePointBoundaries() {
+        String validTitle = "一".repeat(255);
+        String tooLongTitle = "一".repeat(256);
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", "讲座")));
+        given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
+        given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+        given(repository.insertLectureComponents(eq("2025-2026"), any(), any())).willReturn(List.of());
+
+        LectureImportResult result = service.importLectures(command(validTitle, "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.successCount()).isEqualTo(1);
+        assertThatThrownBy(() -> service.importLectures(command(tooLongTitle, "2026-05-18T14:30", "2025-2026")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("title 长度不能超过 255");
+    }
+
+    @Test
+    void shouldTreatZeroUpperBoundAndShortScaleScoresAsValidAndDefaultDisplayText() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of(
+                new LectureImportRow(2L, "S1", "0", null),
+                new LectureImportRow(3L, "S2", "0.0", ""),
+                new LectureImportRow(4L, "S3", "1", "一".repeat(1000)),
+                new LectureImportRow(5L, "S4", "1.5", "讲座"),
+                new LectureImportRow(6L, "S5", "99999999.99", ""),
+                new LectureImportRow(7L, "S6", "00", ""),
+                new LectureImportRow(8L, "S7", "00.50", "")
+        ));
+        given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
+        given(repository.findTarget(eq("S2"), eq("2025-2026"))).willReturn(Optional.of(target(1002L, "/WHUT/CS/CS2022/CS2202")));
+        given(repository.findTarget(eq("S3"), eq("2025-2026"))).willReturn(Optional.of(target(1003L, "/WHUT/CS/CS2022/CS2203")));
+        given(repository.findTarget(eq("S4"), eq("2025-2026"))).willReturn(Optional.of(target(1004L, "/WHUT/CS/CS2022/CS2204")));
+        given(repository.findTarget(eq("S5"), eq("2025-2026"))).willReturn(Optional.of(target(1005L, "/WHUT/CS/CS2022/CS2205")));
+        given(repository.findTarget(eq("S6"), eq("2025-2026"))).willReturn(Optional.of(target(1006L, "/WHUT/CS/CS2022/CS2206")));
+        given(repository.findTarget(eq("S7"), eq("2025-2026"))).willReturn(Optional.of(target(1007L, "/WHUT/CS/CS2022/CS2207")));
+        given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+        given(repository.insertLectureComponents(eq("2025-2026"), any(), any())).willReturn(List.of());
+
+        LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.successCount()).isEqualTo(7);
+        verify(repository).insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components ->
+                components.size() == 7
+                        && components.get(0).scoreValue().compareTo(new BigDecimal("0.00")) == 0
+                        && components.get(1).scoreValue().compareTo(new BigDecimal("0.00")) == 0
+                        && components.get(2).scoreValue().compareTo(new BigDecimal("1.00")) == 0
+                        && components.get(3).scoreValue().compareTo(new BigDecimal("1.50")) == 0
+                        && components.get(5).scoreValue().compareTo(new BigDecimal("0.00")) == 0
+                        && components.get(6).scoreValue().compareTo(new BigDecimal("0.50")) == 0
+                        && components.get(0).displayText().equals("讲座 讲座签到")
+                        && components.get(1).displayText().equals("讲座 讲座签到")
+                        && components.get(2).displayText().equals("一".repeat(1000))
+                        && components.get(4).displayText().equals("讲座 讲座签到")));
+    }
+
+    @Test
+    void shouldRejectNonStrictDecimalFormats() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of(
+                new LectureImportRow(2L, "S1", "-1", null),
+                new LectureImportRow(3L, "S2", "1,234.56", null),
+                new LectureImportRow(4L, "S3", "50%", null),
+                new LectureImportRow(5L, "S4", "5E-1", null)
+        ));
+
+        LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.successCount()).isZero();
+        assertThat(result.failedRows()).extracting("code")
+                .containsExactly("SCORE_VALUE_INVALID", "SCORE_VALUE_INVALID", "SCORE_VALUE_INVALID", "SCORE_VALUE_INVALID");
+    }
+
+    @Test
+    void shouldCollectDuplicateStudentAfterFieldValidation() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of(
+                new LectureImportRow(2L, "S1", "bad", null),
+                new LectureImportRow(3L, "S1", "1.00", null),
+                new LectureImportRow(4L, "S1", "2.00", null)
+        ));
+        given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
+        given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+        given(repository.insertLectureComponents(eq("2025-2026"), any(), any())).willReturn(List.of());
+
+        LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.failedRows()).extracting("rowNo").containsExactly(2L, 4L);
+        assertThat(result.failedRows()).extracting("code").containsExactly("SCORE_VALUE_INVALID", "DUPLICATE_STUDENT");
+        assertThat(result.failedRows()).extracting("message").containsExactly("scoreValue 必须是数字", "同一讲座批次中学生重复");
+        assertThat(result.successCount()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldConsumeDuplicateKeyAfterStudentLookupFailure() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of(
+                new LectureImportRow(2L, "S404", "1.00", null),
+                new LectureImportRow(3L, "S404", "2.00", null)
+        ));
+        given(repository.findTarget(eq("S404"), eq("2025-2026"))).willReturn(Optional.empty());
+
+        LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.failedRows()).extracting("rowNo").containsExactly(2L, 3L);
+        assertThat(result.failedRows()).extracting("code").containsExactly("STUDENT_NOT_FOUND", "DUPLICATE_STUDENT");
+    }
+
+    @Test
+    void shouldAllowRetryWhenAllRowsFailBeforePersistenceLeavesNoBatchMarker() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of(
+                new LectureImportRow(2L, "S404", "1.00", null)
+        ));
+        given(repository.findTarget(eq("S404"), eq("2025-2026"))).willReturn(Optional.empty());
+
+        LectureImportResult first = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+        LectureImportResult retry = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(first.successCount()).isZero();
+        assertThat(first.failedRows()).extracting("code").containsExactly("STUDENT_NOT_FOUND");
+        assertThat(retry.successCount()).isZero();
+        verify(repository, never()).insertLectureComponents(any(), any(), any());
+        verify(repository, times(2)).lectureBatchExists(eq("2025-2026"), eq(first.lectureBatchId()));
+    }
+
+    @Test
+    void shouldCollectStudentScopeAndLockFailuresAndSortFailedRowsByRowNo() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of(
+                new LectureImportRow(4L, "S4", "1.00", null),
+                new LectureImportRow(2L, "S2", "1.00", null),
+                new LectureImportRow(3L, "S3", "1.00", null)
+        ));
+        given(repository.findTarget(eq("S2"), eq("2025-2026"))).willReturn(Optional.empty());
+        given(repository.findTarget(eq("S3"), eq("2025-2026"))).willReturn(Optional.of(target(1003L, "/WHUT/ME/ME2022/ME2201")));
+        given(repository.findTarget(eq("S4"), eq("2025-2026"))).willReturn(Optional.of(target(1004L, "/WHUT/CS/CS2022/CS2204")));
+        given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+        given(repository.insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components -> components.size() == 1)))
+                .willReturn(List.of(new LectureImportFailedRow(
+                        4L,
+                        "FINAL_RECORD_LOCKED",
+                        "已提交或已确认的最终成绩不允许导入覆盖",
+                        raw("S4", "1.00", null)
+                )));
+
+        LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.failedRows()).extracting("rowNo").containsExactly(2L, 3L, 4L);
+        assertThat(result.failedRows()).extracting("code").containsExactly("STUDENT_NOT_FOUND", "OUT_OF_SCOPE", "FINAL_RECORD_LOCKED");
+    }
+
+    @Test
+    void shouldApplyOrgUnitScopeAsExactMatchOnly() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(new UserAuthorizationContext(
+                1010L,
+                "T1010",
+                "Counselor",
+                "teacher",
+                Set.of("COUNSELOR"),
+                Set.of("score.import"),
+                List.of(new IamScopeRule(7011L, "score.import", "ORG_UNIT", 2201L, null, null, null, 80, "ACTIVE"))
+        ));
+        given(parser.parse(any())).willReturn(List.of(
+                new LectureImportRow(2L, "S1", "1.00", null),
+                new LectureImportRow(3L, "S2", "1.00", null)
+        ));
+        given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(new LectureImportStudentTarget(1001L, "S1", 2201L, "/WHUT/CS/CS2022/CS2201")));
+        given(repository.findTarget(eq("S2"), eq("2025-2026"))).willReturn(Optional.of(new LectureImportStudentTarget(1002L, "S2", 2202L, "/WHUT/CS/CS2022/CS2202")));
+        given(repository.insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components -> components.size() == 1 && components.get(0).studentNo().equals("S1"))))
+                .willReturn(List.of());
+
+        LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.successCount()).isEqualTo(1);
+        assertThat(result.failedRows()).extracting("rowNo").containsExactly(3L);
+        assertThat(result.failedRows()).extracting("code").containsExactly("OUT_OF_SCOPE");
+    }
+
+    @Test
+    void shouldReleaseAcquiredLockOnDuplicateConflict() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of());
+        given(repository.lectureBatchExists(eq("2025-2026"), any())).willReturn(true);
+
+        assertThatThrownBy(() -> service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026")))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("同一讲座批次已导入");
+        assertThat(lock.releases.get()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldReleaseAcquiredLockOnPersistenceFailure() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", null)));
+        given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
+        given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+        doThrow(new ConflictException("最终成绩状态已变更，请刷新后重试"))
+                .when(repository).insertLectureComponents(eq("2025-2026"), any(), any());
+
+        assertThatThrownBy(() -> service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026")))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("最终成绩状态已变更，请刷新后重试");
+        assertThat(lock.releases.get()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldDeferLockReleaseUntilTransactionCompletionWhenSynchronizationIsActive() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of());
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+            assertThat(lock.releases.get()).isZero();
+            TransactionSynchronizationManager.getSynchronizations()
+                    .forEach(synchronization -> synchronization.afterCompletion(TransactionSynchronization.STATUS_COMMITTED));
+            assertThat(lock.releases.get()).isEqualTo(1);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
     private ImportLecturesCommand command(String title, String heldAt, String academicYear) {
         return new ImportLecturesCommand(new byte[]{1}, title, heldAt, academicYear);
     }
@@ -134,6 +388,18 @@ class LectureImportApplicationServiceTest {
         return new UserAuthorizationContext(1010L, "T1010", "Counselor", "teacher", Set.of("COUNSELOR"), Set.of("score.import"), List.of(
                 new IamScopeRule(7010L, "score.import", "ORG_SUBTREE", 2002L, null, null, null, 80, "ACTIVE")
         ));
+    }
+
+    private LectureImportStudentTarget target(Long studentUserId, String orgPath) {
+        return new LectureImportStudentTarget(studentUserId, "S" + studentUserId, 2010L, orgPath);
+    }
+
+    private Map<String, String> raw(String studentNo, String scoreValue, String displayText) {
+        Map<String, String> raw = new LinkedHashMap<>();
+        raw.put("studentNo", studentNo);
+        raw.put("scoreValue", scoreValue);
+        raw.put("displayText", displayText);
+        return raw;
     }
 
     private static class RecordingLock implements LectureImportBatchLock {
