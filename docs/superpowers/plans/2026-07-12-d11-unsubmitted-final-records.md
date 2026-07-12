@@ -8,6 +8,12 @@
 
 **Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
 
+**Frozen Schema Precedence:** If the source design and frozen SQL schema conflict, the frozen A/D schema wins for D-11 implementation and tests. `docs/team-delivery/group-a-identity-user-admin.sql` defines `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, and `org_unit.status` as `NOT NULL`; `docs/team-delivery/group-d-score-finalization-import-export.safe-init.sql` defines `final_record.status` and `final_record.updated_at` as `NOT NULL` and enforces `UNIQUE KEY uk_final_record_student_year (student_user_id, academic_year)`. Therefore D-11 must not add duplicate final-record rows for one student/year, nullable organization path/code cases, nullable final-record status/update timestamps, or missing IAM columns as tests or production behavior. Malformed but schema-valid path strings, such as empty strings, missing leading `/`, and trailing `/`, are still valid boundary cases for D-11 subtree guards and must be tested.
+
+**Task Coverage Map:** This plan is intentionally split into five executable tasks: Task 1 query-object contract, Task 2 application service view mapping, Task 3 repository roster SQL, Task 4 controller route and request shape, and Task 5 regression/full verification. Task 4 and Task 5 appear after the Task 3 commit block and are required even though repository SQL is the largest section.
+
+**Implementation Snippet Boundary:** Java and SQL blocks below are executable-oriented sketches that lock behavioral contracts, aliases, predicates, validation rules, and test intent. During implementation, keep the same observable contracts and guardrails, but adapt imports, helper placement, formatting, and minor method organization to the current repository style instead of mechanically copying a snippet when an existing local pattern is clearer.
+
 ## Pre-Implementation Verification Baseline
 
 - [ ] Before creating D-11 code files or modifying production/test code, run:
@@ -26,7 +32,7 @@ mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpe
 
 This focused baseline is only a fallback for pre-implementation comparison. It does not replace the final Task 5 full `mvn test` attempt and does not allow D-11-touched tests to fail.
 
-Execution notes placeholder. The executor must write the observed baseline values back into this section before D-11 implementation starts, or copy the same fields into the task-run handoff summary if the plan file itself is intentionally left unchanged during execution:
+Execution notes placeholder. The executor must write the observed baseline values back into this section before D-11 implementation starts. Do not use terminal scrollback or a handoff summary as the only baseline source; the final Task 5 comparison reads the fields below.
 
 - Full Baseline Result: `PENDING` before implementation; replace with `PASS`, `FAIL`, or `BLOCKED`.
 - Full Baseline Command: `mvn test`
@@ -95,6 +101,15 @@ Request:
 | `pageSize` | `long` | no | Defaults to `20`; non-numeric values return `VAL-4001`; values `<= 0` normalize to `20`; values `> 100` normalize to `100`. |
 
 Response `data` remains `PageResult<UnsubmittedStudentView>` with exactly `total` and `records`. Each record has `studentUserId`, `userNo`, `userName`, `grade`, `className`, fixed `status = "UNSUBMITTED"`, and `lastUpdatedAt`. Nullable projection values are rendered as empty strings; `lastUpdatedAt` uses `Instant.toString()` when a DRAFT final record exists and is empty when no DRAFT final record exists.
+
+Field naming map:
+
+| Layer | Academic year | Class filters / display | Last update |
+| --- | --- | --- | --- |
+| Request | `academicYear` | `classes` / `classes[]` filters | n/a |
+| Domain query | `academicYear` | `classes: List<String>` normalized exact filters | n/a |
+| Repository row | `academicYear` input only | `className` property mapped from SQL alias `class_name` | `lastUpdatedAt: Instant` from SQL alias `last_updated_at` |
+| API view / JSON | n/a | `className` display string | `lastUpdatedAt` string |
 
 ## File Structure
 
@@ -1277,6 +1292,62 @@ void shouldRejectInactiveOrgSubtreeRootEvenWhenRootPathAndChildrenAreValid() {
     assertThat(inactiveClassRoot.records()).isEmpty();
 }
 
+@Test
+void shouldRejectMalformedOrgSubtreeRootAndClassPaths() {
+    seedRoster();
+
+    jdbcTemplate.update("UPDATE org_unit SET path = '' WHERE id = 2002");
+    PageResult<UnsubmittedStudentRow> blankRootPath = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/CS' WHERE id = 2002");
+
+    jdbcTemplate.update("UPDATE org_unit SET path = 'WHUT/CS' WHERE id = 2002");
+    PageResult<UnsubmittedStudentRow> missingLeadingSlashRootPath = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/CS' WHERE id = 2002");
+
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/CS/' WHERE id = 2002");
+    PageResult<UnsubmittedStudentRow> trailingSlashRootPath = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/CS' WHERE id = 2002");
+
+    jdbcTemplate.update("UPDATE org_unit SET path = '' WHERE id = 4001");
+    PageResult<UnsubmittedStudentRow> blankClassPath = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/CS/CS2022/CS2201' WHERE id = 4001");
+
+    jdbcTemplate.update("UPDATE org_unit SET path = 'WHUT/CS/CS2022/CS2201' WHERE id = 4001");
+    PageResult<UnsubmittedStudentRow> missingLeadingSlashClassPath = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/CS/CS2022/CS2201' WHERE id = 4001");
+
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/CS/CS2022/CS2201/' WHERE id = 4001");
+    PageResult<UnsubmittedStudentRow> trailingSlashClassPath = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(blankRootPath.records()).isEmpty();
+    assertThat(missingLeadingSlashRootPath.records()).isEmpty();
+    assertThat(trailingSlashRootPath.records()).isEmpty();
+    assertThat(blankClassPath.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1003L);
+    assertThat(missingLeadingSlashClassPath.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1003L);
+    assertThat(trailingSlashClassPath.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1003L);
+}
+
 ```
 
 - [ ] **Step 4: Write mandatory scope-parity, duplicate-membership, and pagination tests**
@@ -1516,6 +1587,38 @@ void shouldKeepCountAndPagedRowsConsistentWhenManyVisibleMembershipsCollapseToOn
             .containsExactly(1001L);
     assertThat(secondPage.total()).isEqualTo(1);
     assertThat(secondPage.records()).isEmpty();
+}
+
+@Test
+void shouldKeepCountAndSelectAlignedAcrossEligibilityMatrix() {
+    seedRoster();
+    insertFinalRecord(31L, 1002L, "2025-2026", "DRAFT", "2026-07-12 10:15:30");
+
+    assertCountMatchesFullRecords(accessContextWithOrgUnit(4001L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 100), 2);
+    assertCountMatchesFullRecords(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 100), 3);
+    assertCountMatchesFullRecords(accessContextWithAllScope(),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 100), 3);
+    assertCountMatchesFullRecords(accessContextWithUnsupportedCategoryOnly(),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 100), 0);
+    assertCountMatchesFullRecords(accessContextWithEmptyGrantedScopes(),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 100), 0);
+    assertCountMatchesFullRecords(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", null, 1, 100), 3);
+    assertCountMatchesFullRecords(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("CS2201"), 1, 100), 2);
+    assertCountMatchesFullRecords(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2201"), 1, 100), 2);
+}
+
+private void assertCountMatchesFullRecords(FinalRecordAccessContext accessContext,
+                                           UnsubmittedFinalRecordQuery query,
+                                           long expectedTotal) {
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(accessContext, query);
+    assertThat(page.total()).isEqualTo(expectedTotal);
+    assertThat(page.records()).hasSize(Math.toIntExact(expectedTotal));
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId).doesNotHaveDuplicates();
 }
 
 @Test
@@ -1789,9 +1892,9 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
 }
 ```
 
-Then add helper methods. The provider builds indexed MyBatis placeholders and never concatenates raw class values. `scopeExpression`, `caseSensitiveEquals(...)`, and `caseSensitiveIn(...)` may be injected into SQL strings only when they are built from fixed alias names plus MyBatis placeholders generated in this provider/repository; never pass raw request values, grade values, class values, or caller-provided SQL through these helpers. Use `CAST(... AS BINARY)` for case-sensitive comparisons because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`:
+Then add helper methods. The provider builds indexed MyBatis placeholders and never concatenates raw class values. `scopeExpression`, `caseSensitiveEquals(...)`, and `caseSensitiveIn(...)` may be injected into SQL strings only when they are built from fixed alias names plus MyBatis placeholders generated in this provider/repository; never pass raw request values, grade values, class values, or caller-provided SQL through these helpers. Use `CAST(... AS BINARY)` for filter equality because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`. Sorting intentionally follows the configured column collation for `grade_ou.unit_code` and `class_ou.unit_code`; D-11 only requires deterministic ordering with `user_id ASC` as final tie-breaker, not bytewise sorting:
 
-`scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. The only allowed expression forms are assembled from fixed strings in `rosterScopeFragment(...)`: `__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters...})`, the fixed `EXISTS (SELECT 1 FROM org_unit root_ou ...)` path predicate, `1 = 0`, or `1 = 1`. Provider validation must use full-expression matching, not prefix matching.
+`scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. The only allowed expression forms are assembled from fixed strings in `rosterScopeFragment(...)`: `__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters...})`, the fixed `EXISTS (SELECT 1 FROM org_unit root_ou ...)` path predicate, `1 = 0`, or `1 = 1`. Provider validation must normalize whitespace and then use full-expression matching against this closed whitelist: deny-all, allow-all, ORG_UNIT only, ORG_SUBTREE only, ORG_UNIT OR ORG_SUBTREE, and ORG_SUBTREE OR ORG_UNIT. Prefix matching is not allowed.
 
 ```java
 private String classPredicate(Map<String, Object> params, String classAlias) {
@@ -1853,9 +1956,11 @@ private void validateD11ScopeExpression(String expression) {
     String orgUnitOnlyPattern = "\\( ?" + orgUnitFragmentPattern + " ?\\)";
     String subtreeOnlyPattern = "\\( ?" + subtreeFragmentPattern + " ?\\)";
     String orgThenSubtreePattern = "\\( ?" + orgUnitFragmentPattern + " OR " + subtreeFragmentPattern + " ?\\)";
+    String subtreeThenOrgPattern = "\\( ?" + subtreeFragmentPattern + " OR " + orgUnitFragmentPattern + " ?\\)";
     if (normalized.matches(orgUnitOnlyPattern)
             || normalized.matches(subtreeOnlyPattern)
-            || normalized.matches(orgThenSubtreePattern)) {
+            || normalized.matches(orgThenSubtreePattern)
+            || normalized.matches(subtreeThenOrgPattern)) {
         return;
     }
     throw new IllegalArgumentException("Unsafe D-11 scope expression");
@@ -1997,9 +2102,61 @@ void shouldRejectUnsafeD11ScopeExpressionFragments() {
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessage("Unsafe D-11 scope expression");
 }
+
+@Test
+void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
+    FinalRecordQuerySqlProvider provider = new FinalRecordQuerySqlProvider();
+
+    assertThat(provider.buildCountUnsubmittedStudents(providerParams(SqlPredicateFragment.denyAll())))
+            .contains("1 = 0");
+    assertThat(provider.buildCountUnsubmittedStudents(providerParams(SqlPredicateFragment.alwaysTrue())))
+            .contains("1 = 1");
+    assertThat(provider.buildCountUnsubmittedStudents(providerParams(new SqlPredicateFragment(
+            "(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}, #{scopeFragment.parameters.d11OrgUnit1}))",
+            Map.of("d11OrgUnit0", 4001L, "d11OrgUnit1", 4002L)
+    )))).contains("class_ou.id IN");
+    assertThat(provider.buildCountUnsubmittedStudents(providerParams(new SqlPredicateFragment(
+            """
+            ( EXISTS (
+                SELECT 1
+                FROM org_unit root_ou
+                WHERE root_ou.id IN (#{scopeFragment.parameters.d11Subtree0})
+                  AND root_ou.status = 'ACTIVE'
+                  AND root_ou.path IS NOT NULL
+                  AND root_ou.path <> ''
+                  AND root_ou.path LIKE '/%'
+                  AND root_ou.path NOT LIKE '%/'
+                  AND __D11_CLASS_ALIAS__.path IS NOT NULL
+                  AND __D11_CLASS_ALIAS__.path <> ''
+                  AND __D11_CLASS_ALIAS__.path LIKE '/%'
+                  AND __D11_CLASS_ALIAS__.path NOT LIKE '%/'
+                  AND (
+                    __D11_CLASS_ALIAS__.path = root_ou.path
+                    OR __D11_CLASS_ALIAS__.path LIKE CONCAT(root_ou.path, '/%')
+                  )
+            ) )
+            """,
+            Map.of("d11Subtree0", 2002L)
+    )))).contains("EXISTS");
+    assertThat(provider.buildCountUnsubmittedStudents(providerParams(new SqlPredicateFragment(
+            "(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}) OR EXISTS ( SELECT 1 FROM org_unit root_ou WHERE root_ou.id IN (#{scopeFragment.parameters.d11Subtree0}) AND root_ou.status = 'ACTIVE' AND root_ou.path IS NOT NULL AND root_ou.path <> '' AND root_ou.path LIKE '/%' AND root_ou.path NOT LIKE '%/' AND __D11_CLASS_ALIAS__.path IS NOT NULL AND __D11_CLASS_ALIAS__.path <> '' AND __D11_CLASS_ALIAS__.path LIKE '/%' AND __D11_CLASS_ALIAS__.path NOT LIKE '%/' AND ( __D11_CLASS_ALIAS__.path = root_ou.path OR __D11_CLASS_ALIAS__.path LIKE CONCAT(root_ou.path, '/%') ) ))",
+            Map.of("d11OrgUnit0", 4001L, "d11Subtree0", 2002L)
+    )))).contains(" OR ");
+    assertThat(provider.buildCountUnsubmittedStudents(providerParams(new SqlPredicateFragment(
+            "(EXISTS ( SELECT 1 FROM org_unit root_ou WHERE root_ou.id IN (#{scopeFragment.parameters.d11Subtree0}) AND root_ou.status = 'ACTIVE' AND root_ou.path IS NOT NULL AND root_ou.path <> '' AND root_ou.path LIKE '/%' AND root_ou.path NOT LIKE '%/' AND __D11_CLASS_ALIAS__.path IS NOT NULL AND __D11_CLASS_ALIAS__.path <> '' AND __D11_CLASS_ALIAS__.path LIKE '/%' AND __D11_CLASS_ALIAS__.path NOT LIKE '%/' AND ( __D11_CLASS_ALIAS__.path = root_ou.path OR __D11_CLASS_ALIAS__.path LIKE CONCAT(root_ou.path, '/%') ) ) OR __D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}))",
+            Map.of("d11Subtree0", 2002L, "d11OrgUnit0", 4001L)
+    )))).contains(" OR ");
+}
+
+private Map<String, Object> providerParams(SqlPredicateFragment fragment) {
+    Map<String, Object> params = new HashMap<>();
+    params.put("scopeFragment", fragment);
+    params.put("query", new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20));
+    return params;
+}
 ```
 
-Add imports for `FinalRecordQuerySqlProvider`, `SqlPredicateFragment`, `HashMap`, `Map`, and `assertThatThrownBy` if the test file does not already have them.
+Add imports for `FinalRecordQuerySqlProvider`, `SqlPredicateFragment`, `HashMap`, `Map`, `assertThat`, and `assertThatThrownBy` if the test file does not already have them.
 
 - [ ] **Step 10: Run repository integration tests**
 
@@ -2630,6 +2787,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - Inactive `iam_user`, inactive `org_membership`, non-primary `org_membership`, and non-STUDENT membership types are excluded by repository tests.
 - Inactive class `org_unit` rows and non-CLASS `org_unit` rows are excluded by repository tests.
 - A missing final record and a single `DRAFT` record keep students unsubmitted; a `DRAFT` record contributes its non-null `updated_at`.
+- Duplicate `final_record` rows for the same `(student_user_id, academic_year)`, nullable `final_record.status`, and nullable `final_record.updated_at` are excluded because they violate the frozen D SQL schema.
 - `SUBMITTED` and `CONFIRMED` records exclude students.
 - `lastUpdatedAt` is a UTC `Instant` at the mapper/service boundary and is rendered with `Instant.toString()` actual precision, or empty string.
 - Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
@@ -2637,6 +2795,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - When the lowest numeric visible membership's class has no active grade parent, display `grade = null` for that selected class even if a higher visible membership has an active grade.
 - `ORG_UNIT` is exact class id only.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
+- `ORG_SUBTREE` rejects malformed but schema-valid root/class path strings, including empty path, missing leading `/`, and trailing `/`.
 - D-11 private `rosterScopeFragment(...)` is covered by mandatory parity tests against existing submitted/confirmed whole-record scope visibility for denied permission, `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths.
 - `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including a CLASS root; a CLASS root exposes that class only, not sibling classes.
 - If `ORG_UNIT` and `ORG_SUBTREE` both grant the same class, visible students are still counted and returned once.
@@ -2652,7 +2811,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - Sorting uses `user_id ASC` as the final tie-breaker when grade, class, and student number keys are equal, so pagination stays stable with duplicate student numbers.
 - `pageNo` offset overflow is rejected.
 - `pageNo` and `pageSize` intentionally remain `long` in `UnsubmittedFinalRecordQuery` so offset multiplication can detect overflow before mapper execution.
-- Baseline notes belong in the execution notes for this plan, directly under the Pre-Implementation Verification Baseline section or in the task-run handoff summary; do not bury baseline failures only in terminal scrollback.
+- Baseline notes belong in the execution notes for this plan, directly under the Pre-Implementation Verification Baseline section; do not bury baseline failures only in terminal scrollback or a separate handoff summary.
 - A `PENDING` or `BLOCKED` Full Baseline blocks any full-suite "zero new failures" claim; it does not block reporting observed test results.
 - Any modified, added, or explicitly run final-record related test under `whut-eval-app` is in D-11 verification scope; failures in shared-scope regressions or `*FinalRecord*Test` cannot be waived as outside the D-11 test package. Unrelated pre-existing failures are judged only by the recorded baseline and zero-new-failure comparison.
 - No D-7, D-8, D-9, D-10, import, export, or frontend behavior is introduced.
