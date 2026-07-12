@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `GET /api/admin/final-records/unsubmitted` so authorized admins can page current active in-scope students who have not submitted or confirmed final records for an academic year.
+**Goal:** Build D-11, the team D unsubmitted-final-record list item: `GET /api/admin/final-records/unsubmitted` so authorized admins can page current active in-scope students who have not submitted or confirmed final records for an academic year.
 
-**Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`. D-11 deliberately defines dirty `user_no = NULL` rows as sorting after non-null student numbers, then by `user_id ASC`, so pagination is stable across H2 and MySQL.
+**Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`. D-11 does not introduce dirty-data support that violates the frozen A/D SQL contracts, including missing `iam_user` columns, nullable organization path/code fields, nullable final-record status/update timestamps, or duplicate `final_record` rows for the same student and academic year.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade-code nulls-last, grade code, class-code nulls-last, class code, student-number nulls-last, student number, then user id; `user_id ASC` is the final tie-breaker and is part of the pagination contract for duplicate or null student numbers. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
 
 ## Pre-Implementation Verification Baseline
 
@@ -26,7 +26,7 @@ mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpe
 
 This focused baseline is only a fallback for pre-implementation comparison. It does not replace the final Task 5 full `mvn test` attempt and does not allow D-11-touched tests to fail.
 
-Execution notes placeholder:
+Execution notes placeholder. The executor must write the observed baseline values back into this section before D-11 implementation starts, or copy the same fields into the task-run handoff summary if the plan file itself is intentionally left unchanged during execution:
 
 - Full Baseline Result: `PENDING` before implementation; replace with `PASS`, `FAIL`, or `BLOCKED`.
 - Full Baseline Command: `mvn test`
@@ -68,7 +68,7 @@ Comparison rule: only a recorded full `mvn test` baseline allows a full-suite "z
   - `whut-eval-domain/src/main/java/edu/whut/eval/domain/auth/model/ApplicationScopeClause.java`
     - D-11 reads `getScopeType()`, `getOrgUnitId()`, and `getOrgSubtreeRootId()` only. `getCategoryCode()`, `getItemCode()`, and `getExpressionJson()` are ignored for whole-record final-record roster access.
   - `whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/query/FinalRecordAccessContext.java`
-    - D-11 converts this context into `UserAuthorizationContext` using user id/no/name, identity, roles, authorities, and scope rules; `getPermissionCode()` must remain `score.view.assigned` for the unsubmitted route.
+    - D-11 converts this context into `UserAuthorizationContext` using the existing access-context fields for user id/no/name, roles, authorities, and scope rules; `getPermissionCode()` must remain `score.view.assigned` for the unsubmitted route.
   - `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/SqlPredicateFragment.java`
     - Existing `allowAll()` returns a blank expression and `isAllowAll() == true` for existing translators. D-11 must add `alwaysTrue()` returning expression `1 = 1` with an empty parameter map because the D-11 provider treats blank `scopeExpression` as defensive deny-all.
     - `denyAll()` returns expression `1 = 0`.
@@ -641,6 +641,8 @@ PageResult<UnsubmittedStudentRow> pageUnsubmittedStudents(FinalRecordAccessConte
 
 Add imports for `UnsubmittedStudentRow` and `UnsubmittedFinalRecordQuery`.
 
+Transaction note: keep `pageUnsubmittedStudents(...)` consistent with the existing `FinalRecordQueryApplicationService` query-method style in this repository. At plan time the current query methods in this class are plain service methods without `@Transactional(readOnly = true)`. Do not add a one-off read-only transaction annotation only to D-11; if the team decides to add read-only transactions, do it as a separate service-wide consistency refactor with tests for all query methods.
+
 In `FinalRecordQueryApplicationService`, add imports and this method:
 
 ```java
@@ -716,42 +718,41 @@ Open the existing `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` fixture
 ```sql
 CREATE TABLE iam_user (
   id BIGINT PRIMARY KEY,
-  user_no VARCHAR(64),
-  user_name VARCHAR(128),
-  identity VARCHAR(32),
-  status VARCHAR(32)
+  user_no VARCHAR(64) NOT NULL,
+  user_name VARCHAR(128) NOT NULL,
+  status VARCHAR(32) NOT NULL
 );
 
 CREATE TABLE org_unit (
   id BIGINT PRIMARY KEY,
   parent_id BIGINT,
-  unit_type VARCHAR(32),
-  unit_code VARCHAR(64),
-  unit_name VARCHAR(128),
-  path VARCHAR(512),
-  status VARCHAR(32)
+  unit_type VARCHAR(32) NOT NULL,
+  unit_code VARCHAR(64) NOT NULL,
+  unit_name VARCHAR(128) NOT NULL,
+  path VARCHAR(512) NOT NULL,
+  status VARCHAR(32) NOT NULL
 );
 
 CREATE TABLE org_membership (
   id BIGINT PRIMARY KEY,
-  user_id BIGINT,
-  org_unit_id BIGINT,
-  membership_type VARCHAR(32),
-  is_primary TINYINT,
-  status VARCHAR(32)
+  user_id BIGINT NOT NULL,
+  org_unit_id BIGINT NOT NULL,
+  membership_type VARCHAR(32) NOT NULL,
+  is_primary TINYINT NOT NULL,
+  status VARCHAR(32) NOT NULL
 );
 ```
 
-Also ensure the test `final_record.status` and `final_record.updated_at` columns accept `NULL`, because D-11 explicitly covers legacy dirty rows with null status and DRAFT rows whose `updated_at` is null. Keep all existing Minimal D columns needed by submitted/confirmed list/detail tests. If the current fixture uses simplified `iam_user`, `org_unit`, or `org_membership` tables, replace only the test fixture setup and update old inserts to populate the new columns.
+Also ensure the test `final_record` schema preserves the frozen D contract needed by D-11: `status VARCHAR(32) NOT NULL`, `updated_at DATETIME NOT NULL`, and a unique key on `(student_user_id, academic_year)`. Keep all existing Minimal D columns needed by submitted/confirmed list/detail tests. If the current fixture uses simplified `iam_user`, `org_unit`, `org_membership`, or `final_record` tables, replace only the test fixture setup and update old inserts to populate the required non-null columns.
 
 Fixture migration rules for existing tests:
 
-- Existing `iam_user` inserts must populate `identity = 'STUDENT'` for seeded student rows. If a test intentionally seeds a teacher/admin user, set that row's identity explicitly to the intended non-student value and assert it is excluded from D-11.
+- Existing `iam_user` inserts must populate non-null `user_no`, `user_name`, and `status`; D-11 must not add or depend on an `iam_user.identity` column because the frozen A-group IAM schema does not provide one.
 - Existing `org_unit` college roots must set `parent_id = NULL`, `unit_type = 'COLLEGE'`, a deterministic `unit_code`, the existing `unit_name`, the existing `path`, and `status = 'ACTIVE'`.
 - Existing class `org_unit` rows used by old Minimal D submitted/confirmed tests must set `unit_type = 'CLASS'`, `status = 'ACTIVE'`, preserve the old `path`, and set `unit_code` to the last path segment or another explicit deterministic fixture code. If the old helper did not create grade rows, `parent_id` may remain `NULL` for those old rows; D-11-specific `seedRoster()` must create explicit grade parents.
 - D-11 `seedRoster()` must create active `COLLEGE -> GRADE -> CLASS` paths with non-null `unit_code`, `unit_name`, `path`, and `status` so grade/classes filters and sort order are deterministic.
 - Existing `org_membership` inserts must populate `membership_type = 'STUDENT'`, `is_primary = 1`, and `status = 'ACTIVE'` unless the test is explicitly about inactive, non-primary, or non-student membership exclusion.
-- Existing `final_record` rows for submitted/confirmed tests must keep non-null status and `updated_at`; only D-11 dirty-data tests should insert null `status` or null `updated_at`.
+- Existing `final_record` rows for submitted/confirmed tests must keep non-null status and `updated_at`; D-11 tests must also use only one `final_record` row per `(student_user_id, academic_year)` and one of the frozen statuses `DRAFT`, `SUBMITTED`, or `CONFIRMED`.
 - After changing the fixture schema and old insert helpers, immediately run the existing repository integration test class before adding D-11 SQL so schema backfills do not silently weaken Minimal D coverage:
 
 ```bash
@@ -770,33 +771,25 @@ private void seedRoster() {
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3001, 2002, 'GRADE', 'CS2022', '计算机2022级', '/WHUT/CS/CS2022', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4001, 3001, 'CLASS', 'CS2201', '计算机2201班', '/WHUT/CS/CS2022/CS2201', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4002, 3001, 'CLASS', 'CS2202', '计算机2202班', '/WHUT/CS/CS2022/CS2202', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1001, 'S001', 'Alice', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1002, 'S002', 'Bob', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1003, 'S003', 'Cindy', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1001, 'S001', 'Alice', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1002, 'S002', 'Bob', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1003, 'S003', 'Cindy', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5001, 1001, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5002, 1002, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5003, 1003, 4002, 'STUDENT', 1, 'ACTIVE')");
 }
 
 private void insertFinalRecord(Long id, Long studentUserId, String academicYear, String status, String updatedAt) {
-    String timestampExpression = updatedAt == null ? "NULL" : "CAST(? AS DATETIME)";
     jdbcTemplate.update("""
             INSERT INTO final_record (id, student_user_id, academic_year, status,
                                       moral_total, intellectual_total, physical_total, labor_total, grand_total,
                                       submitted_at, confirmed_at, confirm_comment, version, created_at, updated_at)
             VALUES (?, ?, ?, ?, 0.00, 0.00, 0.00, 0.00, 0.00,
-                    CASE WHEN ? = 'SUBMITTED' THEN %s ELSE NULL END,
-                    CASE WHEN ? = 'CONFIRMED' THEN %s ELSE NULL END,
-                    NULL, 1, CURRENT_TIMESTAMP(), %s)
-            """.formatted(timestampExpression, timestampExpression, timestampExpression),
-            bindNullableTimestamp(id, studentUserId, academicYear, status, updatedAt));
-}
-
-private Object[] bindNullableTimestamp(Long id, Long studentUserId, String academicYear, String status, String updatedAt) {
-    if (updatedAt == null) {
-        return new Object[]{id, studentUserId, academicYear, status, status, status};
-    }
-    return new Object[]{id, studentUserId, academicYear, status, status, updatedAt, status, updatedAt, updatedAt};
+                    CASE WHEN ? = 'SUBMITTED' THEN CAST(? AS DATETIME) ELSE NULL END,
+                    CASE WHEN ? = 'CONFIRMED' THEN CAST(? AS DATETIME) ELSE NULL END,
+                    NULL, 1, CAST(? AS DATETIME), CAST(? AS DATETIME))
+            """, id, studentUserId, academicYear, status,
+            status, updatedAt, status, updatedAt, updatedAt, updatedAt);
 }
 
 private UnsubmittedStudentRow findRow(PageResult<UnsubmittedStudentRow> page, Long studentUserId) {
@@ -826,12 +819,9 @@ void shouldIncludeCurrentRosterStudentsWithNoFinalRecord() {
 }
 
 @Test
-void shouldKeepDraftStudentsUnsubmittedAndExposeMaxDraftUpdatedAt() {
+void shouldKeepDraftStudentsUnsubmittedAndExposeDraftUpdatedAt() {
     seedRoster();
     insertFinalRecord(11L, 1001L, "2025-2026", "DRAFT", "2026-07-12 10:15:30.123");
-    insertFinalRecord(12L, 1001L, "2025-2026", "DRAFT", "2026-07-12 11:15:30.456");
-    insertFinalRecord(13L, 1001L, "2025-2026", "UNKNOWN", "2026-07-12 12:15:30.789");
-    insertFinalRecord(14L, 1001L, "2025-2026", null, "2026-07-12 13:15:30.789");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -840,7 +830,7 @@ void shouldKeepDraftStudentsUnsubmittedAndExposeMaxDraftUpdatedAt() {
 
     UnsubmittedStudentRow alice = findRow(page, 1001L);
     assertThat(page.total()).isEqualTo(3);
-    assertThat(alice.getLastUpdatedAt()).isEqualTo(Instant.parse("2026-07-12T11:15:30.456Z"));
+    assertThat(alice.getLastUpdatedAt()).isEqualTo(Instant.parse("2026-07-12T10:15:30.123Z"));
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .contains(1001L);
     assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1001L)
@@ -848,9 +838,9 @@ void shouldKeepDraftStudentsUnsubmittedAndExposeMaxDraftUpdatedAt() {
 }
 
 @Test
-void shouldKeepDraftStudentsWithNullUpdatedAtAndExposeNullLastUpdatedAt() {
+void shouldKeepDraftStudentsUnsubmittedWhenFilteredByClass() {
     seedRoster();
-    insertFinalRecord(13L, 1001L, "2025-2026", "DRAFT", null);
+    insertFinalRecord(13L, 1001L, "2025-2026", "DRAFT", "2026-07-12 11:15:30.456");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -861,7 +851,7 @@ void shouldKeepDraftStudentsWithNullUpdatedAtAndExposeNullLastUpdatedAt() {
     assertThat(page.total()).isEqualTo(2);
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1001L, 1002L);
-    assertThat(alice.getLastUpdatedAt()).isNull();
+    assertThat(alice.getLastUpdatedAt()).isEqualTo(Instant.parse("2026-07-12T11:15:30.456Z"));
 }
 
 @Test
@@ -869,7 +859,6 @@ void shouldExcludeSubmittedAndConfirmedStudents() {
     seedRoster();
     insertFinalRecord(21L, 1001L, "2025-2026", "SUBMITTED", "2026-07-12 10:15:30");
     insertFinalRecord(22L, 1002L, "2025-2026", "CONFIRMED", "2026-07-12 10:15:30");
-    insertFinalRecord(23L, 1003L, "2025-2026", "UNKNOWN", "2026-07-12 10:15:30");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -888,8 +877,6 @@ void shouldIsolateSubmittedConfirmedAndDraftRecordsByAcademicYear() {
     insertFinalRecord(25L, 1001L, "2024-2025", "SUBMITTED", "2026-07-12 10:15:30");
     insertFinalRecord(26L, 1002L, "2024-2025", "CONFIRMED", "2026-07-12 10:15:30");
     insertFinalRecord(27L, 1003L, "2024-2025", "DRAFT", "2026-07-12 12:15:30");
-    insertFinalRecord(28L, 1003L, "2024-2025", "UNKNOWN", "2026-07-12 13:15:30");
-    insertFinalRecord(29L, 1003L, "2024-2025", null, "2026-07-12 14:15:30");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -903,27 +890,12 @@ void shouldIsolateSubmittedConfirmedAndDraftRecordsByAcademicYear() {
 }
 
 @Test
-void shouldTreatNullFinalRecordStatusAsUnsubmittedWithoutLastUpdatedAtContribution() {
+void shouldExcludeCurrentYearSubmittedStudentsEvenWhenPreviousYearDraftExists() {
     seedRoster();
-    insertFinalRecord(24L, 1003L, "2025-2026", null, "2026-07-12 10:15:30");
-
-    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
-            accessContextWithOrgSubtree(2002L),
-            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("CS2202"), 1, 20)
-    );
-
-    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1003L);
-    assertThat(findRow(page, 1003L).getLastUpdatedAt()).isNull();
-}
-
-@Test
-void shouldExcludeStudentsThatHaveDraftAndSubmittedOrConfirmedRecords() {
-    seedRoster();
-    insertFinalRecord(31L, 1001L, "2025-2026", "DRAFT", "2026-07-12 10:15:30");
-    insertFinalRecord(32L, 1001L, "2025-2026", "SUBMITTED", "2026-07-12 11:15:30");
-    insertFinalRecord(33L, 1002L, "2025-2026", "DRAFT", "2026-07-12 10:15:30");
-    insertFinalRecord(34L, 1002L, "2025-2026", "CONFIRMED", "2026-07-12 11:15:30");
+    insertFinalRecord(24L, 1001L, "2024-2025", "DRAFT", "2026-07-12 10:15:30");
+    insertFinalRecord(25L, 1001L, "2025-2026", "SUBMITTED", "2026-07-12 11:15:30");
+    insertFinalRecord(26L, 1002L, "2024-2025", "DRAFT", "2026-07-12 10:15:30");
+    insertFinalRecord(27L, 1002L, "2025-2026", "CONFIRMED", "2026-07-12 11:15:30");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -937,15 +909,13 @@ void shouldExcludeStudentsThatHaveDraftAndSubmittedOrConfirmedRecords() {
 @Test
 void shouldExcludeInactiveUsersInactiveMembershipsAndNonPrimaryMemberships() {
     seedRoster();
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1004, 'S004', 'InactiveUser', 'STUDENT', 'INACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, 'S005', 'InactiveMembership', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S006', 'NonPrimary', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1007, 'T007', 'TeacherIdentity', 'TEACHER', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1008, 'T008', 'TeacherMembership', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1004, 'S004', 'InactiveUser', 'INACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1005, 'S005', 'InactiveMembership', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1006, 'S006', 'NonPrimary', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1008, 'T008', 'TeacherMembership', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4001, 'STUDENT', 1, 'INACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4001, 'STUDENT', 0, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5007, 1007, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5008, 1008, 4001, 'TEACHER', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
@@ -963,8 +933,8 @@ void shouldExcludeInactiveClassOrgUnitsAndNonClassOrgUnits() {
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4014, 3001, 'CLASS', 'CS2299', '失效班级', '/WHUT/CS/CS2022/CS2299', 'INACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4015, 3001, 'GRADE', 'NOT_CLASS', '非班级组织', '/WHUT/CS/CS2022/NOT_CLASS', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1014, 'S014', 'InactiveClass', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1015, 'S015', 'NonClassOrg', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1014, 'S014', 'InactiveClass', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1015, 'S015', 'NonClassOrg', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5014, 1014, 4014, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5015, 1015, 4015, 'STUDENT', 1, 'ACTIVE')");
 
@@ -984,7 +954,7 @@ void shouldKeepClassWithoutActiveGradeWhenGradeFilterAbsentAndExcludeWhenGradeRe
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'INACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4004, 3002, 'CLASS', 'CS2301', '计算机2301班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1004, 'S004', 'NoGrade', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1004, 'S004', 'NoGrade', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4004, 'STUDENT', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> withoutGradeFilter = repository.pageUnsubmittedStudents(
@@ -1027,7 +997,7 @@ void shouldReturnEmptyWhenGradeFilterDoesNotMatchAnyActiveVisibleGrade() {
 }
 ```
 
-Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithAllScope()`, `accessContextWithUnsupportedCategoryOnly()`, `accessContextWithEmptyGrantedScopes()`, `accessContextWithOrgUnitAndOrgSubtree(Long orgUnitId, Long orgSubtreeRootId)`, and `accessContextWithOrgSubtreeAndUnsupportedCategory(Long orgSubtreeRootId)` by following the existing `AuthorizationScope` test construction style.
+Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithAllScope()`, `accessContextWithUnsupportedCategoryOnly()`, `accessContextWithEmptyGrantedScopes()`, `accessContextWithoutScoreViewAssigned()`, `accessContextWithOrgUnitAndOrgSubtree(Long orgUnitId, Long orgSubtreeRootId)`, and `accessContextWithOrgSubtreeAndUnsupportedCategory(Long orgSubtreeRootId)` by following the existing `AuthorizationScope` test construction style.
 
 - [ ] **Step 3: Write failing scope and filter tests**
 
@@ -1039,7 +1009,7 @@ void shouldResolveOrgSubtreeUsingRealOrgPath() {
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2999, NULL, 'COLLEGE', 'CS2', '相似学院', '/WHUT/CS2', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4999, 2999, 'CLASS', 'CS2X', '相似班', '/WHUT/CS2/CS2201', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1099, 'S099', 'Similar', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1099, 'S099', 'Similar', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5099, 1099, 4999, 'STUDENT', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
@@ -1062,21 +1032,6 @@ void shouldApplyOrgUnitAsExactClassOnly() {
     assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgUnit(3001L),
             new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records())
             .isEmpty();
-}
-
-@Test
-void shouldApplyOrgUnitExactClassEvenWhenClassPathIsNull() {
-    seedRoster();
-    jdbcTemplate.update("UPDATE org_unit SET path = NULL WHERE id = 4001");
-
-    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgUnit(4001L),
-            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records())
-            .extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1001L, 1002L);
-    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
-            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records())
-            .extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1003L);
 }
 
 @Test
@@ -1112,7 +1067,7 @@ void shouldFilterGradeAndClassesByCaseSensitiveExactCodeOrNameIntersection() {
 void shouldUnionCodeAndNameMatchesWithoutDuplicatingStudents() {
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4005, 3001, 'CLASS', 'CS2205', 'CS2201', '/WHUT/CS/CS2022/CS2205', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, 'S005', 'NameMatchesCode', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1005, 'S005', 'NameMatchesCode', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4005, 'STUDENT', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> crossUnit = repository.pageUnsubmittedStudents(
@@ -1125,7 +1080,7 @@ void shouldUnionCodeAndNameMatchesWithoutDuplicatingStudents() {
     assertThat(crossUnit.total()).isEqualTo(3);
 
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4006, 3001, 'CLASS', 'DUP2201', 'DUP2201', '/WHUT/CS/CS2022/DUP2201', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S006', 'SameUnitBothSides', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1006, 'S006', 'SameUnitBothSides', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4006, 'STUDENT', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> sameUnit = repository.pageUnsubmittedStudents(
@@ -1143,7 +1098,7 @@ void shouldDeduplicateSameStudentWhenClassCodeAndNameMatchDifferentVisibleClasse
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4007, 3001, 'CLASS', 'DUAL_MATCH', '代码命中班', '/WHUT/CS/CS2022/DUAL_CODE', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4008, 3001, 'CLASS', 'OTHER_MATCH', 'DUAL_MATCH', '/WHUT/CS/CS2022/DUAL_NAME', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1007, 'S007', 'DualMatch', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1007, 'S007', 'DualMatch', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1007, 4008, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6000, 1007, 4007, 'STUDENT', 1, 'ACTIVE')");
 
@@ -1158,27 +1113,6 @@ void shouldDeduplicateSameStudentWhenClassCodeAndNameMatchDifferentVisibleClasse
     assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1007L)
             .hasSize(1);
     assertThat(findRow(page, 1007L).getClassName()).isEqualTo("DUAL_MATCH");
-}
-
-@Test
-void shouldMatchDirtyNullUnitCodesThroughExactUnitNames() {
-    seedRoster();
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3005, 2002, 'GRADE', NULL, '无代码年级', '/WHUT/CS/NO_CODE_GRADE', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4005, 3001, 'CLASS', NULL, '无代码班', '/WHUT/CS/CS2022/NO_CODE_CLASS', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4006, 3005, 'CLASS', 'NC2201', '无代码年级一班', '/WHUT/CS/NO_CODE_GRADE/NC2201', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, 'S005', 'NullClassCode', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S006', 'NullGradeCode', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4005, 'STUDENT', 1, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4006, 'STUDENT', 1, 'ACTIVE')");
-
-    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
-            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("无代码班"), 1, 20)).records())
-            .extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1005L);
-    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
-            new UnsubmittedFinalRecordQuery("2025-2026", "无代码年级", null, 1, 20)).records())
-            .extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1006L);
 }
 
 @Test
@@ -1200,6 +1134,19 @@ void shouldReturnEmptyPageForGrantedButEmptyScopes() {
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithEmptyGrantedScopes(),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isZero();
+    assertThat(page.records()).isEmpty();
+}
+
+@Test
+void shouldReturnEmptyPageForDeniedScopePredicateWhenRepositoryIsCalledDirectly() {
+    seedRoster();
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithoutScoreViewAssigned(),
             new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
     );
 
@@ -1315,67 +1262,11 @@ void shouldRejectInactiveOrgSubtreeRootEvenWhenRootPathAndChildrenAreValid() {
     assertThat(inactiveClassRoot.records()).isEmpty();
 }
 
-@Test
-void shouldRejectMalformedOrgSubtreeRootPaths() {
-    seedRoster();
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2010, NULL, 'COLLEGE', 'BAD_NULL', '空值路径学院', NULL, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2011, NULL, 'COLLEGE', 'BAD_BLANK', '空路径学院', '', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2012, NULL, 'COLLEGE', 'BAD_PREFIX', '缺少前缀学院', 'WHUT/CS', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2013, NULL, 'COLLEGE', 'BAD_TRAILING', '尾斜杠学院', '/WHUT/CS/', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4110, 2010, 'CLASS', 'BAD_ROOT_NULL_CLASS', '空值根子班', '/WHUT/BAD_NULL/CLASS', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4111, 2011, 'CLASS', 'BAD_ROOT_BLANK_CLASS', '空路径根子班', '/WHUT/BAD_BLANK/CLASS', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4112, 2012, 'CLASS', 'BAD_ROOT_PREFIX_CLASS', '缺前缀根子班', 'WHUT/CS/BAD_PREFIX_CLASS', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4113, 2013, 'CLASS', 'BAD_ROOT_TRAILING_CLASS', '尾斜杠根子班', '/WHUT/CS//BAD_TRAILING_CLASS', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1110, 'S110', 'BadRootNull', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1111, 'S111', 'BadRootBlank', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1112, 'S112', 'BadRootPrefix', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1113, 'S113', 'BadRootTrailing', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5110, 1110, 4110, 'STUDENT', 1, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5111, 1111, 4111, 'STUDENT', 1, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5112, 1112, 4112, 'STUDENT', 1, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5113, 1113, 4113, 'STUDENT', 1, 'ACTIVE')");
-
-    for (Long rootId : List.of(2010L, 2011L, 2012L, 2013L)) {
-        PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
-                accessContextWithOrgSubtree(rootId),
-                new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
-        );
-        assertThat(page.total()).isZero();
-        assertThat(page.records()).isEmpty();
-        assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
-                .doesNotContain(1110L, 1111L, 1112L, 1113L);
-    }
-}
-
-@Test
-void shouldRejectMalformedClassPathsForOrgSubtreeMatching() {
-    seedRoster();
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4010, 3001, 'CLASS', 'BAD_NULL', '空值路径班', NULL, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4011, 3001, 'CLASS', 'BAD_BLANK', '空路径班', '', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4012, 3001, 'CLASS', 'BAD_PREFIX', '缺少前缀班', 'WHUT/CS/CS2022/BAD_PREFIX', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4013, 3001, 'CLASS', 'BAD_TRAILING', '尾斜杠班', '/WHUT/CS/CS2022/BAD_TRAILING/', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1010, 'S010', 'BadNull', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1011, 'S011', 'BadBlank', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1012, 'S012', 'BadPrefix', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1013, 'S013', 'BadTrailing', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5010, 1010, 4010, 'STUDENT', 1, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5011, 1011, 4011, 'STUDENT', 1, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5012, 1012, 4012, 'STUDENT', 1, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5013, 1013, 4013, 'STUDENT', 1, 'ACTIVE')");
-
-    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
-            accessContextWithOrgSubtree(2002L),
-            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
-    );
-
-    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1001L, 1002L, 1003L);
-}
 ```
 
 - [ ] **Step 4: Write mandatory scope-parity, duplicate-membership, and pagination tests**
 
-D-11 has a private `rosterScopeFragment(...)` translator. This is a mandatory verification point, not conditional on shared scope code changing: add tests proving D-11 roster visibility stays aligned with the existing whole-record final-record scope semantics for `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths. Use the same `FinalRecordAccessContext` helpers to query both the existing submitted/confirmed admin list and the new unsubmitted roster path against equivalent student/class fixtures.
+D-11 has a private `rosterScopeFragment(...)` translator. This is a mandatory verification point, not conditional on shared scope code changing: add tests proving D-11 roster visibility stays aligned with the existing whole-record final-record scope semantics for denied permission, `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths. Use the same `FinalRecordAccessContext` helpers to query both the existing submitted/confirmed admin list and the new unsubmitted roster path against equivalent student/class fixtures.
 
 Add the scope-parity test before the duplicate-membership tests:
 
@@ -1385,7 +1276,7 @@ void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSema
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2999, NULL, 'COLLEGE', 'CS2', '相似学院', '/WHUT/CS2', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4999, 2999, 'CLASS', 'CS2X', '相似班', '/WHUT/CS2/CS2201', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1099, 'S099', 'Similar', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1099, 'S099', 'Similar', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5099, 1099, 4999, 'STUDENT', 1, 'ACTIVE')");
     insertFinalRecord(9101L, 1001L, "2024-2025", "SUBMITTED", "2026-07-12 10:00:00");
     insertFinalRecord(9102L, 1002L, "2024-2025", "SUBMITTED", "2026-07-12 10:01:00");
@@ -1399,6 +1290,7 @@ void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSema
     assertScopeParity(accessContextWithOrgUnitAndOrgSubtree(4001L, 2002L));
     assertScopeParity(accessContextWithUnsupportedCategoryOnly());
     assertScopeParity(accessContextWithEmptyGrantedScopes());
+    assertScopeParity(accessContextWithoutScoreViewAssigned());
 }
 
 private void assertScopeParity(FinalRecordAccessContext accessContext) {
@@ -1652,14 +1544,10 @@ void shouldPageInStableOrderWithoutDuplicatingStudents() {
 }
 
 @Test
-void shouldUseUserIdAsFinalTieBreakerWhenStudentNumbersAreNullOrDuplicated() {
+void shouldUseUserIdAsFinalTieBreakerWhenStudentNumbersAreDuplicated() {
     seedRoster();
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1004, NULL, 'NullUserNoLow', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, NULL, 'NullUserNoHigh', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S099', 'DuplicateNoLow', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1007, 'S099', 'DuplicateNoHigh', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4001, 'STUDENT', 1, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4001, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1006, 'S099', 'DuplicateNoLow', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1007, 'S099', 'DuplicateNoHigh', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5007, 1007, 4001, 'STUDENT', 1, 'ACTIVE')");
 
@@ -1677,24 +1565,23 @@ void shouldUseUserIdAsFinalTieBreakerWhenStudentNumbersAreNullOrDuplicated() {
     );
 
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1001L, 1002L, 1006L, 1007L, 1004L, 1005L);
+            .containsExactly(1001L, 1002L, 1006L, 1007L);
     assertThat(firstPage.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1001L, 1002L, 1006L);
     assertThat(secondPage.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1007L, 1004L, 1005L);
+            .containsExactly(1007L);
 }
 
 @Test
-void shouldSortNullUnitCodesAfterNonNullCodesWithStableTieBreakers() {
+void shouldSortByGradeClassStudentNumberAndUserIdWithStableTieBreakers() {
     seedRoster();
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3005, 2002, 'GRADE', NULL, '无代码年级', '/WHUT/CS/NO_CODE_GRADE', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4005, 3001, 'CLASS', NULL, '无代码班', '/WHUT/CS/CS2022/NO_CODE_CLASS', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4006, 3005, 'CLASS', 'NC2201', '无代码年级一班', '/WHUT/CS/NO_CODE_GRADE/NC2201', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, 'S005', 'NullClassCode', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S006', 'NullGradeCode', 'STUDENT', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1007, NULL, 'NullUserNo', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3005, 2002, 'GRADE', 'CS2021', '计算机2021级', '/WHUT/CS/CS2021', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4005, 3005, 'CLASS', 'CS2101', '计算机2101班', '/WHUT/CS/CS2021/CS2101', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1005, 'S005', 'EarlierGrade', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1006, 'S099', 'DuplicateNoLow', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1007, 'S099', 'DuplicateNoHigh', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4005, 'STUDENT', 1, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4006, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5007, 1007, 4001, 'STUDENT', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
@@ -1703,7 +1590,7 @@ void shouldSortNullUnitCodesAfterNonNullCodesWithStableTieBreakers() {
     );
 
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1001L, 1002L, 1007L, 1003L, 1005L, 1006L);
+            .containsExactly(1005L, 1001L, 1002L, 1006L, 1007L, 1003L);
 }
 ```
 
@@ -1744,9 +1631,9 @@ List<UnsubmittedStudentRow> selectUnsubmittedStudents(@Param("scopeExpression") 
 
 In `FinalRecordQuerySqlProvider`, add:
 
-Count and select SQL must keep the same eligibility predicates: active user, `u.identity = 'STUDENT'`, active primary STUDENT membership, active class, scope expression, grade/classes filters, and the submitted/confirmed `NOT EXISTS` exclusion. This is a hard invariant: the count query's grouped visible-student subquery and the select query's inner `visible` subquery must keep equivalent FROM/JOIN/WHERE eligibility semantics for scope, grade, classes, final-record exclusion, membership status, user status, and user identity. They may use different projection and grouping wrapper layers, as shown below, because count only needs one row per visible student while select first picks the lowest visible membership id. Do not add display-only joins, HAVING clauses, ordering, or row-shaping predicates to either eligibility subquery. If you add, delete, or change one eligibility predicate in either SQL, update the other SQL in the same task and add or adjust a count/select alignment assertion. Prefer extracting a small helper that renders the shared eligibility predicates from a small alias descriptor if the final implementation starts to drift from the snippets below.
+Count and select SQL must keep the same eligibility predicates: active user, active primary STUDENT membership, active class, scope expression, grade/classes filters, and the submitted/confirmed `NOT EXISTS` exclusion. This is a hard invariant: the count query's grouped visible-student subquery and the select query's inner `visible` subquery must keep equivalent FROM/JOIN/WHERE eligibility semantics for scope, grade, classes, final-record exclusion, membership status, user status, and student membership type. They may use different projection and grouping wrapper layers, as shown below, because count only needs one row per visible student while select first picks the lowest visible membership id. Do not add display-only joins, HAVING clauses, ordering, or row-shaping predicates to either eligibility subquery. If you add, delete, or change one eligibility predicate in either SQL, update the other SQL in the same task and add or adjust a count/select alignment assertion. Prefer extracting a small helper that renders the shared eligibility predicates from a small alias descriptor if the final implementation starts to drift from the snippets below.
 
-The select `ORDER BY` intentionally adds `CASE WHEN u.user_no IS NULL THEN 1 ELSE 0 END` before `u.user_no ASC`; this extends the design SQL to make dirty `user_no = NULL` data sort after numbered students consistently on H2 and MySQL. The outer `class_ou` / `grade_ou` type and status predicates duplicate inner eligibility checks defensively so future edits to the inner visible subquery cannot silently display inactive or wrong-type org units.
+The select `ORDER BY` puts rows with an active grade parent before rows whose selected class has no active grade parent, then orders by active grade code, class code, student number, and `u.id ASC`; the final user-id tie-breaker keeps pagination deterministic when two active students share the same student number. The outer `class_ou` / `grade_ou` type and status predicates duplicate inner eligibility checks defensively so future edits to the inner visible subquery cannot silently display inactive or wrong-type org units.
 
 For `scopeExpression`, the placeholder `__D11_CLASS_ALIAS__` always represents the current visible class `org_unit` alias. In `buildCountUnsubmittedStudents(...)` it is replaced only with `class_ou`. In `buildSelectUnsubmittedStudents(...)` it is replaced only with the inner visible subquery alias `class_ou1`. It must never point at `grade_ou`, `grade_ou1`, the outer display `class_ou`, or caller-provided SQL. Grade and class request filters remain separate fixed expressions over `grade_ou1`/`class_ou1` inside select and `grade_ou`/`class_ou` inside count.
 
@@ -1773,7 +1660,6 @@ public String buildCountUnsubmittedStudents(Map<String, Object> params) {
                AND grade_ou.unit_type = 'GRADE'
                AND grade_ou.status = 'ACTIVE'
               WHERE u.status = 'ACTIVE'
-                AND u.identity = 'STUDENT'
                 AND (%s)
                 AND (#{query.grade} IS NULL OR %s OR %s)
                 AND (#{query.classesEmpty} = TRUE OR %s OR %s)
@@ -1812,7 +1698,6 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
                 JOIN iam_user u1
                   ON u1.id = om1.user_id
                  AND u1.status = 'ACTIVE'
-                 AND u1.identity = 'STUDENT'
                 JOIN org_unit class_ou1
                   ON class_ou1.id = om1.org_unit_id
                  AND class_ou1.unit_type = 'CLASS'
@@ -1857,11 +1742,9 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
               GROUP BY student_user_id
             ) draft_fr
               ON draft_fr.student_user_id = u.id
-            ORDER BY CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
+            ORDER BY CASE WHEN grade_ou.id IS NULL THEN 1 ELSE 0 END ASC,
                      grade_ou.unit_code ASC,
-                     CASE WHEN class_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
                      class_ou.unit_code ASC,
-                     CASE WHEN u.user_no IS NULL THEN 1 ELSE 0 END ASC,
                      u.user_no ASC,
                      u.id ASC
             LIMIT #{query.pageSize} OFFSET #{query.offset}
@@ -2628,21 +2511,18 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `PageResult<T>` remains only `total` and `records`.
 - Controller JSON tests lock `PageResult<T>` to exactly `total` and `records`.
 - Roster SQL starts from active `iam_user`, active primary `org_membership`, and active class `org_unit`.
-- Roster SQL requires both `iam_user.identity = 'STUDENT'` and `org_membership.membership_type = 'STUDENT'`.
-- Inactive `iam_user`, inactive `org_membership`, non-primary `org_membership`, non-STUDENT identities, and non-STUDENT membership types are excluded by repository tests.
+- Roster SQL requires `org_membership.membership_type = 'STUDENT'`; it does not depend on an `iam_user.identity` database column.
+- Inactive `iam_user`, inactive `org_membership`, non-primary `org_membership`, and non-STUDENT membership types are excluded by repository tests.
 - Inactive class `org_unit` rows and non-CLASS `org_unit` rows are excluded by repository tests.
-- `DRAFT` records keep students unsubmitted, appear once per student, and only contribute `MAX(updated_at)`.
-- A student with both `DRAFT` and `SUBMITTED` or `CONFIRMED` records for the same year is excluded.
+- A missing final record and a single `DRAFT` record keep students unsubmitted; a `DRAFT` record contributes its non-null `updated_at`.
 - `SUBMITTED` and `CONFIRMED` records exclude students.
-- Unknown and `NULL` final-record statuses are ignored and do not contribute to `lastUpdatedAt`.
 - `lastUpdatedAt` is a UTC `Instant` at the mapper/service boundary and is rendered with `Instant.toString()` actual precision, or empty string.
-- DRAFT rows with `updated_at = NULL` keep the student unsubmitted, expose raw `lastUpdatedAt = null`, and render API `lastUpdatedAt` as an empty string.
 - Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
-- Rows with non-null active grade codes sort before rows whose active grade code is null or whose selected class has no active grade parent.
+- Rows with an active `GRADE` parent sort before rows whose selected class has no active grade parent.
 - When the lowest numeric visible membership's class has no active grade parent, display `grade = null` for that selected class even if a higher visible membership has an active grade.
-- `ORG_UNIT` is exact class id only and does not depend on `org_unit.path` being non-null.
+- `ORG_UNIT` is exact class id only.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
-- D-11 private `rosterScopeFragment(...)` is covered by mandatory parity tests against existing submitted/confirmed whole-record scope visibility for `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths.
+- D-11 private `rosterScopeFragment(...)` is covered by mandatory parity tests against existing submitted/confirmed whole-record scope visibility for denied permission, `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths.
 - `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including a CLASS root; a CLASS root exposes that class only, not sibling classes.
 - If `ORG_UNIT` and `ORG_SUBTREE` both grant the same class, visible students are still counted and returned once.
 - Inactive `ORG_SUBTREE` roots return an empty page even when their path and descendants are otherwise valid.
@@ -2650,12 +2530,11 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
 - Cross-grade duplicate memberships are filtered by `grade` before collapse, so count, row selection, and displayed grade/class all come from the visible membership set.
 - Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
-- Count and select SQL keep eligibility predicates aligned: identity, membership, scope, grade/classes, and submitted/confirmed exclusion must change together.
+- Count and select SQL keep eligibility predicates aligned: active user, student membership, scope, grade/classes, and submitted/confirmed exclusion must change together.
 - Grade/classes exact filters are case-sensitive, use code-or-name OR semantics, include distinct code/name matches, and do not duplicate a student when both sides match the same org unit.
 - Reversing the request order of `classes` values does not change the selected display membership, returned student ids, total count, or grade/class display values.
 - If the same student matches the same `classes` filter through one visible class code and another visible class name, the student appears once and displays the lowest numeric visible membership id.
-- Dirty `unit_code = NULL` rows can still match by exact `unit_name`.
-- Sorting uses `user_id ASC` as the final tie-breaker when grade, class, and student number keys are equal or null, so pagination stays stable with dirty duplicate or null student numbers.
+- Sorting uses `user_id ASC` as the final tie-breaker when grade, class, and student number keys are equal, so pagination stays stable with duplicate student numbers.
 - `pageNo` offset overflow is rejected.
 - `pageNo` and `pageSize` intentionally remain `long` in `UnsubmittedFinalRecordQuery` so offset multiplication can detect overflow before mapper execution.
 - Baseline notes belong in the execution notes for this plan, directly under the Pre-Implementation Verification Baseline section or in the task-run handoff summary; do not bury baseline failures only in terminal scrollback.
