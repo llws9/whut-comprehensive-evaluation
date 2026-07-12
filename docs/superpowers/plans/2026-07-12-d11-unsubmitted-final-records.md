@@ -285,6 +285,8 @@ Create `UnsubmittedFinalRecordQuery`:
 
 D-11 keeps `grade` and `classes` as exact-match filter strings without comma splitting or case folding. They are bound through MyBatis parameters and naturally produce no matches when no `org_unit.unit_code` or `org_unit.unit_name` equals the value. Match the source spec: trim, drop blanks, de-duplicate `classes` while preserving first-seen order, then reject more than `MAX_CLASSES = 500` normalized class values. Also reject any single normalized `grade` or `classes` value longer than 256 characters.
 
+Do not add a separate calendar-year range such as 1990-2100 in D-11. The frozen contract only requires `yyyy-yyyy` with `end = start + 1`; values that pass that structural rule but have no data naturally return empty results.
+
 ```java
 package edu.whut.eval.domain.finalrecord.query;
 
@@ -1220,6 +1222,27 @@ void shouldAllowOrgSubtreeRootAtClassLevelOnlyForThatClass() {
 }
 
 @Test
+void shouldRejectInactiveOrgSubtreeRootEvenWhenRootPathAndChildrenAreValid() {
+    seedRoster();
+    jdbcTemplate.update("UPDATE org_unit SET status = 'INACTIVE' WHERE id = 2002");
+    jdbcTemplate.update("UPDATE org_unit SET status = 'INACTIVE' WHERE id = 4001");
+
+    PageResult<UnsubmittedStudentRow> inactiveCollegeRoot = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    PageResult<UnsubmittedStudentRow> inactiveClassRoot = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(4001L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(inactiveCollegeRoot.total()).isZero();
+    assertThat(inactiveCollegeRoot.records()).isEmpty();
+    assertThat(inactiveClassRoot.total()).isZero();
+    assertThat(inactiveClassRoot.records()).isEmpty();
+}
+
+@Test
 void shouldRejectMalformedOrgSubtreeRootPaths() {
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2010, NULL, 'COLLEGE', 'BAD_NULL', '空值路径学院', NULL, 'ACTIVE')");
@@ -2126,6 +2149,15 @@ void shouldRejectUnsubmittedAdminListWithoutScoreViewAssigned() throws Exception
 }
 
 @Test
+void shouldRejectUnsubmittedAdminListWithoutAuthentication() throws Exception {
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026"))
+            .andExpect(status().isUnauthorized());
+
+    verify(queryApplicationService, never()).pageUnsubmittedStudents(any());
+}
+
+@Test
 void shouldMapUnsubmittedServiceAccessDeniedToAuth4030() throws Exception {
     given(queryApplicationService.pageUnsubmittedStudents(any()))
             .willThrow(new AccessDeniedAppException("当前用户无未提交最终成绩名单查询权限"));
@@ -2327,7 +2359,7 @@ Run:
 mvn test
 ```
 
-Expected: PASS. If unrelated pre-existing failures were recorded in the Pre-Implementation Verification Baseline section, compare this run with that recorded baseline and confirm there are zero new failing tests. If no pre-implementation baseline was recorded, do not claim "zero new failures"; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4. Any failure in a D-11-touched module or D-11-touched final-record test fails verification regardless of baseline availability. D-11-touched modules are `whut-eval-domain`, `whut-eval-application`, `whut-eval-infra`, and `whut-eval-interfaces`. In `whut-eval-app`, every final-record related test that was modified, added, or explicitly run by this plan is D-11-touched for verification purposes, including Step 2 shared-scope regressions, Step 3 focused D-11 tests, and Step 4 `*FinalRecord*Test` regressions; a failure in any of these tests fails D-11 verification even if the full reactor also has unrelated modules.
+Expected: PASS. If unrelated pre-existing failures were recorded in the Pre-Implementation Verification Baseline section, compare this run with that recorded baseline and confirm there are zero new failing tests. If no pre-implementation baseline was recorded, do not claim "zero new failures"; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4. D-11 added or modified tests must pass regardless of baseline availability. Existing failures that were already present in `whut-eval-domain`, `whut-eval-application`, `whut-eval-infra`, `whut-eval-interfaces`, or unrelated `whut-eval-app` tests may be treated as pre-existing only when they are named in the recorded baseline and the final run shows zero new failing tests. In `whut-eval-app`, every final-record related test that was modified, added, or explicitly run by this plan is D-11-touched for verification purposes, including Step 2 shared-scope regressions, Step 3 focused D-11 tests, and Step 4 `*FinalRecord*Test` regressions; a failure in any of these D-11-touched tests fails D-11 verification even if the same run also contains unrelated pre-existing failures.
 
 - [ ] **Step 6: Review diff for contract drift**
 
@@ -2420,6 +2452,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `ORG_UNIT` is exact class id only and does not depend on `org_unit.path` being non-null.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
 - `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including a CLASS root; a CLASS root exposes that class only, not sibling classes.
+- Inactive `ORG_SUBTREE` roots return an empty page even when their path and descendants are otherwise valid.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
 - Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
@@ -2432,5 +2465,5 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `pageNo` offset overflow is rejected.
 - `pageNo` and `pageSize` intentionally remain `long` in `UnsubmittedFinalRecordQuery` so offset multiplication can detect overflow before mapper execution.
 - Baseline notes belong in the execution notes for this plan, directly under the Pre-Implementation Verification Baseline section or in the task-run handoff summary; do not bury baseline failures only in terminal scrollback.
-- Any modified, added, or explicitly run final-record related test under `whut-eval-app` is in D-11 verification scope; failures in shared-scope regressions or `*FinalRecord*Test` cannot be waived as outside the D-11 test package.
+- Any modified, added, or explicitly run final-record related test under `whut-eval-app` is in D-11 verification scope; failures in shared-scope regressions or `*FinalRecord*Test` cannot be waived as outside the D-11 test package. Unrelated pre-existing failures are judged only by the recorded baseline and zero-new-failure comparison.
 - No D-7, D-8, D-9, D-10, import, export, or frontend behavior is introduced.
