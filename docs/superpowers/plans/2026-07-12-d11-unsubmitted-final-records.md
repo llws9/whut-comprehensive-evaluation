@@ -4,7 +4,7 @@
 
 **Goal:** Build `GET /api/admin/final-records/unsubmitted` so authorized admins can page current active in-scope students who have not submitted or confirmed final records for an academic year.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, excludes `SUBMITTED` and `CONFIRMED` records, and maps draft timestamps into a small response view.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, excludes `SUBMITTED` and `CONFIRMED` records, and maps `lastUpdatedAt` from `MAX(updated_at)` across that student/year's `DRAFT` final records.
 
 **Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -615,6 +615,8 @@ void shouldKeepDraftStudentsUnsubmittedAndExposeMaxDraftUpdatedAt() {
     assertThat(alice.getLastUpdatedAt()).isEqualTo(Instant.parse("2026-07-12T11:15:30.456Z"));
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .contains(1001L);
+    assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1001L)
+            .hasSize(1);
 }
 
 @Test
@@ -632,6 +634,68 @@ void shouldExcludeSubmittedAndConfirmedStudents() {
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1003L);
     assertThat(findRow(page, 1003L).getLastUpdatedAt()).isNull();
+}
+
+@Test
+void shouldExcludeStudentsThatHaveDraftAndSubmittedOrConfirmedRecords() {
+    seedRoster();
+    insertFinalRecord(31L, 1001L, "2025-2026", "DRAFT", "2026-07-12 10:15:30");
+    insertFinalRecord(32L, 1001L, "2025-2026", "SUBMITTED", "2026-07-12 11:15:30");
+    insertFinalRecord(33L, 1002L, "2025-2026", "DRAFT", "2026-07-12 10:15:30");
+    insertFinalRecord(34L, 1002L, "2025-2026", "CONFIRMED", "2026-07-12 11:15:30");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1003L);
+}
+
+@Test
+void shouldExcludeInactiveUsersInactiveMembershipsAndNonPrimaryMemberships() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1004, 'S004', 'InactiveUser', 'STUDENT', 'INACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, 'S005', 'InactiveMembership', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S006', 'NonPrimary', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4001, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4001, 'STUDENT', 1, 'INACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4001, 'STUDENT', 0, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(3);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L);
+}
+
+@Test
+void shouldKeepClassWithoutActiveGradeWhenGradeFilterAbsentAndExcludeWhenPresent() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'INACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4004, 3002, 'CLASS', 'CS2301', '计算机2301班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1004, 'S004', 'NoGrade', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4004, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> withoutGradeFilter = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(withoutGradeFilter.total()).isEqualTo(4);
+    assertThat(findRow(withoutGradeFilter, 1004L).getGrade()).isNull();
+
+    PageResult<UnsubmittedStudentRow> withGradeFilter = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2023", null, 1, 20)
+    );
+
+    assertThat(withGradeFilter.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .doesNotContain(1004L);
 }
 ```
 
@@ -806,7 +870,7 @@ Add tests:
 
 ```java
 @Test
-void shouldChooseLowestVisibleMembershipAfterScopeAndFilters() {
+void shouldChooseLowestNumericVisibleMembershipIdAfterScopeAndFilters() {
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2998, NULL, 'COLLEGE', 'MATH', '数学学院', '/WHUT/MATH', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4998, 2998, 'CLASS', 'MATH2201', '数学2201班', '/WHUT/MATH/MATH2201', 'ACTIVE')");
@@ -892,7 +956,7 @@ In `FinalRecordQuerySqlProvider`, add:
 ```java
 public String buildCountUnsubmittedStudents(Map<String, Object> params) {
     String scopeExpression = scopeExpression(params, "class_ou");
-    String classPlaceholders = classPlaceholders(params);
+    String castClassPlaceholders = castClassPlaceholders(params);
     return """
             SELECT COUNT(1)
             FROM (
@@ -913,8 +977,8 @@ public String buildCountUnsubmittedStudents(Map<String, Object> params) {
                AND grade_ou.status = 'ACTIVE'
               WHERE u.status = 'ACTIVE'
                 AND (%s)
-                AND (#{query.grade} IS NULL OR BINARY grade_ou.unit_code = #{query.grade} OR BINARY grade_ou.unit_name = #{query.grade})
-                AND (#{query.classesEmpty} = TRUE OR BINARY class_ou.unit_code IN (%s) OR BINARY class_ou.unit_name IN (%s))
+                AND (#{query.grade} IS NULL OR %s OR %s)
+                AND (#{query.classesEmpty} = TRUE OR %s OR %s)
                 AND NOT EXISTS (
                   SELECT 1
                   FROM final_record submitted_fr
@@ -924,12 +988,16 @@ public String buildCountUnsubmittedStudents(Map<String, Object> params) {
                 )
               GROUP BY u.id
             ) visible_students
-            """.formatted(scopeExpression, classPlaceholders, classPlaceholders);
+            """.formatted(scopeExpression,
+                    caseSensitiveEquals("grade_ou.unit_code", "#{query.grade}"),
+                    caseSensitiveEquals("grade_ou.unit_name", "#{query.grade}"),
+                    caseSensitiveIn("class_ou.unit_code", castClassPlaceholders),
+                    caseSensitiveIn("class_ou.unit_name", castClassPlaceholders));
 }
 
 public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
     String scopeExpression = scopeExpression(params, "class_ou1");
-    String classPlaceholders = classPlaceholders(params);
+    String castClassPlaceholders = castClassPlaceholders(params);
     return """
             SELECT
               u.id AS student_user_id,
@@ -958,8 +1026,8 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
                   AND om1.is_primary = 1
                   AND om1.status = 'ACTIVE'
                   AND (%s)
-                  AND (#{query.grade} IS NULL OR BINARY grade_ou1.unit_code = #{query.grade} OR BINARY grade_ou1.unit_name = #{query.grade})
-                  AND (#{query.classesEmpty} = TRUE OR BINARY class_ou1.unit_code IN (%s) OR BINARY class_ou1.unit_name IN (%s))
+                  AND (#{query.grade} IS NULL OR %s OR %s)
+                  AND (#{query.classesEmpty} = TRUE OR %s OR %s)
                   AND NOT EXISTS (
                     SELECT 1
                     FROM final_record submitted_fr
@@ -997,23 +1065,35 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
                      u.user_no ASC,
                      u.id ASC
             LIMIT #{query.pageSize} OFFSET #{query.offset}
-            """.formatted(scopeExpression, classPlaceholders, classPlaceholders);
+            """.formatted(scopeExpression,
+                    caseSensitiveEquals("grade_ou1.unit_code", "#{query.grade}"),
+                    caseSensitiveEquals("grade_ou1.unit_name", "#{query.grade}"),
+                    caseSensitiveIn("class_ou1.unit_code", castClassPlaceholders),
+                    caseSensitiveIn("class_ou1.unit_name", castClassPlaceholders));
 }
 ```
 
-Then add helper methods. The helper must never output `IN ()`; when classes are empty it outputs `NULL` because the `classesEmpty` branch disables the `IN` predicate. The provider builds indexed MyBatis placeholders and never concatenates raw class values:
+Then add helper methods. The helper must never output `IN ()`; when classes are empty it outputs `NULL` because the `classesEmpty` branch disables the `IN` predicate. The provider builds indexed MyBatis placeholders and never concatenates raw class values. Use `CAST(... AS BINARY)` for case-sensitive comparisons because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`:
 
 ```java
-private String classPlaceholders(Map<String, Object> params) {
+private String castClassPlaceholders(Map<String, Object> params) {
     UnsubmittedFinalRecordQuery query = (UnsubmittedFinalRecordQuery) params.get("query");
     if (query == null || query.isClassesEmpty()) {
         return "NULL";
     }
     List<String> placeholders = new ArrayList<>();
     for (int i = 0; i < query.getClasses().size(); i++) {
-        placeholders.add("#{query.classes[" + i + "]}");
+        placeholders.add("CAST(#{query.classes[" + i + "]} AS BINARY)");
     }
     return String.join(", ", placeholders);
+}
+
+private String caseSensitiveEquals(String column, String placeholder) {
+    return "CAST(" + column + " AS BINARY) = CAST(" + placeholder + " AS BINARY)";
+}
+
+private String caseSensitiveIn(String column, String castPlaceholders) {
+    return "CAST(" + column + " AS BINARY) IN (" + castPlaceholders + ")";
 }
 
 private String scopeExpression(Map<String, Object> params, String classAlias) {
@@ -1125,7 +1205,7 @@ private String bindList(Map<String, Object> parameters, String prefix, List<Long
 }
 ```
 
-Use imports for `ApplicationScopeClause`, `ArrayList`, `LinkedHashMap`, `Map`, and `Objects`. If `SqlPredicateFragment` does not have public constructor or `denyAll()` in the current code, follow its existing API and preserve the same expression/parameter result.
+Use imports for `ApplicationScopeClause`, `ArrayList`, `LinkedHashMap`, `Map`, and `Objects`. `SqlPredicateFragment` already has a public constructor plus `allowAll()` and `denyAll()`, so use the calls shown above directly.
 
 - [ ] **Step 9: Run repository integration tests**
 
@@ -1135,7 +1215,7 @@ Run:
 mvn -pl whut-eval-app -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: PASS. If H2 rejects `BINARY expr = ?`, use the project-approved H2/MySQL-compatible case-sensitive equivalent in both implementation and tests. Keep MySQL production behavior deterministic.
+Expected: PASS. The provider must use `CAST(... AS BINARY)` for exact `grade` and `classes` comparisons so the same SQL path is deterministic on H2 MySQL-mode and MySQL.
 
 - [ ] **Step 10: Commit**
 
@@ -1204,6 +1284,13 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
                     .param("grade[]", "CS2022")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("grade", "CS2022", "CS2023")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("VAL-4001"));
@@ -1458,14 +1545,17 @@ If no files changed, do not create an empty commit.
 - Commas inside `grade` and `classes` remain ordinary exact-match characters.
 - `PageResult<T>` remains only `total` and `records`.
 - Roster SQL starts from active `iam_user`, active primary `org_membership`, and active class `org_unit`.
-- `DRAFT` records keep students unsubmitted and only contribute `MAX(updated_at)`.
+- Inactive `iam_user`, inactive `org_membership`, and non-primary `org_membership` rows are excluded by repository tests.
+- `DRAFT` records keep students unsubmitted, appear once per student, and only contribute `MAX(updated_at)`.
+- A student with both `DRAFT` and `SUBMITTED` or `CONFIRMED` records for the same year is excluded.
 - `SUBMITTED` and `CONFIRMED` records exclude students.
 - Unknown final-record statuses are ignored.
 - `lastUpdatedAt` is rendered with `Instant.toString()` or empty string.
+- Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
 - `ORG_UNIT` is exact class id only.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
-- Duplicate active primary memberships collapse after scope and filters, selecting the lowest visible membership id.
+- Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
 - Grade/classes exact filters are case-sensitive and use code-or-name OR semantics.
 - `pageNo` offset overflow is rejected.
 - No D-7, D-8, D-9, D-10, import, export, or frontend behavior is introduced.
