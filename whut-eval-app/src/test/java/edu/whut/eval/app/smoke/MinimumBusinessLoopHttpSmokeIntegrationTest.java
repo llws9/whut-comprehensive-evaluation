@@ -101,6 +101,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -249,6 +250,39 @@ class MinimumBusinessLoopHttpSmokeIntegrationTest {
                         .andExpect(status().isOk())
                         .andExpect(jsonPath("$.data.status").value("CONFIRMED"))
                         .andExpect(jsonPath("$.data.confirmComment").value("确认无误"))
+                        .andReturn()
+        );
+
+        stage("list confirmed final records as counselor", () ->
+                mockMvc.perform(get("/api/admin/final-records")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + counselorToken)
+                                .param("academicYear", ACADEMIC_YEAR)
+                                .param("status", "CONFIRMED")
+                                .param("pageNo", "1")
+                                .param("pageSize", "20"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.code").value("OK"))
+                        .andExpect(jsonPath("$.data.total").value(1))
+                        .andExpect(jsonPath("$.data.records[0].finalRecordId").value(finalRecordId.intValue()))
+                        .andExpect(jsonPath("$.data.records[0].studentUserNo").value("2022010101"))
+                        .andExpect(jsonPath("$.data.records[0].orgUnitId").value(2010))
+                        .andExpect(jsonPath("$.data.records[0].status").value("CONFIRMED"))
+                        .andExpect(jsonPath("$.data.records[0].grandTotal").value(2.00))
+                        .andExpect(jsonPath("$.data.records[0].confirmedAt").isNotEmpty())
+                        .andReturn()
+        );
+
+        stage("get confirmed final record detail as counselor", () ->
+                mockMvc.perform(get("/api/admin/final-records/{recordId}", finalRecordId)
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + counselorToken))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.code").value("OK"))
+                        .andExpect(jsonPath("$.data.record.finalRecordId").value(finalRecordId.intValue()))
+                        .andExpect(jsonPath("$.data.record.status").value("CONFIRMED"))
+                        .andExpect(jsonPath("$.data.record.confirmComment").value("确认无误"))
+                        .andExpect(jsonPath("$.data.student.studentUserId").value(1001))
+                        .andExpect(jsonPath("$.data.components[0].sourceRefId").value(String.valueOf(applicationId)))
+                        .andExpect(jsonPath("$.data.components[0].scoreValue").value(2.00))
                         .andReturn()
         );
 
