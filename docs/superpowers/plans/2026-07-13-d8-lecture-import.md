@@ -358,9 +358,15 @@ class LectureImportParserTest {
         assertThatThrownBy(() -> parser.parse(noSheets()))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("导入模板错误：缺少工作表");
+        assertThatThrownBy(() -> parser.parse(xlsxWithoutHeader()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("导入模板错误：缺少表头");
         assertThatThrownBy(() -> parser.parse(xlsxWithHeaders("studentNo", "bad", "displayText")))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("导入模板错误：第2列表头应为 scoreValue");
+        assertThatThrownBy(() -> parser.parse("studentNo,scoreValue,displayText\nS1,1.00,签到".getBytes()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("导入模板错误：文件不可解析");
         assertThatThrownBy(() -> parser.parse("not excel".getBytes()))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("导入模板错误：文件不可解析");
@@ -387,6 +393,13 @@ class LectureImportParserTest {
         try (Workbook workbook = new XSSFWorkbook()) {
             Sheet sheet = workbook.createSheet("Sheet1");
             writeRow(sheet.createRow(0), headers);
+            return bytes(workbook);
+        }
+    }
+
+    private static byte[] xlsxWithoutHeader() throws Exception {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            workbook.createSheet("Sheet1");
             return bytes(workbook);
         }
     }
@@ -627,6 +640,15 @@ class LectureImportApplicationServiceTest {
         assertThatThrownBy(() -> service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2027")))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("academicYear 不合法");
+        assertThatThrownBy(() -> service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2024")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("academicYear 不合法");
+        assertThatThrownBy(() -> service.importLectures(command("讲座", "2026-05-18T14:30", "9999-0000")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("academicYear 不合法");
+        assertThatThrownBy(() -> service.importLectures(command("讲座", "2026-05-18T14:30Z", "2025-2026")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("heldAt 格式非法");
     }
 
     @Test
@@ -988,24 +1010,53 @@ void shouldValidateTitleLengthCodePointBoundaries() {
 }
 
 @Test
-void shouldTreatZeroAndUpperBoundAsValidAndDefaultDisplayText() {
+void shouldTreatZeroUpperBoundAndShortScaleScoresAsValidAndDefaultDisplayText() {
     given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
     given(parser.parse(any())).willReturn(List.of(
-            new LectureImportRow(2L, "S1", "0.00", null),
-            new LectureImportRow(3L, "S2", "99999999.99", "")
+            new LectureImportRow(2L, "S1", "0", null),
+            new LectureImportRow(3L, "S2", "0.0", ""),
+            new LectureImportRow(4L, "S3", "1", "一".repeat(1000)),
+            new LectureImportRow(5L, "S4", "1.5", "讲座"),
+            new LectureImportRow(6L, "S5", "99999999.99", "")
     ));
     given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
     given(repository.findTarget(eq("S2"), eq("2025-2026"))).willReturn(Optional.of(target(1002L, "/WHUT/CS/CS2022/CS2202")));
+    given(repository.findTarget(eq("S3"), eq("2025-2026"))).willReturn(Optional.of(target(1003L, "/WHUT/CS/CS2022/CS2203")));
+    given(repository.findTarget(eq("S4"), eq("2025-2026"))).willReturn(Optional.of(target(1004L, "/WHUT/CS/CS2022/CS2204")));
+    given(repository.findTarget(eq("S5"), eq("2025-2026"))).willReturn(Optional.of(target(1005L, "/WHUT/CS/CS2022/CS2205")));
     given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
     given(repository.insertLectureComponents(eq("2025-2026"), any(), any())).willReturn(List.of());
 
     LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
 
-    assertThat(result.successCount()).isEqualTo(2);
+    assertThat(result.successCount()).isEqualTo(5);
     verify(repository).insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components ->
-            components.size() == 2
+            components.size() == 5
+                    && components.get(0).scoreValue().compareTo(new BigDecimal("0.00")) == 0
+                    && components.get(1).scoreValue().compareTo(new BigDecimal("0.00")) == 0
+                    && components.get(2).scoreValue().compareTo(new BigDecimal("1.00")) == 0
+                    && components.get(3).scoreValue().compareTo(new BigDecimal("1.50")) == 0
                     && components.get(0).displayText().equals("讲座 讲座签到")
-                    && components.get(1).displayText().equals("讲座 讲座签到")));
+                    && components.get(1).displayText().equals("讲座 讲座签到")
+                    && components.get(2).displayText().equals("一".repeat(1000))
+                    && components.get(4).displayText().equals("讲座 讲座签到")));
+}
+
+@Test
+void shouldRejectNonStrictDecimalFormats() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+    given(parser.parse(any())).willReturn(List.of(
+            new LectureImportRow(2L, "S1", "-1", null),
+            new LectureImportRow(3L, "S2", "1,234.56", null),
+            new LectureImportRow(4L, "S3", "50%", null),
+            new LectureImportRow(5L, "S4", "5E-1", null)
+    ));
+
+    LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+    assertThat(result.successCount()).isZero();
+    assertThat(result.failedRows()).extracting("code")
+            .containsExactly("SCORE_VALUE_INVALID", "SCORE_VALUE_INVALID", "SCORE_VALUE_INVALID", "SCORE_VALUE_INVALID");
 }
 
 @Test
@@ -1175,6 +1226,7 @@ private PreparedLectureRows prepareRows(List<LectureImportRow> rows) {
             failedRows.add(failed(row, "DUPLICATE_STUDENT", "同一讲座批次中学生重复"));
             continue;
         }
+        // Pads scale 0/1 values such as "1" and "1.5" to scale 2 without allowing rounding.
         BigDecimal score = new BigDecimal(row.scoreValue().trim()).setScale(2, RoundingMode.UNNECESSARY);
         fieldValidRows.add(new FieldValidLectureRow(row, studentNo, row.scoreValue().trim(), score));
     }
@@ -2092,9 +2144,15 @@ git commit -m "feat: expose lecture import endpoint"
 
 - [ ] **Step 1: Add regression tests for core D-8 risks**
 
-Add focused tests where they fit best:
+Add the focused tests below at the named layer:
 
 - Parser: `rowNo` is worksheet physical row number when blank rows exist.
+- Parser: missing header, CSV/text unreadable content, and unsupported workbook-like formats fail as template/unreadable errors.
+- Service: non-strict decimal score formats (`-1`, `1,234.56`, `50%`, `5E-1`) fail with `SCORE_VALUE_INVALID`.
+- Service: `scoreValue` variants `0`, `0.0`, `0.00`, `1`, and `1.5` are accepted and normalized to scale 2 without rounding.
+- Service: `displayText` with exactly 1000 Unicode code points is accepted and 1001 is rejected.
+- Service: `heldAt` rejects timezone offsets, accepts omitted seconds, and truncates fractional seconds.
+- Service: `academicYear` rejects `2025-2027`, `2025-2024`, and `9999-0000`.
 - Service: unsupported-only scope set returns `OUT_OF_SCOPE`; `ALL` scope allows import; multiple scopes use union semantics.
 - Service: failedRows are sorted ascending by `rowNo` when failures originate from field validation, duplicate, student lookup, and scope paths.
 - Service: header-only imports and all-failed zero-success imports acquire/release the batch lock, run the authoritative duplicate-batch check, do not call component persistence, and allow same-metadata retry.
