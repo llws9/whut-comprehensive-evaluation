@@ -176,7 +176,7 @@ Header row is row 1. Header names are case-sensitive and must appear in this exa
 | Column | Header | Required | Rule |
 |---:|---|---:|---|
 | A | `studentNo` | yes | Existing active `iam_user.user_no`. |
-| B | `scoreValue` | yes | Strict decimal text matching `^[0-9]+(\.[0-9]+)?$`, `0 <= value <= 99999999.99`, at most 2 decimal places. Thousand separators, percentages, currency symbols, and scientific notation are invalid. The upper bound follows `DECIMAL(10,2)`. |
+| B | `scoreValue` | yes | Strict decimal text matching `^[0-9]+(\.[0-9]+)?$`, `0 <= value <= 99999999.99`, at most 2 decimal places. Thousand separators, percentages, currency symbols, and scientific notation are invalid. Leading zeroes are accepted and do not change the parsed numeric value, so `00` is equivalent to `0` and `00.50` is equivalent to `0.50`. The upper bound follows `DECIMAL(10,2)`. |
 | C | `displayText` | no | Max 1000 characters after trim. When blank, the normalized row display text is the normalized request title followed by the fixed system suffix ` 讲座签到`. The suffix is a frozen Chinese constant for this backend scope and is not locale-derived. |
 
 Extra columns after column C are ignored.
@@ -453,8 +453,10 @@ Add tests proving:
 - workbooks with no sheets fail with `导入模板错误：缺少工作表`;
 - formatted values that are not strict decimal text, such as `-1`, `1,234.56`, `50%`, or `5E-1`, fail with `SCORE_VALUE_INVALID`;
 - `0` and `0.00` are accepted as valid score values;
+- `99999999.99` is accepted as a valid score value;
 - numeric text above `99999999.99` fails with `SCORE_VALUE_OUT_OF_RANGE`;
 - numeric text with more than 2 decimal places fails with `SCORE_VALUE_SCALE_INVALID`;
+- `displayText` with exactly 1000 characters after trim is accepted;
 - unreadable bytes fail with `导入模板错误：文件不可解析`.
 
 ### Application Tests
@@ -464,6 +466,7 @@ Add tests proving:
 - invalid `academicYear` fails with `academicYear 不合法`;
 - `academicYear` accepts only the concrete `^\d{4}-\d{4}$` format with the second year equal to first year + 1, and rejects boundary examples such as `2025-2027`, `2025-2024`, and `9999-0000`;
 - blank or overlong `title` fails with the frozen message;
+- `title` with exactly 255 characters after trim is accepted;
 - invalid `heldAt` fails with `heldAt 格式非法`;
 - `heldAt` accepts omitted seconds, truncates fractional seconds, and rejects timezone offsets;
 - deterministic `lectureBatchId` is returned for the same normalized title, heldAt, and academicYear;
