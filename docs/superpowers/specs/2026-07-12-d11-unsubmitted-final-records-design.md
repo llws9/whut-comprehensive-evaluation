@@ -92,7 +92,7 @@ The application service must also check the same authority before querying. Miss
 |---|---|---|---|---|
 | `academicYear` | string | yes | - | trim; must match `YYYY-YYYY` and the second year must equal the first year plus 1 |
 | `grade` | string | no | - | trim; exact match against grade organization code or name |
-| `classes` | string | no | - | trim; exact match against class organization code or name |
+| `classes` | string | no | - | single value; trim; exact match against class organization code or name |
 | `pageNo` | long | no | `1` | values `<= 0` normalize to `1` |
 | `pageSize` | long | no | `20` | values `<= 0` normalize to `20`; values `> 100` cap at `100` |
 
@@ -105,6 +105,8 @@ Invalid `academicYear` returns `400 / VAL-4001`.
 - blank values are ignored.
 
 No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. The parameter name remains `classes`, not `className`, to match the team-delivery contract; despite the plural name, this D-11 increment accepts a single class filter value.
+
+If `grade` is provided, students whose selected class has no parent grade row are excluded because there is no grade code/name to match. Without a `grade` filter, those students may still appear with `grade = null`.
 
 ### 4.4 Success Response
 
@@ -120,7 +122,7 @@ No fuzzy match, prefix match, contains match, or case normalization is performed
 | `grade` | string | parent grade `org_unit.unit_name`; `null` if the class has no grade parent |
 | `className` | string | active primary class `org_unit.unit_name` |
 | `status` | string | fixed `UNSUBMITTED` |
-| `lastUpdatedAt` | string/null | `final_record.updated_at` when a `DRAFT` row exists for the academic year; otherwise `null` |
+| `lastUpdatedAt` | string/null | `MAX(final_record.updated_at)` across `DRAFT` rows for the academic year; otherwise `null` |
 
 When no data matches, return `200` with `total = 0` and `records = []`.
 
@@ -162,9 +164,9 @@ NOT EXISTS (
 )
 ```
 
-If a `DRAFT` final record exists for the same student/year, the student is still unsubmitted. The draft row only supplies `lastUpdatedAt`.
+If a `DRAFT` final record exists for the same student/year, the student is still unsubmitted. Draft records only supply `lastUpdatedAt`.
 
-Minimal D enforces one `final_record` per `(student_user_id, academic_year)`, so there should be at most one draft row. The D-11 query must still be defensive and only join draft rows by `fr.status = 'DRAFT'`.
+Minimal D enforces one `final_record` per `(student_user_id, academic_year)`, so there should be at most one draft row. The D-11 query must still be defensive in case dirty data contains multiple draft rows for the same student/year: draft data is joined through an aggregate subquery with one row per `student_user_id`, and `lastUpdatedAt` is `MAX(updated_at)`. Count and select SQL must both preserve one result row per student.
 
 ### 5.3 Source of Truth
 
@@ -187,10 +189,12 @@ The query must not use `application_submission`, `application_fact`, `applicatio
 
 D-11 reuses `score.view.assigned` and `FinalRecordAccessContext`.
 
-`FinalRecordQueryApplicationService` should assemble:
+`FinalRecordQueryApplicationService` should assemble the access context the same way as the existing admin list path:
 
 ```java
-new FinalRecordAccessContext(..., AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED)
+new FinalRecordAccessContext(context.getUserId(), context.getUserNo(), context.getUserName(),
+        context.getIdentity(), context.getRoles(), context.getAuthorities(), context.getScopeRules(),
+        AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED)
 ```
 
 and pass it to the repository, matching `pageAdminFinalRecords(...)`.
@@ -278,10 +282,6 @@ JOIN org_unit class_ou
  AND class_ou.status = 'ACTIVE'
 LEFT JOIN org_unit grade_ou
   ON grade_ou.id = class_ou.parent_id
-LEFT JOIN final_record draft_fr
-  ON draft_fr.student_user_id = u.id
- AND draft_fr.academic_year = #{query.academicYear}
- AND draft_fr.status = 'DRAFT'
 WHERE u.status = 'ACTIVE'
   AND (
     #{scopeAllowsAll} = TRUE
@@ -308,6 +308,21 @@ WHERE u.status = 'ACTIVE'
   )
 ```
 
+The count query must not join draft records because draft data does not affect membership in the result set and a dirty duplicate draft row must never inflate `total`.
+
+Recommended select query uses the same roster, scope, filter, and submitted/confirmed exclusion predicates, plus a one-row-per-student draft aggregate:
+
+```sql
+LEFT JOIN (
+  SELECT student_user_id, MAX(updated_at) AS last_updated_at
+  FROM final_record
+  WHERE academic_year = #{query.academicYear}
+    AND status = 'DRAFT'
+  GROUP BY student_user_id
+) draft_fr
+  ON draft_fr.student_user_id = u.id
+```
+
 The SQL provider must generate the scope block from the evaluated scope set:
 
 - when `ALL` is granted, set `scopeAllowsAll = TRUE` and omit empty `IN` fragments;
@@ -325,7 +340,7 @@ u.user_name AS user_name,
 grade_ou.unit_name AS grade,
 class_ou.unit_name AS class_name,
 'UNSUBMITTED' AS status,
-draft_fr.updated_at AS last_updated_at
+draft_fr.last_updated_at AS last_updated_at
 ```
 
 Recommended ordering:
@@ -422,7 +437,7 @@ Controller:
 @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_VIEW_ASSIGNED)")
 @GetMapping("/unsubmitted")
 public ApiResponse<PageResult<UnsubmittedStudentView>> pageUnsubmittedFinalRecords(
-        @RequestParam String academicYear,
+        @RequestParam(required = false) String academicYear,
         @RequestParam(required = false) String grade,
         @RequestParam(required = false) String classes,
         @RequestParam(defaultValue = "1") long pageNo,
@@ -453,6 +468,7 @@ Route order must keep `/unsubmitted` from being captured by `/{recordId}`. In Sp
 
 | Scenario | HTTP | Code | Source |
 |---|---:|---|---|
+| missing `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
 | blank `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
 | malformed `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
 | no `score.view.assigned` authority | `403` | `AUTH-4030` | `AccessDeniedAppException` or method security |
@@ -485,6 +501,7 @@ Extend `FinalRecordQueryApplicationServiceTest`:
 - passes `score.view.assigned` access context to the repository;
 - denies callers without `score.view.assigned`;
 - preserves `lastUpdatedAt` from a draft row;
+- returns `lastUpdatedAt = null` for an unsubmitted student with no `final_record`;
 - returns an empty page without throwing.
 - maps every row to `status = "UNSUBMITTED"` without trusting mapper data for that value.
 
@@ -507,8 +524,13 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - verifies stable ordering by grade code, class code, user no, and user id;
 - verifies two-page pagination has no duplicated student ids and the combined rows match the same stable order;
 - returns empty page for unsupported category-only scopes;
+- returns all visible current-roster rows for a pure `ALL` scope;
+- returns only the exact class rows for a pure `ORG_UNIT` scope targeting a class id;
 - returns organization-scoped rows for a mixed scope containing one supported `ORG_SUBTREE` rule and one unsupported category rule;
 - resolves `ORG_SUBTREE` against real `org_unit.path` code paths, proving a scope rooted at org id `2002` can see classes whose path starts with `/WHUT/CS`.
+- verifies a student with duplicate dirty draft final records still appears once and uses `MAX(updated_at)` for `lastUpdatedAt`;
+- verifies a student with no `final_record` has `lastUpdatedAt = null`;
+- verifies a class with no parent grade row is excluded when `grade` is provided and can appear with `grade = null` when no `grade` filter is provided.
 
 The last test is mandatory because a numeric-id path comparison such as `LIKE '%/2002/%'` would return zero rows against the seeded organization path format.
 
@@ -519,6 +541,7 @@ The repository integration test schema must include the real A-group columns use
 Add or extend admin final-record controller tests to prove:
 
 - `GET /api/admin/final-records/unsubmitted?academicYear=2025-2026` returns the page shape;
+- missing `academicYear` returns `400 / VAL-4001`;
 - blank `academicYear` returns `400 / VAL-4001`;
 - malformed `academicYear` returns `400 / VAL-4001`;
 - `grade` and `classes` are forwarded as single exact-match filter values;
@@ -550,10 +573,13 @@ If shared scope translation is fixed to resolve `ORG_SUBTREE` by real org paths,
 - The roster is current active membership, not a historical roster for the requested academic year.
 - Duplicate active primary membership rows do not duplicate students in the result.
 - Mixed supported and unsupported scope fragments return rows for the supported organization scope.
+- Pure `ALL`, pure `ORG_UNIT`, and pure `ORG_SUBTREE` scopes are each tested on the D-11 roster query path.
 - Unsupported-only scope fragments return an empty page.
 - `grade` and `classes` filters are exact code/name matches.
+- A provided `grade` filter excludes classes without a grade parent row.
 - Pagination order is deterministic and stable across pages.
-- `lastUpdatedAt` is draft `final_record.updated_at` or `null`.
+- Duplicate dirty draft final records do not duplicate students in the result.
+- `lastUpdatedAt` is the draft aggregate `MAX(final_record.updated_at)` or `null`.
 - No data returns an empty page, not `404`.
 - `ORG_SUBTREE` matches the real code-path format in `org_unit.path`.
 - The implementation does not introduce D-7, D-8, D-9, or D-10 behavior.
