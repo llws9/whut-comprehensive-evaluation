@@ -123,6 +123,27 @@ Request-level failures:
 
 Row-level validation failures are returned in `failedRows` and do not make the HTTP response fail.
 
+Frozen row-level failure mapping:
+
+| Condition | `code` | `message` |
+|---|---|---|
+| `studentNo` blank | `STUDENT_NO_REQUIRED` | `studentNo 不能为空` |
+| `categoryCode` blank | `CATEGORY_CODE_REQUIRED` | `categoryCode 不能为空` |
+| `categoryCode` not one of `MORAL`, `INTELLECTUAL`, `SPORTS`, `LABOR` | `CATEGORY_CODE_INVALID` | `categoryCode 仅允许 MORAL、INTELLECTUAL、SPORTS、LABOR` |
+| `itemCode` blank | `ITEM_CODE_REQUIRED` | `itemCode 不能为空` |
+| `itemCode` longer than 64 characters | `ITEM_CODE_TOO_LONG` | `itemCode 长度不能超过 64` |
+| `scoreValue` blank | `SCORE_VALUE_REQUIRED` | `scoreValue 不能为空` |
+| `scoreValue` is not a decimal number | `SCORE_VALUE_INVALID` | `scoreValue 必须是数字` |
+| `scoreValue < 0` or `scoreValue > 99999999.99` | `SCORE_VALUE_OUT_OF_RANGE` | `scoreValue 必须在 0 到 99999999.99 之间` |
+| `scoreValue` has more than 2 decimal places | `SCORE_VALUE_SCALE_INVALID` | `scoreValue 最多保留 2 位小数` |
+| `displayText` longer than 1000 characters | `DISPLAY_TEXT_TOO_LONG` | `displayText 长度不能超过 1000` |
+| `sourceRefId` longer than 64 characters | `SOURCE_REF_ID_TOO_LONG` | `sourceRefId 长度不能超过 64` |
+| eligible student not found | `STUDENT_NOT_FOUND` | `studentNo 对应学生不存在或未启用` |
+| row target outside `score.import` scope | `OUT_OF_SCOPE` | `当前用户无权导入该学生成绩` |
+| existing final record is `SUBMITTED` or `CONFIRMED` | `FINAL_RECORD_LOCKED` | `已提交或已确认的最终成绩不允许导入覆盖` |
+
+When more than one row-level condition applies, use the first matching condition in the table above. This keeps `failedRows` deterministic and avoids multi-error arrays inside one failed row.
+
 ## Excel Template
 
 Only the first sheet is parsed.
@@ -216,15 +237,30 @@ For `UPSERT`:
 - If an imported component already exists for the target identity, update its `score_value`, `display_text`, `source_ref_id`, and `created_at` replacement timestamp.
 - If none exists, insert a new `final_component_score`.
 - Non-imported components for the same `categoryCode` and `itemCode` are not overwritten.
+- Duplicate target keys inside the same Excel file are allowed in `UPSERT`.
+- Rows are applied in ascending Excel row order.
+- Every duplicate row that reaches mutation counts as a success.
+- The last successful row for a target key defines the persisted component value and final recalculated totals.
+- Row-level failures do not roll back earlier successful `UPSERT` mutations in the same request. Request-level exceptions, including `STRICT_INSERT` conflicts, abort before mutation.
 
 For `STRICT_INSERT`:
 
-- Before writing any row, pre-scan all syntactically valid row targets.
+- Before writing any row, pre-scan every row that passes field validation and eligible-student lookup.
 - If any target already has an imported component, abort the whole request with `409 BIZ-4090`.
 - Duplicate target keys inside the same Excel file also abort the whole request with `409 BIZ-4090`.
 - The error message is `STRICT_INSERT 模式不允许覆盖`.
 
-Rows that fail normal validation do not participate in the duplicate pre-scan.
+`STRICT_INSERT` validation order:
+
+1. Parse the workbook and reject request-level template errors.
+2. Validate row fields using the frozen row-level failure mapping.
+3. Resolve eligible active students for rows that passed field validation.
+4. Build `failedRows` for field failures and missing or inactive students.
+5. Run duplicate pre-scan only for rows with a resolved eligible student.
+6. Abort with request-level `409 BIZ-4090` when the pre-scan finds a duplicate workbook target or an existing imported component in the database.
+7. Apply authorization scope, final-record locked-state checks, and mutations row by row.
+
+Rows excluded from the duplicate pre-scan are field-invalid rows and rows whose `studentNo` does not resolve to an eligible active student. Rows that are eligible but later fail authorization scope or locked-record checks do participate in the duplicate pre-scan because their target identity is known.
 
 ### Totals
 
