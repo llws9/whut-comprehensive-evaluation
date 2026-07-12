@@ -8,7 +8,7 @@
 
 **Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
 
-**Frozen Schema Precedence:** If the source design and frozen SQL schema conflict, the frozen A/D schema wins for D-11 implementation and tests. `docs/team-delivery/group-a-identity-user-admin.sql` defines `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, and `org_unit.status` as `NOT NULL`; `docs/team-delivery/group-d-score-finalization-import-export.safe-init.sql` defines `final_record.status` and `final_record.updated_at` as `NOT NULL` and enforces `UNIQUE KEY uk_final_record_student_year (student_user_id, academic_year)`. Therefore D-11 must not add duplicate final-record rows for one student/year, nullable organization path/code cases, nullable final-record status/update timestamps, or missing IAM columns as tests or production behavior. Malformed but schema-valid path strings, such as empty strings, missing leading `/`, and trailing `/`, are still valid boundary cases for D-11 subtree guards and must be tested.
+**Frozen Schema Precedence:** If the source design and frozen SQL schema conflict, the frozen A/D schema wins for D-11 implementation and tests. `docs/team-delivery/group-a-identity-user-admin.sql` defines `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, and `org_unit.status` as `NOT NULL`; `docs/team-delivery/group-d-score-finalization-import-export.safe-init.sql` defines `final_record.status` and `final_record.updated_at` as `NOT NULL` and enforces `UNIQUE KEY uk_final_record_student_year (student_user_id, academic_year)`. Therefore D-11 must not add duplicate final-record rows for one student/year, nullable organization path/code cases, nullable final-record status/update timestamps, or missing IAM columns as tests or production behavior. Malformed but schema-valid path strings, such as empty strings, missing leading `/`, trailing `/`, or embedded SQL `LIKE` wildcard characters `%` and `_`, are still valid boundary cases for D-11 subtree guards and must be tested. D-11 treats such malformed subtree paths as non-matching instead of trying to repair or escape them at query time.
 
 **Task Coverage Map:** This plan is intentionally split into five executable tasks: Task 1 query-object contract, Task 2 application service view mapping, Task 3 repository roster SQL, Task 4 controller route and request shape, and Task 5 regression/full verification. Task 4 and Task 5 appear after the Task 3 commit block and are required even though repository SQL is the largest section.
 
@@ -142,6 +142,8 @@ Field naming map:
   - Adds D-11 repository implementation and path-scope fragment construction for roster aliases.
 - Modify `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/SqlPredicateFragment.java`
   - Adds `alwaysTrue()` for D-11's non-blank allow-all SQL predicate while preserving existing `allowAll()` behavior.
+- Create: `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/D11ScopeSqlShape.java`
+  - Centralizes D-11 scope SQL shape generation and whitelist validation.
 
 ### Interfaces
 
@@ -1289,13 +1291,37 @@ void shouldAllowOrgSubtreeRootAtClassLevelOnlyForThatClass() {
 }
 
 @Test
+void shouldAllowOrgSubtreeRootAtGradeLevelOnlyForThatGrade() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4003, 3002, 'CLASS', 'CS2301', '计算机2301班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1004, 'S004', 'Dora', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4003, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(3001L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(3);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L)
+            .doesNotContain(1004L);
+}
+
+@Test
 void shouldRejectInactiveOrgSubtreeRootEvenWhenRootPathAndChildrenAreValid() {
     seedRoster();
     jdbcTemplate.update("UPDATE org_unit SET status = 'INACTIVE' WHERE id = 2002");
+    jdbcTemplate.update("UPDATE org_unit SET status = 'INACTIVE' WHERE id = 3001");
     jdbcTemplate.update("UPDATE org_unit SET status = 'INACTIVE' WHERE id = 4001");
 
     PageResult<UnsubmittedStudentRow> inactiveCollegeRoot = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    PageResult<UnsubmittedStudentRow> inactiveGradeRoot = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(3001L),
             new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
     );
     PageResult<UnsubmittedStudentRow> inactiveClassRoot = repository.pageUnsubmittedStudents(
@@ -1305,6 +1331,8 @@ void shouldRejectInactiveOrgSubtreeRootEvenWhenRootPathAndChildrenAreValid() {
 
     assertThat(inactiveCollegeRoot.total()).isZero();
     assertThat(inactiveCollegeRoot.records()).isEmpty();
+    assertThat(inactiveGradeRoot.total()).isZero();
+    assertThat(inactiveGradeRoot.records()).isEmpty();
     assertThat(inactiveClassRoot.total()).isZero();
     assertThat(inactiveClassRoot.records()).isEmpty();
 }
@@ -1366,6 +1394,29 @@ void shouldRejectMalformedOrgSubtreeRootAndClassPaths() {
             .containsExactly(1003L);
 }
 
+@Test
+void shouldRejectOrgSubtreePathsContainingLikeWildcards() {
+    seedRoster();
+
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/C_%' WHERE id = 2002");
+    PageResult<UnsubmittedStudentRow> wildcardRootPath = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/CS' WHERE id = 2002");
+
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/CS/CS2022/CS_201' WHERE id = 4001");
+    PageResult<UnsubmittedStudentRow> underscoreClassPath = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    jdbcTemplate.update("UPDATE org_unit SET path = '/WHUT/CS/CS2022/CS2201' WHERE id = 4001");
+
+    assertThat(wildcardRootPath.records()).isEmpty();
+    assertThat(underscoreClassPath.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1003L);
+}
+
 ```
 
 - [ ] **Step 4: Write mandatory scope-parity, duplicate-membership, and pagination tests**
@@ -1390,6 +1441,7 @@ void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSema
     assertScopeParity(accessContextWithAllScope());
     assertScopeParity(accessContextWithOrgUnit(4001L));
     assertScopeParity(accessContextWithOrgSubtree(2002L));
+    assertScopeParity(accessContextWithOrgSubtree(3001L));
     assertScopeParity(accessContextWithOrgSubtree(4001L));
     assertScopeParity(accessContextWithOrgUnitAndOrgSubtree(4001L, 2002L));
     assertScopeParity(accessContextWithUnsupportedCategoryOnly());
@@ -1910,9 +1962,96 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
 }
 ```
 
-Then add helper methods. The provider builds indexed MyBatis placeholders and never concatenates raw class values. `scopeExpression`, `caseSensitiveEquals(...)`, and `caseSensitiveIn(...)` may be injected into SQL strings only when they are built from fixed alias names plus MyBatis placeholders generated in this provider/repository; never pass raw request values, grade values, class values, or caller-provided SQL through these helpers. Use `CAST(... AS BINARY)` for filter equality because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`. Sorting intentionally follows the configured column collation for `grade_ou.unit_code` and `class_ou.unit_code`; D-11 only requires deterministic ordering with `user_id ASC` as final tie-breaker, not bytewise sorting:
+Then add helper methods. The provider builds indexed MyBatis placeholders and never concatenates raw class values. `scopeExpression`, `caseSensitiveEquals(...)`, and `caseSensitiveIn(...)` may be injected into SQL strings only when they are built from fixed alias names plus MyBatis placeholders generated in this provider/repository; never pass raw request values, grade values, class values, or caller-provided SQL through these helpers. Use `CAST(... AS BINARY)` for filter equality because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`. Sorting intentionally follows the configured column collation for `grade_ou.unit_code` and `class_ou.unit_code`; D-11 only requires deterministic ordering with `user_id ASC` as final tie-breaker, not bytewise sorting.
 
-`scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. The only allowed expression forms are assembled from fixed strings in `rosterScopeFragment(...)`: `__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters...})`, the fixed `EXISTS (SELECT 1 FROM org_unit root_ou ...)` path predicate, `1 = 0`, or `1 = 1`. `rosterScopeFragment(...)` must wrap every dynamic non-static expression in one outer pair of parentheses, including a single ORG_UNIT fragment and a single ORG_SUBTREE fragment, so the provider whitelist sees one consistent shape. Provider validation must normalize whitespace and then use full-expression matching against this closed whitelist: deny-all, allow-all, ORG_UNIT only, ORG_SUBTREE only, ORG_UNIT OR ORG_SUBTREE, and ORG_SUBTREE OR ORG_UNIT. Prefix matching is not allowed. The `root_ou.path IS NOT NULL` and class-path `IS NOT NULL` checks are defensive-in-depth guards and remain part of the generated SQL and whitelist even though the frozen A schema declares `org_unit.path NOT NULL`; the empty, leading slash, and trailing slash checks cover malformed but schema-valid path strings. If any subtree SQL shape in `rosterScopeFragment(...)` changes, update `validateD11ScopeExpression(...)` and `shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes` in the same change.
+Before wiring the provider and repository, create `D11ScopeSqlShape` in `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/D11ScopeSqlShape.java`. This class is the single source for D-11 scope SQL shape: the repository uses it to generate ORG_UNIT/ORG_SUBTREE fragments, and the provider uses it to validate the whitelist. Do not duplicate subtree SQL or whitelist regex bodies in `FinalRecordQuerySqlProvider` or `MybatisPlusFinalRecordQueryRepository`. `scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. `rosterScopeFragment(...)` must wrap every dynamic non-static expression in one outer pair of parentheses, including a single ORG_UNIT fragment and a single ORG_SUBTREE fragment, so the provider whitelist sees one consistent shape. Provider validation must normalize whitespace and then use full-expression matching against this closed whitelist: deny-all, allow-all, ORG_UNIT only, ORG_SUBTREE only, ORG_UNIT OR ORG_SUBTREE, and ORG_SUBTREE OR ORG_UNIT. Prefix matching is not allowed. The `root_ou.path IS NOT NULL` and class-path `IS NOT NULL` checks are defensive-in-depth guards and remain part of the generated SQL and whitelist even though the frozen A schema declares `org_unit.path NOT NULL`; the empty, leading slash, trailing slash, and `LIKE` wildcard character checks cover malformed but schema-valid path strings. D-11 treats `%` and `_` in subtree root/class paths as malformed and non-matching by requiring `LOCATE('%', path) = 0` and `LOCATE('_', path) = 0` before executing the `LIKE CONCAT(root_ou.path, '/%')` subtree comparison.
+
+```java
+package edu.whut.eval.infra.security.sql;
+
+import java.util.regex.Pattern;
+
+public final class D11ScopeSqlShape {
+
+    public static final String CLASS_ALIAS_PLACEHOLDER = "__D11_CLASS_ALIAS__";
+
+    private D11ScopeSqlShape() {
+    }
+
+    public static String normalize(String expression) {
+        return expression == null ? "" : expression.strip().replaceAll("\\s+", " ");
+    }
+
+    public static String orgUnitFragment(String inSql) {
+        return CLASS_ALIAS_PLACEHOLDER + ".id IN (" + inSql + ")";
+    }
+
+    public static String orgSubtreeFragment(String inSql) {
+        // Double percent signs are Java String.formatted() escapes; the emitted SQL uses single % wildcards.
+        return """
+                EXISTS (
+                  SELECT 1
+                  FROM org_unit root_ou
+                  WHERE root_ou.id IN (%s)
+                    AND root_ou.status = 'ACTIVE'
+                    AND root_ou.path IS NOT NULL
+                    AND root_ou.path <> ''
+                    AND root_ou.path LIKE '/%%'
+                    AND root_ou.path NOT LIKE '%%/'
+                    AND LOCATE('%%', root_ou.path) = 0
+                    AND LOCATE('_', root_ou.path) = 0
+                    AND __D11_CLASS_ALIAS__.path IS NOT NULL
+                    AND __D11_CLASS_ALIAS__.path <> ''
+                    AND __D11_CLASS_ALIAS__.path LIKE '/%%'
+                    AND __D11_CLASS_ALIAS__.path NOT LIKE '%%/'
+                    AND LOCATE('%%', __D11_CLASS_ALIAS__.path) = 0
+                    AND LOCATE('_', __D11_CLASS_ALIAS__.path) = 0
+                    AND (
+                      __D11_CLASS_ALIAS__.path = root_ou.path
+                      OR __D11_CLASS_ALIAS__.path LIKE CONCAT(root_ou.path, '/%%')
+                    )
+                )
+                """.formatted(inSql).strip();
+    }
+
+    public static boolean isAllowedScopeExpression(String normalized) {
+        if ("1 = 0".equals(normalized) || "1 = 1".equals(normalized)) {
+            return true;
+        }
+        String orgUnitFragmentPattern = "__D11_CLASS_ALIAS__\\.id IN \\(" + parameterListPattern("d11OrgUnit") + "\\)";
+        String subtreeFragmentPattern = "EXISTS \\( SELECT 1 FROM org_unit root_ou WHERE root_ou\\.id IN \\("
+                + parameterListPattern("d11Subtree")
+                + "\\) AND root_ou\\.status = 'ACTIVE'"
+                + " AND root_ou\\.path IS NOT NULL"
+                + " AND root_ou\\.path <> ''"
+                + " AND root_ou\\.path LIKE '/%'"
+                + " AND root_ou\\.path NOT LIKE '%/'"
+                + " AND LOCATE\\('%', root_ou\\.path\\) = 0"
+                + " AND LOCATE\\('_', root_ou\\.path\\) = 0"
+                + " AND __D11_CLASS_ALIAS__\\.path IS NOT NULL"
+                + " AND __D11_CLASS_ALIAS__\\.path <> ''"
+                + " AND __D11_CLASS_ALIAS__\\.path LIKE '/%'"
+                + " AND __D11_CLASS_ALIAS__\\.path NOT LIKE '%/'"
+                + " AND LOCATE\\('%', __D11_CLASS_ALIAS__\\.path\\) = 0"
+                + " AND LOCATE\\('_', __D11_CLASS_ALIAS__\\.path\\) = 0"
+                + " AND \\( __D11_CLASS_ALIAS__\\.path = root_ou\\.path"
+                + " OR __D11_CLASS_ALIAS__\\.path LIKE CONCAT\\(root_ou\\.path, '/%'\\) \\) \\)";
+        String orgUnitOnlyPattern = "\\( ?" + orgUnitFragmentPattern + " ?\\)";
+        String subtreeOnlyPattern = "\\( ?" + subtreeFragmentPattern + " ?\\)";
+        String orgThenSubtreePattern = "\\( ?" + orgUnitFragmentPattern + " OR " + subtreeFragmentPattern + " ?\\)";
+        String subtreeThenOrgPattern = "\\( ?" + subtreeFragmentPattern + " OR " + orgUnitFragmentPattern + " ?\\)";
+        return Pattern.matches(orgUnitOnlyPattern, normalized)
+                || Pattern.matches(subtreeOnlyPattern, normalized)
+                || Pattern.matches(orgThenSubtreePattern, normalized)
+                || Pattern.matches(subtreeThenOrgPattern, normalized);
+    }
+
+    private static String parameterListPattern(String prefix) {
+        String parameterPattern = "#\\{scopeFragment\\.parameters\\." + prefix + "\\d+\\}";
+        return parameterPattern + "(, " + parameterPattern + ")*";
+    }
+}
+```
 
 ```java
 private String classPredicate(Map<String, Object> params, String classAlias) {
@@ -1953,45 +2092,15 @@ private String scopeExpression(Map<String, Object> params, String classAlias) {
 }
 
 private void validateD11ScopeExpression(String expression) {
-    String normalized = expression.strip().replaceAll("\\s+", " ");
-    if ("1 = 0".equals(normalized) || "1 = 1".equals(normalized)) {
-        return;
-    }
-    // This whitelist intentionally mirrors rosterScopeFragment(...). Update both together.
-    String orgUnitFragmentPattern = "__D11_CLASS_ALIAS__\\.id IN \\(" + parameterListPattern("d11OrgUnit") + "\\)";
-    String subtreeFragmentPattern = "EXISTS \\( SELECT 1 FROM org_unit root_ou WHERE root_ou\\.id IN \\("
-            + parameterListPattern("d11Subtree")
-            + "\\) AND root_ou\\.status = 'ACTIVE'"
-            + " AND root_ou\\.path IS NOT NULL"
-            + " AND root_ou\\.path <> ''"
-            + " AND root_ou\\.path LIKE '/%'"
-            + " AND root_ou\\.path NOT LIKE '%/'"
-            + " AND __D11_CLASS_ALIAS__\\.path IS NOT NULL"
-            + " AND __D11_CLASS_ALIAS__\\.path <> ''"
-            + " AND __D11_CLASS_ALIAS__\\.path LIKE '/%'"
-            + " AND __D11_CLASS_ALIAS__\\.path NOT LIKE '%/'"
-            + " AND \\( __D11_CLASS_ALIAS__\\.path = root_ou\\.path"
-            + " OR __D11_CLASS_ALIAS__\\.path LIKE CONCAT\\(root_ou\\.path, '/%'\\) \\) \\)";
-    String orgUnitOnlyPattern = "\\( ?" + orgUnitFragmentPattern + " ?\\)";
-    String subtreeOnlyPattern = "\\( ?" + subtreeFragmentPattern + " ?\\)";
-    String orgThenSubtreePattern = "\\( ?" + orgUnitFragmentPattern + " OR " + subtreeFragmentPattern + " ?\\)";
-    String subtreeThenOrgPattern = "\\( ?" + subtreeFragmentPattern + " OR " + orgUnitFragmentPattern + " ?\\)";
-    if (normalized.matches(orgUnitOnlyPattern)
-            || normalized.matches(subtreeOnlyPattern)
-            || normalized.matches(orgThenSubtreePattern)
-            || normalized.matches(subtreeThenOrgPattern)) {
+    String normalized = D11ScopeSqlShape.normalize(expression);
+    if (D11ScopeSqlShape.isAllowedScopeExpression(normalized)) {
         return;
     }
     throw new IllegalArgumentException("Unsafe D-11 scope expression");
 }
-
-private String parameterListPattern(String prefix) {
-    String parameterPattern = "#\\{scopeFragment\\.parameters\\." + prefix + "\\d+\\}";
-    return parameterPattern + "(, " + parameterPattern + ")*";
-}
 ```
 
-Build the classes predicate outside the SQL template: when `query.isClassesEmpty()` is true, render the fixed predicate `TRUE`; otherwise render the two case-sensitive class code/name membership predicates. Add imports for `UnsubmittedFinalRecordQuery`, `SqlPredicateFragment`, `ArrayList`, and `List` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value. Add a provider unit/integration test that passes a `SqlPredicateFragment` with expression `(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0})) OR 1 = 1` and asserts `buildCountUnsubmittedStudents(...)` throws `IllegalArgumentException`.
+Build the classes predicate outside the SQL template: when `query.isClassesEmpty()` is true, render the fixed predicate `TRUE`; otherwise render the two case-sensitive class code/name membership predicates. Add imports for `UnsubmittedFinalRecordQuery`, `D11ScopeSqlShape`, `SqlPredicateFragment`, `ArrayList`, and `List` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value. Add a provider unit/integration test that passes a `SqlPredicateFragment` with expression `(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0})) OR 1 = 1` and asserts `buildCountUnsubmittedStudents(...)` throws `IllegalArgumentException`.
 
 In `SqlPredicateFragment`, add a D-11-specific explicit true fragment while preserving the existing blank-expression `allowAll()` behavior used by existing translators:
 
@@ -2046,7 +2155,7 @@ private SqlPredicateFragment rosterScopeFragment(FinalRecordAccessContext access
             .toList();
     if (!orgUnitIds.isEmpty()) {
         String inSql = bindList(parameters, "d11OrgUnit", orgUnitIds);
-        fragments.add("__D11_CLASS_ALIAS__.id IN (" + inSql + ")");
+        fragments.add(D11ScopeSqlShape.orgUnitFragment(inSql));
     }
     List<Long> subtreeIds = predicate.getClauses().stream()
             .filter(clause -> "ORG_SUBTREE".equals(clause.getScopeType()))
@@ -2056,27 +2165,7 @@ private SqlPredicateFragment rosterScopeFragment(FinalRecordAccessContext access
             .toList();
     if (!subtreeIds.isEmpty()) {
         String inSql = bindList(parameters, "d11Subtree", subtreeIds);
-        // Double percent signs are Java String.formatted() escapes; the emitted SQL uses single % wildcards.
-        fragments.add("""
-                EXISTS (
-                  SELECT 1
-                  FROM org_unit root_ou
-                  WHERE root_ou.id IN (%s)
-                    AND root_ou.status = 'ACTIVE'
-                    AND root_ou.path IS NOT NULL
-                    AND root_ou.path <> ''
-                    AND root_ou.path LIKE '/%%'
-                    AND root_ou.path NOT LIKE '%%/'
-                    AND __D11_CLASS_ALIAS__.path IS NOT NULL
-                    AND __D11_CLASS_ALIAS__.path <> ''
-                    AND __D11_CLASS_ALIAS__.path LIKE '/%%'
-                    AND __D11_CLASS_ALIAS__.path NOT LIKE '%%/'
-                    AND (
-                      __D11_CLASS_ALIAS__.path = root_ou.path
-                      OR __D11_CLASS_ALIAS__.path LIKE CONCAT(root_ou.path, '/%%')
-                    )
-                )
-                """.formatted(inSql));
+        fragments.add(D11ScopeSqlShape.orgSubtreeFragment(inSql));
     }
     if (fragments.isEmpty()) {
         return new SqlPredicateFragment("1 = 0", Map.of());
@@ -2100,7 +2189,7 @@ private String bindList(Map<String, Object> parameters, String prefix, List<Long
 }
 ```
 
-Use imports for `ApplicationScopeClause`, `ArrayList`, `LinkedHashMap`, `Map`, and `Objects`. Prefer `SqlPredicateFragment.alwaysTrue()` and `SqlPredicateFragment.denyAll()` for the static allow/deny branches; use the public constructor only for dynamic D-11 fragments that carry generated SQL and parameters. D-11 must not use an empty string to mean allow-all because `FinalRecordQuerySqlProvider.scopeExpression(...)` treats blank input as defensive deny-all. `SqlPredicateFragment.alwaysTrue()` must return expression `1 = 1` with an empty parameter map.
+Use imports for `ApplicationScopeClause`, `D11ScopeSqlShape`, `ArrayList`, `LinkedHashMap`, `Map`, and `Objects`. Prefer `SqlPredicateFragment.alwaysTrue()` and `SqlPredicateFragment.denyAll()` for the static allow/deny branches; use the public constructor only for dynamic D-11 fragments that carry generated SQL and parameters. D-11 must not use an empty string to mean allow-all because `FinalRecordQuerySqlProvider.scopeExpression(...)` treats blank input as defensive deny-all. `SqlPredicateFragment.alwaysTrue()` must return expression `1 = 1` with an empty parameter map. Do not duplicate `D11ScopeSqlShape` strings to work around package access.
 
 - [ ] **Step 9: Add provider scope-expression safety regression test**
 
@@ -2132,42 +2221,25 @@ void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
     assertProviderAccepts(provider, SqlPredicateFragment.denyAll(), "1 = 0");
     assertProviderAccepts(provider, SqlPredicateFragment.alwaysTrue(), "1 = 1");
     assertProviderAccepts(provider, new SqlPredicateFragment(
-            "(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}))",
+            "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}") + ")",
             Map.of("d11OrgUnit0", 4001L)
     ), "class_ou.id IN");
     assertProviderAccepts(provider, new SqlPredicateFragment(
-            "(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}, #{scopeFragment.parameters.d11OrgUnit1}))",
+            "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}, #{scopeFragment.parameters.d11OrgUnit1}") + ")",
             Map.of("d11OrgUnit0", 4001L, "d11OrgUnit1", 4002L)
     ), "class_ou.id IN");
     assertProviderAccepts(provider, new SqlPredicateFragment(
-            """
-            ( EXISTS (
-                SELECT 1
-                FROM org_unit root_ou
-                WHERE root_ou.id IN (#{scopeFragment.parameters.d11Subtree0})
-                  AND root_ou.status = 'ACTIVE'
-                  AND root_ou.path IS NOT NULL
-                  AND root_ou.path <> ''
-                  AND root_ou.path LIKE '/%'
-                  AND root_ou.path NOT LIKE '%/'
-                  AND __D11_CLASS_ALIAS__.path IS NOT NULL
-                  AND __D11_CLASS_ALIAS__.path <> ''
-                  AND __D11_CLASS_ALIAS__.path LIKE '/%'
-                  AND __D11_CLASS_ALIAS__.path NOT LIKE '%/'
-                  AND (
-                    __D11_CLASS_ALIAS__.path = root_ou.path
-                    OR __D11_CLASS_ALIAS__.path LIKE CONCAT(root_ou.path, '/%')
-                  )
-            ) )
-            """,
+            "(" + D11ScopeSqlShape.orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}") + ")",
             Map.of("d11Subtree0", 2002L)
-    ), "EXISTS");
+    ), "LOCATE('%', root_ou.path) = 0");
     assertProviderAccepts(provider, new SqlPredicateFragment(
-            "(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}) OR EXISTS ( SELECT 1 FROM org_unit root_ou WHERE root_ou.id IN (#{scopeFragment.parameters.d11Subtree0}) AND root_ou.status = 'ACTIVE' AND root_ou.path IS NOT NULL AND root_ou.path <> '' AND root_ou.path LIKE '/%' AND root_ou.path NOT LIKE '%/' AND __D11_CLASS_ALIAS__.path IS NOT NULL AND __D11_CLASS_ALIAS__.path <> '' AND __D11_CLASS_ALIAS__.path LIKE '/%' AND __D11_CLASS_ALIAS__.path NOT LIKE '%/' AND ( __D11_CLASS_ALIAS__.path = root_ou.path OR __D11_CLASS_ALIAS__.path LIKE CONCAT(root_ou.path, '/%') ) ))",
+            "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}")
+                    + " OR " + D11ScopeSqlShape.orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}") + ")",
             Map.of("d11OrgUnit0", 4001L, "d11Subtree0", 2002L)
     ), " OR ");
     assertProviderAccepts(provider, new SqlPredicateFragment(
-            "(EXISTS ( SELECT 1 FROM org_unit root_ou WHERE root_ou.id IN (#{scopeFragment.parameters.d11Subtree0}) AND root_ou.status = 'ACTIVE' AND root_ou.path IS NOT NULL AND root_ou.path <> '' AND root_ou.path LIKE '/%' AND root_ou.path NOT LIKE '%/' AND __D11_CLASS_ALIAS__.path IS NOT NULL AND __D11_CLASS_ALIAS__.path <> '' AND __D11_CLASS_ALIAS__.path LIKE '/%' AND __D11_CLASS_ALIAS__.path NOT LIKE '%/' AND ( __D11_CLASS_ALIAS__.path = root_ou.path OR __D11_CLASS_ALIAS__.path LIKE CONCAT(root_ou.path, '/%') ) ) OR __D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0}))",
+            "(" + D11ScopeSqlShape.orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}")
+                    + " OR " + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}") + ")",
             Map.of("d11Subtree0", 2002L, "d11OrgUnit0", 4001L)
     ), " OR ");
 }
@@ -2188,7 +2260,7 @@ private Map<String, Object> providerParams(SqlPredicateFragment fragment) {
 }
 ```
 
-Add imports for `FinalRecordQuerySqlProvider`, `SqlPredicateFragment`, `HashMap`, `Map`, `assertThat`, and `assertThatThrownBy` if the test file does not already have them.
+Add imports for `FinalRecordQuerySqlProvider`, `D11ScopeSqlShape`, `SqlPredicateFragment`, `HashMap`, `Map`, `assertThat`, and `assertThatThrownBy` if the test file does not already have them.
 
 - [ ] **Step 10: Run repository integration tests**
 
@@ -2220,6 +2292,7 @@ Expected: hits are limited to `FinalRecordQueryMapper`, `FinalRecordQuerySqlProv
 git add whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/FinalRecordQueryMapper.java \
   whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/FinalRecordQuerySqlProvider.java \
   whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusFinalRecordQueryRepository.java \
+  whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/D11ScopeSqlShape.java \
   whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/SqlPredicateFragment.java \
   whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java
 git commit -m "feat: query unsubmitted final record roster"
@@ -2828,12 +2901,13 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - When the lowest numeric visible membership's class has no active grade parent, display `grade = null` for that selected class even if a higher visible membership has an active grade.
 - `ORG_UNIT` is exact class id only.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
-- `ORG_SUBTREE` rejects malformed but schema-valid root/class path strings, including empty path, missing leading `/`, and trailing `/`.
+- `ORG_SUBTREE` rejects malformed but schema-valid root/class path strings, including empty path, missing leading `/`, trailing `/`, and embedded SQL `LIKE` wildcard characters `%` or `_`.
 - D-11 private `rosterScopeFragment(...)` is covered by mandatory parity tests against existing submitted/confirmed whole-record scope visibility for denied permission, `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths.
-- `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including a CLASS root; a CLASS root exposes that class only, not sibling classes.
+- `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including GRADE and CLASS roots; a GRADE root exposes that grade's class descendants, and a CLASS root exposes that class only, not sibling classes.
 - If `ORG_UNIT` and `ORG_SUBTREE` both grant the same class, visible students are still counted and returned once.
-- Inactive `ORG_SUBTREE` roots return an empty page even when their path and descendants are otherwise valid.
+- Inactive `ORG_SUBTREE` roots at COLLEGE, GRADE, or CLASS level return an empty page even when their path and descendants are otherwise valid.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
+- `D11ScopeSqlShape` is the single source for D-11 ORG_UNIT/ORG_SUBTREE SQL fragments and whitelist validation; repository/provider code and provider tests do not duplicate subtree SQL shape strings.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
 - Cross-grade duplicate memberships are filtered by `grade` before collapse, so count, row selection, and displayed grade/class all come from the visible membership set.
 - Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
