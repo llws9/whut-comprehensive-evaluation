@@ -67,6 +67,12 @@ Do not modify `whut-eval-application/src/main/java/edu/whut/eval/application/fin
 
 Do not modify D-7 mentor import semantics except for shared controller constructor wiring and shared helper extraction that is strictly necessary.
 
+## Minimal D-8 Boundaries
+
+Minimal D-8 means the synchronous lecture-import MVP described by the frozen D-8 spec. It includes deterministic batch ids, batch serialization, row-level validation, current-organization scope checks, insert-only lecture components, and final-record total recalculation. It does not add batch deletion, patch-retry semantics, historical organization membership, asynchronous import jobs, or new row-level failure codes beyond the frozen failure table.
+
+`studentNo` validation intentionally follows the frozen failure table: blank values fail with `STUDENT_NO_REQUIRED`; non-blank values, including unusually long or oddly formatted text, are looked up through parameterized `iam_user.user_no = ?` SQL and fail as `STUDENT_NOT_FOUND` when no active eligible student matches. The real IAM schema defines `iam_user.user_no` as `VARCHAR(64)`, but D-8 does not add a separate length/format failure code.
+
 ---
 
 ### Task 1: Domain And Application Contracts
@@ -193,6 +199,9 @@ import java.util.Optional;
 public interface LectureImportRepository {
     boolean lectureBatchExists(String academicYear, String lectureBatchId);
 
+    /**
+     * The academicYear argument is reserved for historical-organization lookup; Minimal D-8 reads current membership only.
+     */
     Optional<LectureImportStudentTarget> findTarget(String studentNo, String academicYear);
 
     Optional<String> findActiveOrgPath(Long orgUnitId);
@@ -227,6 +236,7 @@ import java.math.BigDecimal;
 public record LectureImportedComponent(
         Long rowNo,
         Long studentUserId,
+        String studentNo,
         String scoreValueText,
         BigDecimal scoreValue,
         String displayText
@@ -1255,12 +1265,12 @@ private LectureImportResult processRows(NormalizedRequest request,
         }
 
         String displayText = isBlank(row.displayText()) ? request.title() + " 讲座签到" : row.displayText().trim();
-        resolvedRows.add(new ResolvedLectureRow(row.rowNo(), target.get().studentUserId(), candidate.scoreValueText(), candidate.scoreValue(), displayText));
+        resolvedRows.add(new ResolvedLectureRow(row.rowNo(), target.get().studentUserId(), candidate.studentNo(), candidate.scoreValueText(), candidate.scoreValue(), displayText));
     }
 
     resolvedRows.sort(Comparator.comparing(ResolvedLectureRow::studentUserId).thenComparing(ResolvedLectureRow::rowNo));
     List<LectureImportedComponent> components = resolvedRows.stream()
-            .map(row -> new LectureImportedComponent(row.rowNo(), row.studentUserId(), row.scoreValueText(), row.scoreValue(), row.displayText()))
+            .map(row -> new LectureImportedComponent(row.rowNo(), row.studentUserId(), row.studentNo(), row.scoreValueText(), row.scoreValue(), row.displayText()))
             .toList();
     if (!components.isEmpty()) {
         failedRows.addAll(repository.insertLectureComponents(request.academicYear(), lectureBatchId, components));
@@ -1289,6 +1299,8 @@ private Optional<LectureImportFailedRow> validateFields(LectureImportRow row) {
     if (isBlank(row.studentNo())) {
         return Optional.of(failed(row, "STUDENT_NO_REQUIRED", "studentNo 不能为空"));
     }
+    // D-8 does not add a studentNo length/format failure code beyond the frozen spec.
+    // Non-matching long or unusual values are handled by the parameterized user_no lookup as STUDENT_NOT_FOUND.
     if (isBlank(row.scoreValue())) {
         return Optional.of(failed(row, "SCORE_VALUE_REQUIRED", "scoreValue 不能为空"));
     }
@@ -1382,6 +1394,7 @@ private record FieldValidLectureRow(
 private record ResolvedLectureRow(
         Long rowNo,
         Long studentUserId,
+        String studentNo,
         String scoreValueText,
         BigDecimal scoreValue,
         String displayText
@@ -1436,7 +1449,7 @@ private void insertMembership(Long id, Long userId, Long orgUnitId, boolean prim
 private Long insertDraftRecord(Long studentUserId, String academicYear)
 private Long insertFinalRecord(Long studentUserId, String academicYear, String status)
 private void insertComponent(Long finalRecordId, String categoryCode, String itemCode, String scoreValue, String sourceType, String sourceRefId)
-private static LectureImportedComponent component(Long rowNo, Long studentUserId, String scoreValue, String displayText)
+private static LectureImportedComponent component(Long rowNo, Long studentUserId, String studentNo, String scoreValue, String displayText)
 ```
 
 Required tests:
@@ -1475,8 +1488,8 @@ void shouldDetectExistingLectureBatchByAcademicYearAndSourceRefId() {
 @Test
 void shouldInsertLectureComponentsWithoutOverwritingPreviousLectureBatches() {
     repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-AAAABBBBCCCC", List.of(
-            component(2L, 1001L, "1.25", "讲座A"),
-            component(3L, 1001L, "2.00", "讲座A second batch row should not happen in service")
+            component(2L, 1001L, "S1001", "1.25", "讲座A"),
+            component(3L, 1001L, "S1001", "2.00", "讲座A second batch row should not happen in service")
     ));
 
     Long recordId = jdbcTemplate.queryForObject("SELECT id FROM final_record WHERE student_user_id = 1001 AND academic_year = '2025-2026'", Long.class);
@@ -1493,8 +1506,8 @@ void shouldRecalculateTotalsAfterEachSuccessfulLectureRowAndIncrementVersion() {
     insertComponent(recordId, "INTELLECTUAL", "INTELLECTUAL_APPLICATION", "2.00", "APPLICATION", "app-1");
 
     repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-EXISTING0001", List.of(
-            component(2L, 1001L, "1.25", "讲座A"),
-            component(3L, 1001L, "2.00", "讲座B")
+            component(2L, 1001L, "S1001", "1.25", "讲座A"),
+            component(3L, 1001L, "S1001", "2.00", "讲座B")
     ));
 
     assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
@@ -1507,10 +1520,11 @@ void shouldReturnFinalRecordLockedFailureAndLeaveNoComponentForSubmittedRecord()
     insertFinalRecord(1001L, "2025-2026", "SUBMITTED");
 
     List<LectureImportFailedRow> failures = repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-LOCKED000001", List.of(
-            component(2L, 1001L, "1.00", "讲座")
+            component(2L, 1001L, "S1001", "1.00", "讲座")
     ));
 
     assertThat(failures).extracting("code").containsExactly("FINAL_RECORD_LOCKED");
+    assertThat(failures.get(0).rawValue()).containsEntry("studentNo", "S1001");
     assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score", Long.class)).isZero();
 }
 
@@ -1519,10 +1533,11 @@ void shouldReturnFinalRecordLockedFailureAndLeaveNoComponentForConfirmedRecord()
     insertFinalRecord(1001L, "2025-2026", "CONFIRMED");
 
     List<LectureImportFailedRow> failures = repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-LOCKED000002", List.of(
-            component(2L, 1001L, "1.00", "讲座")
+            component(2L, 1001L, "S1001", "1.00", "讲座")
     ));
 
     assertThat(failures).extracting("code").containsExactly("FINAL_RECORD_LOCKED");
+    assertThat(failures.get(0).rawValue()).containsEntry("studentNo", "S1001");
     assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score", Long.class)).isZero();
 }
 ```
@@ -1786,7 +1801,7 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
 
     private LectureImportFailedRow lockedFailure(LectureImportedComponent component) {
         Map<String, String> rawValue = new LinkedHashMap<>();
-        rawValue.put("studentNo", String.valueOf(component.studentUserId()));
+        rawValue.put("studentNo", component.studentNo());
         rawValue.put("scoreValue", component.scoreValueText());
         rawValue.put("displayText", component.displayText());
         return new LectureImportFailedRow(
@@ -1832,7 +1847,7 @@ Notes for this implementation:
 - `findTarget` maps `LectureImportStudentTargetRow`.
 - `lectureBatchExists` returns `count > 0`.
 - `insertLectureComponents` returns `List<LectureImportFailedRow>` and loops over already sorted components. For each component, it locks `final_record`, inserts or reloads a DRAFT row if missing, records `FINAL_RECORD_LOCKED` as a row-level failure for non-DRAFT records, inserts a new lecture component, and immediately recalculates totals while the row is still locked.
-- The locked-row failure raw value uses `String.valueOf(component.studentUserId())` for `studentNo` because the D-8 `LectureImportedComponent` port intentionally carries the resolved user id, score text, and display text only. Keep this unless Task 1 expands the port to carry the original `studentNo`.
+- The locked-row failure raw value uses `component.studentNo()` so the response preserves the frozen `rawValue.studentNo` contract from the workbook, not the internal user id.
 - Recalculate and update totals after every successful lecture component insertion, not once per distinct `final_record_id`. This preserves the frozen D-8 contract that `final_record.version` increments for every successful row mutation, including multiple successful lecture rows for the same student in one repository call.
 - If any `updateTotals` returns 0 after a DRAFT lock and component insert, throw `ConflictException("最终成绩状态已变更，请刷新后重试")` so the outer transaction rolls back. This path is a persistence consistency failure, not a row-level validation failure, so it must not be represented in the returned failure list.
 - A partial-success batch is intentionally not idempotent in Minimal D-8: if any component already exists for `lectureBatchId`, `lectureBatchExists` makes a later same-batch request return 409. Operators must change `title` or `heldAt` to create a new deterministic batch id for a retry; D-8 does not add batch deletion or patch-retry semantics.
