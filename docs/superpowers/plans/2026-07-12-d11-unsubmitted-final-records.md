@@ -4,9 +4,9 @@
 
 **Goal:** Build D-11, the team D unsubmitted-final-record list item: `GET /api/admin/final-records/unsubmitted` so authorized admins can page current active in-scope students who have not submitted or confirmed final records for an academic year.
 
-**Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`. D-11 does not introduce dirty-data support that violates the frozen A/D SQL contracts, including missing `iam_user` columns, nullable organization path/code fields, nullable final-record status/update timestamps, or duplicate `final_record` rows for the same student and academic year.
+**Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`. D-11 does not introduce dirty-data support that violates the frozen A/D SQL contracts, including missing `iam_user` columns, nullable organization path/code fields, nullable final-record status/update timestamps, or duplicate `final_record` rows for the same student and academic year. Nullable projection values from optional joins, such as no DRAFT record or no active grade parent, remain valid and are rendered as empty response strings where the API contract says so.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
 
 ## Pre-Implementation Verification Baseline
 
@@ -82,6 +82,20 @@ Comparison rule: only a recorded full `mvn test` baseline allows a full-suite "z
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordScopePredicateBuilderTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/security/ScopeSqlTranslatorTest.java`
 
+## API Contract Summary
+
+Request:
+
+| Field | Type | Required | Constraint |
+| --- | --- | --- | --- |
+| `academicYear` | `String` | yes | Trimmed `yyyy-yyyy`, where end year is start year + 1; invalid or repeated values return `VAL-4001` with message `academicYear 不合法`. |
+| `grade` | `String` | no | Trimmed exact code-or-name filter; blank becomes no filter; repeated values or `grade[]` return `VAL-4001`. |
+| `classes` / `classes[]` | `List<String>` | no | Controller concatenates raw `classes` values first, then raw `classes[]` values. `UnsubmittedFinalRecordQuery` trims, drops blanks, de-duplicates in that merged-list order, rejects more than 500 normalized values, and treats commas as ordinary exact-match characters. |
+| `pageNo` | `long` | no | Defaults to `1`; non-numeric values return `VAL-4001`; values `<= 0` normalize to `1`; offset overflow returns `pageNo 不合法`. |
+| `pageSize` | `long` | no | Defaults to `20`; non-numeric values return `VAL-4001`; values `<= 0` normalize to `20`; values `> 100` normalize to `100`. |
+
+Response `data` remains `PageResult<UnsubmittedStudentView>` with exactly `total` and `records`. Each record has `studentUserId`, `userNo`, `userName`, `grade`, `className`, fixed `status = "UNSUBMITTED"`, and `lastUpdatedAt`. Nullable projection values are rendered as empty strings; `lastUpdatedAt` uses `Instant.toString()` when a DRAFT final record exists and is empty when no DRAFT final record exists.
+
 ## File Structure
 
 ### Domain
@@ -94,7 +108,7 @@ Comparison rule: only a recorded full `mvn test` baseline allows a full-suite "z
 ### Application Layer
 
 - Create `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/query/UnsubmittedStudentRow.java`
-  - Mapper row with nullable database values.
+  - Mapper row with nullable projection values from optional joins, such as no DRAFT final record or no active grade parent. These nulls do not require nullable frozen table columns.
 - Create `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/query/UnsubmittedStudentView.java`
   - API view with string fallbacks and fixed status.
 - Modify `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/repository/FinalRecordQueryRepository.java`
@@ -323,7 +337,7 @@ void shouldRejectOverlongGradeAndClassValues() {
 
 Create `UnsubmittedFinalRecordQuery`:
 
-D-11 keeps `grade` and `classes` as exact-match filter strings without comma splitting or case folding. They are bound through MyBatis parameters and naturally produce no matches when no `org_unit.unit_code` or `org_unit.unit_name` equals the value. Match the source spec: trim, drop blanks, de-duplicate `classes` while preserving first-seen order, then reject more than `MAX_CLASSES = 500` normalized class values. Also reject any single normalized `grade` or `classes` value longer than 256 characters.
+D-11 keeps `grade` and `classes` as exact-match filter strings without comma splitting or case folding. They are bound through MyBatis parameters and naturally produce no matches when no `org_unit.unit_code` or `org_unit.unit_name` equals the value. Match the source spec: trim, drop blanks, de-duplicate `classes` while preserving order after controller merge (`classes` values first, then `classes[]` values), then reject more than `MAX_CLASSES = 500` normalized class values. Also reject any single normalized `grade` or `classes` value longer than 256 characters.
 
 Do not add a separate calendar-year range such as 1990-2100 in D-11. The frozen contract only requires `yyyy-yyyy` with `end = start + 1`; values that pass that structural rule but have no data naturally return empty results.
 
@@ -508,7 +522,7 @@ void shouldPageUnsubmittedStudentsWithFixedStatusAndStringFallbacks() {
 }
 
 @Test
-void shouldRenderNullLastUpdatedAtAsEmptyString() {
+void shouldRenderMissingDraftLastUpdatedAtAsEmptyString() {
     UserAuthorizationContext admin = adminWithAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED);
     when(userAuthorizationContextAssembler.requiredAuthorizationContext()).thenReturn(admin);
     UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20);
@@ -1617,15 +1631,15 @@ Add methods:
 
 ```java
 @SelectProvider(type = FinalRecordQuerySqlProvider.class, method = "buildCountUnsubmittedStudents")
-long countUnsubmittedStudents(@Param("scopeExpression") String scopeExpression,
-                              @Param("scopeParameters") Map<String, Object> scopeParameters,
+long countUnsubmittedStudents(@Param("scopeFragment") SqlPredicateFragment scopeFragment,
                               @Param("query") UnsubmittedFinalRecordQuery query);
 
 @SelectProvider(type = FinalRecordQuerySqlProvider.class, method = "buildSelectUnsubmittedStudents")
-List<UnsubmittedStudentRow> selectUnsubmittedStudents(@Param("scopeExpression") String scopeExpression,
-                                                      @Param("scopeParameters") Map<String, Object> scopeParameters,
+List<UnsubmittedStudentRow> selectUnsubmittedStudents(@Param("scopeFragment") SqlPredicateFragment scopeFragment,
                                                       @Param("query") UnsubmittedFinalRecordQuery query);
 ```
+
+Add an import for `SqlPredicateFragment`. D-11 mapper methods must accept the typed scope fragment rather than separate raw `String`/`Map` parameters so callers cannot casually supply a raw SQL expression plus arbitrary parameter map.
 
 - [ ] **Step 7: Add D-11 SQL provider methods**
 
@@ -1640,7 +1654,7 @@ For `scopeExpression`, the placeholder `__D11_CLASS_ALIAS__` always represents t
 ```java
 public String buildCountUnsubmittedStudents(Map<String, Object> params) {
     String scopeExpression = scopeExpression(params, "class_ou");
-    String castClassPlaceholders = castClassPlaceholders(params);
+    String classPredicate = classPredicate(params, "class_ou");
     return """
             SELECT COUNT(1)
             FROM (
@@ -1662,7 +1676,7 @@ public String buildCountUnsubmittedStudents(Map<String, Object> params) {
               WHERE u.status = 'ACTIVE'
                 AND (%s)
                 AND (#{query.grade} IS NULL OR %s OR %s)
-                AND (#{query.classesEmpty} = TRUE OR %s OR %s)
+                AND (%s)
                 AND NOT EXISTS (
                   SELECT 1
                   FROM final_record submitted_fr
@@ -1675,13 +1689,12 @@ public String buildCountUnsubmittedStudents(Map<String, Object> params) {
             """.formatted(scopeExpression,
                     caseSensitiveEquals("grade_ou.unit_code", "#{query.grade}"),
                     caseSensitiveEquals("grade_ou.unit_name", "#{query.grade}"),
-                    caseSensitiveIn("class_ou.unit_code", castClassPlaceholders),
-                    caseSensitiveIn("class_ou.unit_name", castClassPlaceholders));
+                    classPredicate);
 }
 
 public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
     String scopeExpression = scopeExpression(params, "class_ou1");
-    String castClassPlaceholders = castClassPlaceholders(params);
+    String classPredicate = classPredicate(params, "class_ou1");
     return """
             SELECT
               u.id AS student_user_id,
@@ -1711,7 +1724,7 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
                   AND om1.status = 'ACTIVE'
                   AND (%s)
                   AND (#{query.grade} IS NULL OR %s OR %s)
-                  AND (#{query.classesEmpty} = TRUE OR %s OR %s)
+                  AND (%s)
                   AND NOT EXISTS (
                     SELECT 1
                     FROM final_record submitted_fr
@@ -1735,11 +1748,10 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
              AND grade_ou.unit_type = 'GRADE'
              AND grade_ou.status = 'ACTIVE'
             LEFT JOIN (
-              SELECT student_user_id, MAX(updated_at) AS last_updated_at
+              SELECT student_user_id, updated_at AS last_updated_at
               FROM final_record
               WHERE academic_year = #{query.academicYear}
                 AND status = 'DRAFT'
-              GROUP BY student_user_id
             ) draft_fr
               ON draft_fr.student_user_id = u.id
             ORDER BY CASE WHEN grade_ou.id IS NULL THEN 1 ELSE 0 END ASC,
@@ -1751,22 +1763,26 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
             """.formatted(scopeExpression,
                     caseSensitiveEquals("grade_ou1.unit_code", "#{query.grade}"),
                     caseSensitiveEquals("grade_ou1.unit_name", "#{query.grade}"),
-                    caseSensitiveIn("class_ou1.unit_code", castClassPlaceholders),
-                    caseSensitiveIn("class_ou1.unit_name", castClassPlaceholders));
+                    classPredicate);
 }
 ```
 
-Then add helper methods. The helper must never output `IN ()`; when classes are empty it outputs `NULL` because the `classesEmpty` branch disables the `IN` predicate. The provider builds indexed MyBatis placeholders and never concatenates raw class values. `scopeExpression`, `caseSensitiveEquals(...)`, and `caseSensitiveIn(...)` may be injected into SQL strings only when they are built from fixed alias names plus MyBatis placeholders generated in this provider/repository; never pass raw request values, grade values, class values, or caller-provided SQL through these helpers. Use `CAST(... AS BINARY)` for case-sensitive comparisons because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`:
+Then add helper methods. The provider builds indexed MyBatis placeholders and never concatenates raw class values. `scopeExpression`, `caseSensitiveEquals(...)`, and `caseSensitiveIn(...)` may be injected into SQL strings only when they are built from fixed alias names plus MyBatis placeholders generated in this provider/repository; never pass raw request values, grade values, class values, or caller-provided SQL through these helpers. Use `CAST(... AS BINARY)` for case-sensitive comparisons because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`:
 
-`scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. The only allowed expression forms are assembled from fixed strings in `rosterScopeFragment(...)`: `__D11_CLASS_ALIAS__.id IN (#{scopeParameters...})`, the fixed `EXISTS (SELECT 1 FROM org_unit root_ou ...)` path predicate, `1 = 0`, or `1 = 1`.
+`scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. The only allowed expression forms are assembled from fixed strings in `rosterScopeFragment(...)`: `__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters...})`, the fixed `EXISTS (SELECT 1 FROM org_unit root_ou ...)` path predicate, `1 = 0`, or `1 = 1`.
 
 ```java
-private String castClassPlaceholders(Map<String, Object> params) {
+private String classPredicate(Map<String, Object> params, String classAlias) {
     UnsubmittedFinalRecordQuery query = (UnsubmittedFinalRecordQuery) params.get("query");
     if (query == null || query.isClassesEmpty()) {
-        // Defensive placeholder only; query.classesEmpty short-circuits the IN predicates.
-        return "NULL";
+        return "TRUE";
     }
+    String castClassPlaceholders = castClassPlaceholders(query);
+    return "(" + caseSensitiveIn(classAlias + ".unit_code", castClassPlaceholders)
+            + " OR " + caseSensitiveIn(classAlias + ".unit_name", castClassPlaceholders) + ")";
+}
+
+private String castClassPlaceholders(UnsubmittedFinalRecordQuery query) {
     List<String> placeholders = new ArrayList<>();
     for (int i = 0; i < query.getClasses().size(); i++) {
         placeholders.add("CAST(#{query.classes[" + i + "]} AS BINARY)");
@@ -1783,16 +1799,30 @@ private String caseSensitiveIn(String column, String castPlaceholders) {
 }
 
 private String scopeExpression(Map<String, Object> params, String classAlias) {
-    String expression = (String) params.get("scopeExpression");
+    SqlPredicateFragment fragment = (SqlPredicateFragment) params.get("scopeFragment");
+    String expression = fragment == null ? null : fragment.getExpression();
     if (expression == null || expression.isBlank()) {
         return "1 = 0";
     }
+    validateD11ScopeExpression(expression);
     // D-11 only replaces the fixed visible class org_unit alias placeholder.
     return expression.replace("__D11_CLASS_ALIAS__", classAlias);
 }
+
+private void validateD11ScopeExpression(String expression) {
+    String normalized = expression.strip();
+    if ("1 = 0".equals(normalized) || "1 = 1".equals(normalized)) {
+        return;
+    }
+    if (normalized.startsWith("(__D11_CLASS_ALIAS__.id IN (")
+            || normalized.startsWith("(EXISTS (")) {
+        return;
+    }
+    throw new IllegalArgumentException("Unsafe D-11 scope expression");
+}
 ```
 
-Add imports for `UnsubmittedFinalRecordQuery`, `ArrayList`, and `List` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value.
+Build the classes predicate outside the SQL template: when `query.isClassesEmpty()` is true, render the fixed predicate `TRUE`; otherwise render the two case-sensitive class code/name membership predicates. Add imports for `UnsubmittedFinalRecordQuery`, `SqlPredicateFragment`, `ArrayList`, and `List` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value.
 
 In `SqlPredicateFragment`, add a D-11-specific explicit true fragment while preserving the existing blank-expression `allowAll()` behavior used by existing translators:
 
@@ -1811,14 +1841,13 @@ In `MybatisPlusFinalRecordQueryRepository`, implement:
 public PageResult<UnsubmittedStudentRow> pageUnsubmittedStudents(FinalRecordAccessContext accessContext,
                                                                  UnsubmittedFinalRecordQuery query) {
     SqlPredicateFragment fragment = rosterScopeFragment(accessContext);
-    long total = finalRecordQueryMapper.countUnsubmittedStudents(fragment.getExpression(), fragment.getParameters(), query);
+    long total = finalRecordQueryMapper.countUnsubmittedStudents(fragment, query);
     if (total == 0) {
         // Optimization only: correctness depends on count/select visible subqueries remaining isomorphic.
         return new PageResult<>(0, List.of());
     }
     List<UnsubmittedStudentRow> records = finalRecordQueryMapper.selectUnsubmittedStudents(
-            fragment.getExpression(),
-            fragment.getParameters(),
+            fragment,
             query
     );
     return new PageResult<>(total, records);
@@ -1896,7 +1925,7 @@ private String bindList(Map<String, Object> parameters, String prefix, List<Long
     for (int i = 0; i < values.size(); i++) {
         String key = prefix + i;
         parameters.put(key, values.get(i));
-        placeholders.add("#{scopeParameters." + key + "}");
+        placeholders.add("#{scopeFragment.parameters." + key + "}");
     }
     return String.join(", ", placeholders);
 }
@@ -1947,6 +1976,7 @@ git commit -m "feat: query unsubmitted final record roster"
 - Modify: `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/AdminFinalRecordController.java`
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java`
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java`
+- Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordControllerSecurityAnnotationTest.java`
 
 - [ ] **Step 1: Write failing controller tests**
 
@@ -2244,15 +2274,31 @@ void shouldMapUnsubmittedServiceAccessDeniedToAuth4030() throws Exception {
 }
 ```
 
+Also update the existing `FinalRecordControllerSecurityAnnotationTest` so controller-level method security cannot be accidentally omitted while service-level checks still pass. Extend the admin expected map:
+
+```java
+@Test
+void shouldRequireAdminFinalRecordAuthorities() {
+    Map<String, String> expected = Map.of(
+            "pageFinalRecords", SCORE_VIEW_ASSIGNED,
+            "pageUnsubmittedFinalRecords", SCORE_VIEW_ASSIGNED,
+            "getFinalRecord", SCORE_VIEW_ASSIGNED,
+            "confirm", SCORE_CONFIRM_ASSIGNED
+    );
+
+    expected.forEach((methodName, expression) -> assertPreAuthorize(AdminFinalRecordController.class, methodName, expression));
+}
+```
+
 - [ ] **Step 2: Run controller tests to verify they fail**
 
 Run:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: 404 or path-variable capture failure because `/unsubmitted` route does not exist.
+Expected: 404 or path-variable capture failure because `/unsubmitted` route does not exist, plus an annotation-test failure until `pageUnsubmittedFinalRecords` declares `@PreAuthorize`.
 
 - [ ] **Step 3: Add controller route and helpers**
 
@@ -2333,7 +2379,7 @@ private long parseLongParameter(String name, String value) {
 Run:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest,UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: PASS.
@@ -2343,7 +2389,8 @@ Expected: PASS.
 ```bash
 git add whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/AdminFinalRecordController.java \
   whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java \
-  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java \
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordControllerSecurityAnnotationTest.java
 git commit -m "feat: expose unsubmitted final record endpoint"
 ```
 
