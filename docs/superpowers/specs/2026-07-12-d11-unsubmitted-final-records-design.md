@@ -92,7 +92,7 @@ The application service must also check the same authority before querying. Miss
 |---|---|---|---|---|
 | `academicYear` | string | yes | - | trim; must match `YYYY-YYYY` and the second year must equal the first year plus 1 |
 | `grade` | string | no | - | trim; blank normalizes to `null` and is ignored; exact match against grade organization code or name |
-| `classes` | string[] | no | - | class collection; trim each value; blank entries are ignored; exact match against class organization code or name |
+| `classes` | string[] | no | - | class collection; trim each value; blank entries are ignored; exact match against class organization code or name; if every supplied value is blank after trimming, the normalized collection is empty and the class filter is ignored |
 | `pageNo` | long | no | `1` | values `<= 0` normalize to `1` |
 | `pageSize` | long | no | `20` | values `<= 0` normalize to `20`; values `> 100` cap at `100` |
 
@@ -105,7 +105,7 @@ The full `academicYear` normalization and validation rules live in section 8.1.
 - `grade` filters the active parent grade unit with exact equality: `grade_ou.unit_code = grade OR grade_ou.unit_name = grade`;
 - blank values are ignored.
 
-No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. `academicYear` and `grade` are single-value parameters; repeated or array-style input for either returns `400 / VAL-4001`. `classes` accepts array-style input as required by the frozen contract: repeated `classes=a&classes=b`, comma-separated `classes=a,b`, and array-style `classes[]=a&classes[]=b` all normalize to the same class collection. If the normalized class collection is empty, the class filter is ignored. The `classes` request filter matches the same class organizations whose names are returned as `className` in the response.
+No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. `academicYear` and `grade` are single-value parameters; repeated or array-style input for either returns `400 / VAL-4001`. `classes` accepts array-style input as required by the frozen contract: repeated `classes=a&classes=b`, comma-separated `classes=a,b`, array-style `classes[]=a&classes[]=b`, and array-style comma values such as `classes[]=a,b` all normalize to the same class collection. Every class input item is comma-split before trimming, blank removal, and de-duplication. If the normalized class collection is empty, the class filter is ignored. The `classes` request filter matches the same class organizations whose names are returned as `className` in the response.
 
 If a filter value exactly matches one organization unit's `unit_code` and another organization unit's `unit_name`, both matching units are included because the filter uses OR semantics. If `grade` is provided, students whose selected class has no active parent grade row are excluded because there is no grade code/name to match. Without a `grade` filter, those students may still appear with `grade = ""`.
 
@@ -201,8 +201,8 @@ D-11 reuses `score.view.assigned` and `FinalRecordAccessContext`.
 `FinalRecordQueryApplicationService` should assemble the access context the same way as the existing admin list path:
 
 ```java
-new FinalRecordAccessContext(context.getUserId(), context.getUserNo(), context.getUserName(),
-        context.getIdentity(), context.getRoles(), context.getAuthorities(), context.getScopeRules(),
+new FinalRecordAccessContext(admin.getUserId(), admin.getUserNo(), admin.getUserName(),
+        admin.getIdentity(), admin.getRoles(), admin.getAuthorities(), admin.getScopeRules(),
         AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED)
 ```
 
@@ -223,6 +223,7 @@ Scope merging rule:
 
 - supported fragments are `ALL`, `ORG_UNIT`, and `ORG_SUBTREE`;
 - unsupported `CATEGORY`, `ITEM`, `ORG_UNIT_ITEM`, and custom expression fragments are ignored when at least one supported fragment exists;
+- an empty scope-rule list is treated as no supported fragments and returns an empty page;
 - if every granted fragment for `score.view.assigned` is unsupported, the result is an empty page;
 - mixed scopes therefore behave like existing `FinalRecordScopePredicateBuilder`: an `ORG_SUBTREE` plus a category fragment returns the organization-scoped roster, while category-only returns no rows.
 
@@ -308,7 +309,7 @@ EXISTS (
 )
 ```
 
-When multiple supported fragments are present, the provider ORs them inside parentheses. Examples: `(1 = 1)` for `ALL`, `({classAlias}.id IN (...) OR EXISTS (...))` for `ORG_UNIT + ORG_SUBTREE`, and `1 = 0` when no supported fragment exists. Use `class_ou` for the count query example and `class_ou1` for the select query visible-membership picker.
+The provider ORs all supported fragments inside parentheses; a single supported fragment is also wrapped for consistent SQL shape. Examples: `(1 = 1)` for `ALL`, `({classAlias}.id IN (...) OR EXISTS (...))` for `ORG_UNIT + ORG_SUBTREE`, and `1 = 0` when no supported fragment exists. Use `class_ou` for the count query example and `class_ou1` for the select query visible-membership picker.
 
 ## 7. SQL Shape
 
@@ -468,6 +469,8 @@ Validation:
 - reject repeated, comma-separated, or array-style `academicYear` and `grade` parameter shapes before query object construction;
 - normalize pagination like existing `FinalRecordPageQuery`.
 
+`UnsubmittedFinalRecordQuery` validates and normalizes in its constructor. Controller and service code must not rely on a later explicit `validate()` call.
+
 The exception messages remain Chinese to match the existing backend validation style and user-facing error responses.
 
 ### 8.2 Row DTO
@@ -540,7 +543,7 @@ public ApiResponse<PageResult<UnsubmittedStudentView>> pageUnsubmittedFinalRecor
         @RequestParam(required = false, name = "classes[]") List<String> arrayStyleClasses,
         @RequestParam(defaultValue = "1") long pageNo,
         @RequestParam(defaultValue = "20") long pageSize,
-    HttpServletRequest request) {
+        HttpServletRequest request) {
     rejectUnsupportedSingleValueParameterShape(request, "academicYear");
     rejectUnsupportedSingleValueParameterShape(request, "grade");
     List<String> classFilters = mergeClassFilters(classes, arrayStyleClasses);
@@ -570,7 +573,7 @@ The controller `defaultValue` settings only handle missing pagination parameters
 
 Because `academicYear` and `grade` are single-value parameters, the controller must inspect raw request parameter names and values before constructing `UnsubmittedFinalRecordQuery`. `rejectUnsupportedSingleValueParameterShape(HttpServletRequest request, String name)` is a private controller helper returning `void`; it rejects `request.getParameterValues(name).length > 1`, unsupported parameter names such as `name + "[]"`, and comma-separated values such as `grade=a,b` by throwing `ValidationException(name + " 不合法")`.
 
-`mergeClassFilters(List<String> classes, List<String> arrayStyleClasses)` is a private controller helper that combines repeated `classes` and array-style `classes[]` values into one raw list. The query object then performs comma-splitting, trimming, blank removal, and de-duplication.
+`mergeClassFilters(List<String> classes, List<String> arrayStyleClasses)` is a private controller helper that combines repeated `classes` and array-style `classes[]` values into one raw list. The merge order is deterministic: append `classes` values first in request order, then append `classes[]` values in request order. The query object then performs comma-splitting, trimming, blank removal, and de-duplication while preserving the first-seen order from that merged raw list.
 
 Helper contracts:
 
@@ -622,6 +625,7 @@ Extend `FinalRecordQueryApplicationServiceTest`:
 - denies callers without `score.view.assigned`;
 - preserves `lastUpdatedAt` from a draft row;
 - returns `lastUpdatedAt = ""` for an unsubmitted student with no `final_record`;
+- maps raw row `grade = null` to view `grade = ""`;
 - returns an empty page without throwing;
 - maps every row to `status = "UNSUBMITTED"` without trusting mapper data for that value.
 
@@ -647,7 +651,7 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - proves a filter value that matches one org unit's code and another org unit's name includes both exact matches while still returning each student once;
 - proves a filter value that matches both `unit_code` and `unit_name` of the same org unit returns each student once;
 - verifies stable ordering by grade code, class code, user no, and user id;
-- verifies rows with no active grade parent sort after rows with an active grade and return `grade = ""` in the view;
+- verifies rows with no active grade parent sort after rows with an active grade and expose a nullable raw row `grade` for service mapping;
 - verifies two-page pagination has no duplicated student ids and the combined rows match the same stable order;
 - verifies `pageNo` greater than the total page count returns the unchanged `total` and `records = []`;
 - returns empty page for unsupported category-only scopes;
@@ -668,8 +672,8 @@ The two `ORG_SUBTREE` path tests are mandatory because a numeric-id path compari
 - verifies a student with duplicate dirty draft final records still appears once and uses `MAX(updated_at)` for `lastUpdatedAt`;
 - verifies a dirty status outside `DRAFT`, `SUBMITTED`, and `CONFIRMED` does not exclude the student and does not contribute to `lastUpdatedAt`;
 - verifies a student with both `DRAFT` and `SUBMITTED` or `CONFIRMED` dirty rows is excluded from D-11;
-- verifies a student with no `final_record` has `lastUpdatedAt = ""` in the view;
-- verifies a class with no active `GRADE` parent row is excluded when `grade` is provided and can appear with `grade = ""` when no `grade` filter is provided.
+- verifies a student with no `final_record` has raw row `lastUpdatedAt = null` for service mapping;
+- verifies a class with no active `GRADE` parent row is excluded when `grade` is provided and can appear with raw row `grade = null` when no `grade` filter is provided.
 
 The repository integration test schema must include the real A-group columns used by the D-11 SQL path: `org_unit.parent_id`, `org_unit.unit_type`, `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, `org_unit.status`, and `org_membership.id`. Do not keep the older Minimal D simplified `org_unit` test fixture if it hides these contract fields.
 
