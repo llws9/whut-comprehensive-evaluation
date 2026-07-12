@@ -600,6 +600,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 class LectureImportApplicationServiceTest {
@@ -640,6 +641,23 @@ class LectureImportApplicationServiceTest {
         assertThat(result.title()).isEqualTo("学院学术讲座");
         assertThat(result.heldAt().toString()).isEqualTo("2026-05-18T14:30");
         assertThat(result.academicYear()).isEqualTo("2025-2026");
+    }
+
+    @Test
+    void shouldAllowRetryWhenHeaderOnlyImportLeavesNoBatchMarker() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of());
+
+        LectureImportResult first = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+        LectureImportResult retry = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(first.totalCount()).isZero();
+        assertThat(first.successCount()).isZero();
+        assertThat(first.failedCount()).isZero();
+        assertThat(retry.totalCount()).isZero();
+        assertThat(lock.releases.get()).isEqualTo(2);
+        verify(repository, never()).insertLectureComponents(any(), any(), any());
+        verify(repository, times(2)).lectureBatchExists(eq("2025-2026"), eq(first.lectureBatchId()));
     }
 
     @Test
@@ -731,6 +749,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -984,7 +1003,9 @@ void shouldTreatZeroAndUpperBoundAsValidAndDefaultDisplayText() {
 
     assertThat(result.successCount()).isEqualTo(2);
     verify(repository).insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components ->
-            components.size() == 2 && components.get(0).displayText().equals("讲座 讲座签到")));
+            components.size() == 2
+                    && components.get(0).displayText().equals("讲座 讲座签到")
+                    && components.get(1).displayText().equals("讲座 讲座签到")));
 }
 
 @Test
@@ -1020,6 +1041,24 @@ void shouldConsumeDuplicateKeyAfterStudentLookupFailure() {
 
     assertThat(result.failedRows()).extracting("rowNo").containsExactly(2L, 3L);
     assertThat(result.failedRows()).extracting("code").containsExactly("STUDENT_NOT_FOUND", "DUPLICATE_STUDENT");
+}
+
+@Test
+void shouldAllowRetryWhenAllRowsFailBeforePersistenceLeavesNoBatchMarker() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+    given(parser.parse(any())).willReturn(List.of(
+            new LectureImportRow(2L, "S404", "1.00", null)
+    ));
+    given(repository.findTarget(eq("S404"), eq("2025-2026"))).willReturn(Optional.empty());
+
+    LectureImportResult first = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+    LectureImportResult retry = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+    assertThat(first.successCount()).isZero();
+    assertThat(first.failedRows()).extracting("code").containsExactly("STUDENT_NOT_FOUND");
+    assertThat(retry.successCount()).isZero();
+    verify(repository, never()).insertLectureComponents(any(), any(), any());
+    verify(repository, times(2)).lectureBatchExists(eq("2025-2026"), eq(first.lectureBatchId()));
 }
 
 @Test
@@ -1149,6 +1188,7 @@ private LectureImportResult processRows(NormalizedRequest request,
                                         PreparedLectureRows preparedRows) {
     List<LectureImportFailedRow> failedRows = new ArrayList<>(preparedRows.failedRows());
     List<ResolvedLectureRow> resolvedRows = new ArrayList<>();
+    Map<Long, Optional<String>> orgPathCache = new HashMap<>();
 
     for (FieldValidLectureRow candidate : preparedRows.fieldValidRows()) {
         LectureImportRow row = candidate.row();
@@ -1157,7 +1197,7 @@ private LectureImportResult processRows(NormalizedRequest request,
             failedRows.add(failed(row, "STUDENT_NOT_FOUND", "studentNo 对应学生不存在或未启用"));
             continue;
         }
-        if (!canAccess(context, target.get())) {
+        if (!canAccess(context, target.get(), orgPathCache)) {
             failedRows.add(failed(row, "OUT_OF_SCOPE", "当前用户无权导入该学生讲座成绩"));
             continue;
         }
@@ -1225,7 +1265,9 @@ private LectureImportFailedRow failed(LectureImportRow row, String code, String 
     return new LectureImportFailedRow(row.rowNo(), code, message, raw);
 }
 
-private boolean canAccess(UserAuthorizationContext context, LectureImportStudentTarget target) {
+private boolean canAccess(UserAuthorizationContext context,
+                          LectureImportStudentTarget target,
+                          Map<Long, Optional<String>> orgPathCache) {
     for (IamScopeRule rule : context.findScopeRulesByPermissionCode(AuthorizationPermissionCodes.SCORE_IMPORT)) {
         if (!"ACTIVE".equals(rule.status())) {
             continue;
@@ -1236,18 +1278,20 @@ private boolean canAccess(UserAuthorizationContext context, LectureImportStudent
         if ("ORG_UNIT".equals(rule.scopeType()) && rule.orgUnitId() != null && rule.orgUnitId().equals(target.orgUnitId())) {
             return true;
         }
-        if ("ORG_SUBTREE".equals(rule.scopeType()) && matchesOrgSubtree(rule.orgUnitId(), target.orgPath())) {
+        if ("ORG_SUBTREE".equals(rule.scopeType()) && matchesOrgSubtree(rule.orgUnitId(), target.orgPath(), orgPathCache)) {
             return true;
         }
     }
     return false;
 }
 
-private boolean matchesOrgSubtree(Long rootOrgUnitId, String targetPath) {
+private boolean matchesOrgSubtree(Long rootOrgUnitId,
+                                  String targetPath,
+                                  Map<Long, Optional<String>> orgPathCache) {
     if (rootOrgUnitId == null || isBlank(targetPath)) {
         return false;
     }
-    Optional<String> rootPath = repository.findActiveOrgPath(rootOrgUnitId);
+    Optional<String> rootPath = orgPathCache.computeIfAbsent(rootOrgUnitId, repository::findActiveOrgPath);
     if (rootPath.isEmpty() || isBlank(rootPath.get())) {
         return false;
     }
@@ -1387,11 +1431,11 @@ void shouldInsertLectureComponentsWithoutOverwritingPreviousLectureBatches() {
     assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score WHERE final_record_id = ?", Long.class, recordId)).isEqualTo(2L);
     assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
             .isEqualByComparingTo("3.25");
-    assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(1L);
+    assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(2L);
 }
 
 @Test
-void shouldRecalculateTotalsOncePerExistingFinalRecordAndIncrementVersion() {
+void shouldRecalculateTotalsAfterEachSuccessfulLectureRowAndIncrementVersion() {
     Long recordId = insertDraftRecord(1001L, "2025-2026");
     // Test fixture inserts a pre-existing application component directly and does not change final_record.version.
     insertComponent(recordId, "INTELLECTUAL", "INTELLECTUAL_APPLICATION", "2.00", "APPLICATION", "app-1");
@@ -1403,7 +1447,7 @@ void shouldRecalculateTotalsOncePerExistingFinalRecordAndIncrementVersion() {
 
     assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
             .isEqualByComparingTo("5.25");
-    assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(1L);
+    assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(2L);
 }
 
 @Test
@@ -1559,9 +1603,10 @@ Create `MybatisLectureImportRepository`:
   - catches `DataIntegrityViolationException` from the `final_record` unique key race, then immediately reruns `selectFinalRecordForUpdate(studentUserId, academicYear)` once to load the concurrently inserted record; if the reload still returns null, throw `ConflictException("最终成绩保存后读取失败")`;
   - if locked record status is not `DRAFT`, add `LectureImportFailedRow` with `FINAL_RECORD_LOCKED` and continue; this is a row-level business failure and does not roll back previously inserted DRAFT rows;
   - insert a new `final_component_score` with `category_code='INTELLECTUAL'`, `item_code='INTELLECTUAL_LECTURE'`, `source_type='IMPORT'`, `source_ref_id=lectureBatchId`;
-  - remember the touched `final_record_id` in insertion order.
-- After all insertions, recalculate totals once per touched `final_record_id` from all current components. Persist each total and `grand_total` with scale 2 using `RoundingMode.HALF_UP`. This keeps version increments deterministic when multiple lecture rows target the same student in one repository call.
-- If `updateTotals` returns 0 after a DRAFT lock, throw `ConflictException("最终成绩状态已变更，请刷新后重试")` so the outer transaction rolls back. This path is a persistence consistency failure, not a row-level validation failure, so it must not be represented in the returned failure list.
+  - immediately recalculate totals for that `final_record_id` from all current components while the row is still locked;
+  - persist each total and `grand_total` with scale 2 using `RoundingMode.HALF_UP`, and increment `version` through `updateTotals`.
+- Recalculate and update totals after every successful lecture component insertion, not once per distinct `final_record_id`. This preserves the frozen D-8 contract that `final_record.version` increments for every successful row mutation, including multiple successful lecture rows for the same student in one repository call.
+- If any `updateTotals` returns 0 after a DRAFT lock and component insert, throw `ConflictException("最终成绩状态已变更，请刷新后重试")` so the outer transaction rolls back. This path is a persistence consistency failure, not a row-level validation failure, so it must not be represented in the returned failure list.
 - A partial-success batch is intentionally not idempotent in Minimal D-8: if any component already exists for `lectureBatchId`, `lectureBatchExists` makes a later same-batch request return 409. Operators must change `title` or `heldAt` to create a new deterministic batch id for a retry; D-8 does not add batch deletion or patch-retry semantics.
 
 - [ ] **Step 5: Verify repository**
@@ -1715,6 +1760,8 @@ git commit -m "feat: add lecture import batch lock"
 
 Extend `AdminScoreImportControllerWebMvcTest`:
 
+Add imports for `ImportLecturesCommand`, `LectureImportApplicationService`, `LectureImportFailedRow`, `LectureImportResult`, `ValidationException`, `LocalDateTime`, and `LinkedHashMap`. Existing D-7 imports for `ConflictException`, `FileStorageException`, `MockMultipartFile`, `List`, `Map`, and MVC matchers can be reused.
+
 ```java
 @MockBean
 private LectureImportApplicationService lectureImportApplicationService;
@@ -1771,9 +1818,114 @@ void shouldReturn400WhenLectureTitleMissing() throws Exception {
             .andExpect(jsonPath("$.code").value("VAL-4001"))
             .andExpect(jsonPath("$.message").value("title 不能为空"));
 }
+
+@Test
+void shouldReturn400WhenLectureFileIsEmpty() throws Exception {
+    MockMultipartFile file = new MockMultipartFile("file", "empty.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", new byte[0]);
+
+    mockMvc.perform(multipart("/api/admin/imports/lectures")
+                    .file(file)
+                    .param("title", "学院学术讲座")
+                    .param("heldAt", "2026-05-18T14:30")
+                    .param("academicYear", "2025-2026"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.success").value(false))
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("上传文件不能为空"));
+}
+
+@Test
+void shouldReturn400WhenLectureHeldAtInvalid() throws Exception {
+    MockMultipartFile file = new MockMultipartFile("file", "lectures.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+    given(lectureImportApplicationService.importLectures(any(ImportLecturesCommand.class)))
+            .willThrow(new ValidationException("heldAt 格式非法"));
+
+    mockMvc.perform(multipart("/api/admin/imports/lectures")
+                    .file(file)
+                    .param("title", "学院学术讲座")
+                    .param("heldAt", "2026-05-18T14:30Z")
+                    .param("academicYear", "2025-2026"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.success").value(false))
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("heldAt 格式非法"));
+}
+
+@Test
+void shouldReturn200WhenLectureWorkbookHasOnlyHeader() throws Exception {
+    MockMultipartFile file = new MockMultipartFile("file", "lectures.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+    given(lectureImportApplicationService.importLectures(any(ImportLecturesCommand.class)))
+            .willReturn(new LectureImportResult(
+                    "LECTURE-20252026-20260518143000-ABCDEF123456",
+                    "学院学术讲座",
+                    LocalDateTime.parse("2026-05-18T14:30:00"),
+                    "2025-2026",
+                    0,
+                    0,
+                    0,
+                    List.of()
+            ));
+
+    mockMvc.perform(multipart("/api/admin/imports/lectures")
+                    .file(file)
+                    .param("title", "学院学术讲座")
+                    .param("heldAt", "2026-05-18T14:30")
+                    .param("academicYear", "2025-2026"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.totalCount").value(0))
+            .andExpect(jsonPath("$.data.successCount").value(0))
+            .andExpect(jsonPath("$.data.failedCount").value(0))
+            .andExpect(jsonPath("$.data.failedRows").isEmpty());
+}
+
+@Test
+void shouldReturn409WhenLectureServiceReportsDuplicateBatch() throws Exception {
+    MockMultipartFile file = new MockMultipartFile("file", "lectures.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+    given(lectureImportApplicationService.importLectures(any(ImportLecturesCommand.class)))
+            .willThrow(new ConflictException("同一讲座批次已导入"));
+
+    mockMvc.perform(multipart("/api/admin/imports/lectures")
+                    .file(file)
+                    .param("title", "学院学术讲座")
+                    .param("heldAt", "2026-05-18T14:30")
+                    .param("academicYear", "2025-2026"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.success").value(false))
+            .andExpect(jsonPath("$.code").value("BIZ-4090"))
+            .andExpect(jsonPath("$.message").value("同一讲座批次已导入"));
+}
+
+@Test
+void shouldReturn503WhenLectureMultipartReadFails() throws Exception {
+    MockMultipartFile file = new FailingLectureMockMultipartFile();
+
+    mockMvc.perform(multipart("/api/admin/imports/lectures")
+                    .file(file)
+                    .param("title", "学院学术讲座")
+                    .param("heldAt", "2026-05-18T14:30")
+                    .param("academicYear", "2025-2026"))
+            .andExpect(status().isServiceUnavailable())
+            .andExpect(jsonPath("$.success").value(false))
+            .andExpect(jsonPath("$.code").value("EXT-5033"))
+            .andExpect(jsonPath("$.message").value("文件处理失败，请稍后重试"));
+}
+
+static class FailingLectureMockMultipartFile extends MockMultipartFile {
+
+    FailingLectureMockMultipartFile() {
+        super("file", "lectures.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+    }
+
+    @Override
+    public byte[] getBytes() {
+        throw new FileStorageException("文件处理失败，请稍后重试");
+    }
+}
 ```
 
 Extend `AdminScoreImportControllerSecurityAnnotationTest`:
+
+Add imports for `MediaType`, `PostMapping`, and `RequestMapping`.
 
 ```java
 @Test
@@ -1786,6 +1938,19 @@ void shouldRequireScoreImportAuthorityForLectureImport() throws Exception {
     assertThat(preAuthorize.value()).isEqualTo(
             "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_IMPORT)"
     );
+}
+
+@Test
+void shouldExposeLectureImportOnExactMultipartRoute() throws Exception {
+    PostMapping postMapping = AdminScoreImportController.class
+            .getMethod("importLectures", MultipartFile.class, String.class, String.class, String.class)
+            .getAnnotation(PostMapping.class);
+
+    assertThat(postMapping).isNotNull();
+    assertThat(postMapping.value()).containsExactly("/lectures");
+    assertThat(postMapping.consumes()).containsExactly(MediaType.MULTIPART_FORM_DATA_VALUE);
+    assertThat(AdminScoreImportController.class.getAnnotation(RequestMapping.class).value())
+            .containsExactly("/api/admin/imports");
 }
 ```
 
@@ -1932,11 +2097,12 @@ Add focused tests where they fit best:
 - Parser: `rowNo` is worksheet physical row number when blank rows exist.
 - Service: unsupported-only scope set returns `OUT_OF_SCOPE`; `ALL` scope allows import; multiple scopes use union semantics.
 - Service: failedRows are sorted ascending by `rowNo` when failures originate from field validation, duplicate, student lookup, and scope paths.
+- Service: header-only imports and all-failed zero-success imports acquire/release the batch lock, run the authoritative duplicate-batch check, do not call component persistence, and allow same-metadata retry.
 - Repository: two distinct `lectureBatchId` values for the same student/year create two `INTELLECTUAL_LECTURE` components.
 - Repository: duplicate-batch detection joins through `final_record.academic_year`.
-- Repository: total recalculation persists scale 2 with `RoundingMode.HALF_UP` and increments `version`.
+- Repository: total recalculation persists scale 2 with `RoundingMode.HALF_UP` and increments `version` once per successful lecture row mutation, not once per distinct `final_record_id`.
 - Service: H2/JVM test lock adapter serializes two same-`lectureBatchId` service calls; hold the first call at the fake lock boundary and assert the second call gets `ConflictException("同一讲座批次正在导入，请稍后重试")` before any repository mutation.
-- Controller: service conflict `同一讲座批次已导入` maps to `409 / BIZ-4090`.
+- Controller: empty lecture file maps to `400 / VAL-4001`, invalid `heldAt` maps to `400 / VAL-4001`, header-only result maps to `200` with zero counts, multipart read failure maps to `503 / EXT-5033`, service conflict `同一讲座批次已导入` maps to `409 / BIZ-4090`, and the route is exactly `POST /api/admin/imports/lectures` with `multipart/form-data` consumes.
 
 - [ ] **Step 2: Run targeted D-8 suite**
 
