@@ -99,7 +99,7 @@ The application service must also check the same authority before querying. Miss
 Invalid `academicYear` returns `400 / VAL-4001`.
 The full `academicYear` normalization and validation rules live in section 8.1.
 
-`grade` and `classes` are filter names from the target D-group contract. `classes` remains a string array to match the frozen team-delivery contract. The implementation maps them to organization metadata:
+`grade` and `classes` are filter names from the target D-group contract. `classes` remains API type `string[]` to match the frozen team-delivery contract; Java controller and query code maps that request shape to `List<String>`. The implementation maps them to organization metadata:
 
 - `classes` filters the active primary student class unit with exact equality against any normalized class value: `class_ou.unit_code IN classes OR class_ou.unit_name IN classes`;
 - `grade` filters the active parent grade unit with exact equality: `grade_ou.unit_code = grade OR grade_ou.unit_name = grade`;
@@ -171,7 +171,7 @@ NOT EXISTS (
 
 If a `DRAFT` final record exists for the same student/year, the student is still unsubmitted. Draft records only supply `lastUpdatedAt`.
 
-Minimal D enforces one `final_record` per `(student_user_id, academic_year)`, so there should be at most one draft row. The D-11 query must still be defensive in case dirty data contains multiple draft rows for the same student/year: draft data is joined through an aggregate subquery with one row per `student_user_id`, and `lastUpdatedAt` is `MAX(updated_at)`. Count and select SQL must both preserve one result row per student.
+Minimal D expects at most one `final_record` per `(student_user_id, academic_year)`, but the D-11 query must still be defensive in case dirty data contains multiple draft rows for the same student/year. Draft data is joined through an aggregate subquery with one row per `student_user_id`, and `lastUpdatedAt` is `MAX(updated_at)`. Count and select SQL must both preserve one result row per student.
 
 Minimal D recognizes only `DRAFT`, `SUBMITTED`, and `CONFIRMED`. If dirty data contains any other `final_record.status`, D-11 ignores that row: it does not exclude the student from the unsubmitted list and it does not contribute to `lastUpdatedAt`. If dirty data contains a `SUBMITTED` or `CONFIRMED` row for the same student/year, the student is excluded from D-11 even when one or more `DRAFT` rows also exist.
 
@@ -309,7 +309,7 @@ EXISTS (
 )
 ```
 
-The provider ORs all supported fragments inside parentheses; a single supported fragment is also wrapped for consistent SQL shape. Examples: `(1 = 1)` for `ALL`, `({classAlias}.id IN (...) OR EXISTS (...))` for `ORG_UNIT + ORG_SUBTREE`, and `1 = 0` when no supported fragment exists. Use `class_ou` for the count query example and `class_ou1` for the select query visible-membership picker.
+The provider ORs all supported fragments inside parentheses; a single supported fragment is also wrapped for consistent SQL shape. Examples: `(1 = 1)` for `ALL`, `({classAlias}.id IN (...) OR EXISTS (...))` for `ORG_UNIT + ORG_SUBTREE`, and `(1 = 0)` when no supported fragment exists. Use `class_ou` for the count query example and `class_ou1` for the select query visible-membership picker.
 
 ## 7. SQL Shape
 
@@ -414,6 +414,13 @@ LEFT JOIN (
   GROUP BY student_user_id
 ) draft_fr
   ON draft_fr.student_user_id = u.id
+ORDER BY CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
+         grade_ou.unit_code ASC,
+         CASE WHEN class_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
+         class_ou.unit_code ASC,
+         u.user_no ASC,
+         u.id ASC
+LIMIT #{query.pageSize} OFFSET #{query.offset}
 ```
 
 Implementers may render the visible-membership picker as a nested derived table, reusable provider fragment, or equivalent SQL, but the selected membership must be the lowest `org_membership.id` among memberships that already passed scope and filters.
@@ -424,7 +431,7 @@ Provider rules summary for the `scopePredicate` described in section 6.4:
 - one or more `ORG_UNIT` rules: emit `class_ou.id IN (...)` with one bound parameter per org-unit id; non-class ids naturally match no roster rows;
 - one or more `ORG_SUBTREE` rules: emit the `EXISTS` fragment with one bound parameter per subtree root id;
 - combined `ORG_UNIT` and `ORG_SUBTREE`: OR the two supported fragments together;
-- no supported scope fragments: emit `1 = 0`;
+- no supported scope fragments: emit `(1 = 0)`;
 - never emit `IN ()` and never concatenate raw ids into SQL text.
 
 The same `scopePredicate` contract applies to both count and select queries. In the select query, use the visible-membership alias (`class_ou1` in the example) inside the predicate; in the outer display join, `class_ou` is only used for selected-row output and ordering.
@@ -442,6 +449,8 @@ ORDER BY CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
 
 This order is stable for pagination and matches the existing organization code ordering used by management views. The response still displays grade and class names, but sorting intentionally uses `unit_code` because codes are designed to be stable and unique; switching to `unit_name` sorting would require a separate product decision about display-name uniqueness and rename behavior. Rows with no active grade parent sort after rows with a grade.
 
+Pagination is applied only in the outermost select query after visible membership selection, draft aggregation, display joins, and the stable `ORDER BY`. The count query uses the same roster/scope/filter/exclusion predicates without `LIMIT` or `OFFSET`, so `total` remains the full matching row count while `records` contains only the requested page.
+
 ## 8. Application Model
 
 ### 8.1 Query Object
@@ -455,14 +464,12 @@ Fields:
 - `List<String> classes`;
 - `long pageNo`;
 - `long pageSize`.
+- derived `boolean classesEmpty`, true when the normalized `classes` list is empty; SQL uses this getter to skip class filtering and avoid `IN ()`.
 
 Validation:
 
-- if `academicYear` is `null`, throw `ValidationException("academicYear 不合法")` before trimming;
-- normalize non-null `academicYear` by trimming before validation and storage;
-- throw `ValidationException("academicYear 不合法")` when the academic year is missing, blank, malformed, unparsable, or non-consecutive;
-- validate the trimmed value with `^\\d{4}-\\d{4}$`, then parse both years as integers; any regex mismatch, integer parse failure, or non-consecutive year pair must be wrapped as `ValidationException`;
-- throw `ValidationException("academicYear 不合法")` when the trimmed value does not match `YYYY-YYYY` or the second year is not the first year plus 1;
+- validate and normalize `academicYear` in this order: null check, trim, blank check, regex match with `^\\d{4}-\\d{4}$`, parse both years as integers, then verify the second year equals the first year plus 1;
+- any failed `academicYear` step throws `ValidationException("academicYear 不合法")`;
 - normalize optional `grade` by trimming blank to `null`;
 - normalize `classes` by accepting repeated values, comma-separated values, and array-style values, trimming each entry, removing blanks, and de-duplicating while preserving first-seen order;
 - expose an empty normalized `classes` list as no class filter; never emit `IN ()`;
@@ -571,7 +578,7 @@ Route order must keep `/unsubmitted` from being captured by `/{recordId}`. In Sp
 
 The controller `defaultValue` settings only handle missing pagination parameters. All pagination normalization, including `pageNo <= 0` and `pageSize` capping, is centralized in `UnsubmittedFinalRecordQuery` so behavior stays aligned with `FinalRecordPageQuery`.
 
-Because `academicYear` and `grade` are single-value parameters, the controller must inspect raw request parameter names and values before constructing `UnsubmittedFinalRecordQuery`. `rejectUnsupportedSingleValueParameterShape(HttpServletRequest request, String name)` is a private controller helper returning `void`; it rejects `request.getParameterValues(name).length > 1`, unsupported parameter names such as `name + "[]"`, and comma-separated values such as `grade=a,b` by throwing `ValidationException(name + " 不合法")`.
+Because `academicYear` and `grade` are single-value parameters, the controller must inspect raw request parameter names and values before constructing `UnsubmittedFinalRecordQuery`. `rejectUnsupportedSingleValueParameterShape(HttpServletRequest request, String name)` is a private controller helper returning `void`; it rejects `request.getParameterValues(name).length > 1`, unsupported parameter names such as `name + "[]"`, and any value containing a comma character such as `grade=a,b`, `grade=a,`, or `grade=,b` by throwing `ValidationException(name + " 不合法")`.
 
 `mergeClassFilters(List<String> classes, List<String> arrayStyleClasses)` is a private controller helper that combines repeated `classes` and array-style `classes[]` values into one raw list. The merge order is deterministic: append `classes` values first in request order, then append `classes[]` values in request order. The query object then performs comma-splitting, trimming, blank removal, and de-duplication while preserving the first-seen order from that merged raw list.
 
