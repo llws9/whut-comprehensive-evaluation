@@ -74,7 +74,7 @@ Request parameters:
 | Parameter | Required | Rule |
 |---|---:|---|
 | `file` | yes | Non-empty Excel file. |
-| `title` | yes | Non-blank after trim, max 255 characters. Leading and trailing whitespace are removed; internal whitespace, case, and Unicode normalization form are preserved. |
+| `title` | yes | Non-blank after trim, max 255 characters. Leading and trailing whitespace are removed; internal whitespace, control characters, zero-width characters, case, and Unicode normalization form are otherwise preserved. |
 | `heldAt` | yes | ISO local date-time parsed with `LocalDateTime.parse(heldAt)`, which uses `DateTimeFormatter.ISO_LOCAL_DATE_TIME`. Accepted examples include `2026-05-18T14:30`, `2026-05-18T14:30:00`, and `2026-05-18T14:30:00.123`; omitted seconds default to `00`, fractional seconds are truncated, and timezone offsets are not accepted. The value is normalized to whole seconds in the response and batch id. |
 | `academicYear` | yes | Trimmed before validation; must match `^\d{4}-\d{4}$`, and the second year must equal first year + 1. |
 
@@ -107,7 +107,9 @@ Successful response:
 }
 ```
 
-`failedRows` are returned in ascending `rowNo` order. This keeps the response stable even if successful row mutations are executed in a different lock order internally.
+Successful responses return the same normalized metadata used for `lectureBatchId`: `title` is trimmed, `academicYear` is trimmed, and `heldAt` is truncated to whole seconds.
+
+`failedRows` are returned in ascending `rowNo` order. `rowNo` is the Excel worksheet's 1-based physical row number; the header is row 1 and the first data row is row 2. This keeps the response stable even if successful row mutations are executed in a different lock order internally.
 
 `failedRows` fields are frozen as:
 
@@ -235,7 +237,7 @@ Batch-level concurrency:
 
 - The implementation must serialize imports for the same `lectureBatchId` before row mutation.
 - The preferred implementation is an application-level lock backed by the database, such as `SELECT GET_LOCK(CONCAT('D8_LECTURE:', ?), 30)` on MySQL and an H2-test equivalent lock abstraction.
-- The lock must be exposed behind a narrow `LectureImportBatchLock` port. Production wiring must use the MySQL connection-bound named-lock implementation. H2 tests must wire an explicit test implementation, such as a keyed JVM `ReentrantLock`, so service-level same-batch serialization is testable even though H2 has no `GET_LOCK`; that test implementation must not be used in production profiles.
+- The lock must be exposed behind a narrow `LectureImportBatchLock` port with a minimal contract equivalent to `boolean tryAcquire(String lectureBatchId, Duration timeout)` plus `void release(String lectureBatchId)` on the same owner. Production wiring must use the MySQL connection-bound named-lock implementation. H2 tests must wire an explicit test implementation, such as a keyed JVM `ReentrantLock`, so service-level same-batch serialization is testable even though H2 has no `GET_LOCK`; that test implementation must not be used in production profiles.
 - The batch lock must be acquired and released on the same database connection that owns the request transaction, so the lock lifetime covers the whole import transaction.
 - An implementation may use an equivalent durable claim or unique-key strategy, but it must not add a general import batch table in this D-8 scope.
 - If the lock cannot be acquired because the same batch is already running, the request fails with `409 / BIZ-4090` and message `同一讲座批次正在导入，请稍后重试`. This is an in-flight conflict, not a persisted imported marker; callers may retry after the running request finishes.
@@ -248,7 +250,7 @@ Per-student final-record concurrency:
 - If no record exists, insert the DRAFT record and then re-read it with `SELECT ... FOR UPDATE`; concurrent insert races must catch the unique-key conflict on `(student_user_id, academic_year)` and re-read the existing row with `SELECT ... FOR UPDATE`, matching D-7.
 - Component insert and total recalculation must occur while the target record is locked.
 - The totals update must include `WHERE id = ? AND status = 'DRAFT'`.
-- If the conditional totals update affects zero rows, record `FINAL_RECORD_LOCKED` for that row and do not count it as a success.
+- If the conditional totals update affects zero rows, record `FINAL_RECORD_LOCKED` for that row, do not count it as a success, and leave no inserted lecture component for that row. The implementation may satisfy this by confirming `status = 'DRAFT'` before insert under the row lock and treating any later zero-row update as an unexpected persistence failure, or by using a row-level savepoint/delete cleanup before collecting the failure.
 - Under this model, a concurrent submit or confirm cannot commit between `SELECT ... FOR UPDATE` and the totals update for the same `final_record`; tests should verify the lock and conditional update behavior, not an impossible mid-lock state transition.
 - To reduce cross-batch deadlocks, field-valid, non-duplicate, eligible candidate rows that need final-record mutation must be locked and mutated in a deterministic order by target `student_user_id` ascending, then `rowNo` ascending. Duplicate-student detection and response counts still use workbook row order, and the final `failedRows` response is sorted by `rowNo`.
 
@@ -439,6 +441,7 @@ Add tests proving:
 - `heldAt` accepts omitted seconds, truncates fractional seconds, and rejects timezone offsets;
 - deterministic `lectureBatchId` is returned for the same normalized title, heldAt, and academicYear;
 - title trimming and whole-second heldAt normalization feed both `lectureBatchId` and response `heldAt`;
+- successful responses return normalized `title` and normalized `academicYear`;
 - `lectureBatchId` uses the 12-character SHA-256 prefix and fits `source_ref_id VARCHAR(64)`;
 - a duplicate existing `lectureBatchId` throws `ConflictException`;
 - a same-batch in-flight lock conflict throws `ConflictException` with `同一讲座批次正在导入，请稍后重试`;
@@ -449,6 +452,7 @@ Add tests proving:
 - a row with blank `displayText` stores the normalized request title followed by ` 讲座签到`;
 - two distinct lecture batches for the same student accumulate two components and totals;
 - duplicate `studentNo` inside the same workbook produces a `DUPLICATE_STUDENT` failed row;
+- `failedRows.rowNo` uses Excel 1-based physical row numbers;
 - a field-valid row that later fails student lookup or scope still consumes the duplicate-student key;
 - a row for a missing or inactive student appears in `failedRows`;
 - a row outside `score.import` scope appears in `failedRows`;
