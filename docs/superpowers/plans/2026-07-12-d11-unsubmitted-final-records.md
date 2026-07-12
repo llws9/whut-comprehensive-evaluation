@@ -4,6 +4,8 @@
 
 **Goal:** Build `GET /api/admin/final-records/unsubmitted` so authorized admins can page current active in-scope students who have not submitted or confirmed final records for an academic year.
 
+**Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, repeated `classes`, `pageNo`, and `pageSize`; response pagination remains `PageResult<T>` with only `total` and `records`.
+
 **Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student number, then user id; this plan intentionally extends the design SQL with student-number nulls-last before `student number` to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class/grade from the lowest numeric visible membership id.
 
 **Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
@@ -23,6 +25,7 @@
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordQueryApplicationServiceTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java`
+  - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java`
 
 ## File Structure
 
@@ -67,6 +70,7 @@
 - Modify `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordQueryApplicationServiceTest.java`
 - Modify `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java`
 - Modify `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java`
+- Modify `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java`
 
 ---
 
@@ -961,6 +965,7 @@ void shouldReturnAllCurrentRosterRowsForAllScope() {
     assertThat(page.total()).isEqualTo(3);
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1001L, 1002L, 1003L);
+    assertThat(page.records()).allSatisfy(row -> assertThat(row.getLastUpdatedAt()).isNull());
 }
 
 @Test
@@ -1009,30 +1014,33 @@ void shouldAllowTopLevelOrgSubtreeRootPath() {
 @Test
 void shouldRejectMalformedOrgSubtreeRootPaths() {
     seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2010, NULL, 'COLLEGE', 'BAD_NULL', '空值路径学院', NULL, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2011, NULL, 'COLLEGE', 'BAD_BLANK', '空路径学院', '', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2012, NULL, 'COLLEGE', 'BAD_PREFIX', '缺少前缀学院', 'WHUT/CS', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2013, NULL, 'COLLEGE', 'BAD_TRAILING', '尾斜杠学院', '/WHUT/CS/', 'ACTIVE')");
 
-    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2011L),
-            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records())
-            .isEmpty();
-    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2012L),
-            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records())
-            .isEmpty();
-    assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2013L),
-            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records())
-            .isEmpty();
+    for (Long rootId : List.of(2010L, 2011L, 2012L, 2013L)) {
+        PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+                accessContextWithOrgSubtree(rootId),
+                new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+        );
+        assertThat(page.total()).isZero();
+        assertThat(page.records()).isEmpty();
+    }
 }
 
 @Test
 void shouldRejectMalformedClassPathsForOrgSubtreeMatching() {
     seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4010, 3001, 'CLASS', 'BAD_NULL', '空值路径班', NULL, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4011, 3001, 'CLASS', 'BAD_BLANK', '空路径班', '', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4012, 3001, 'CLASS', 'BAD_PREFIX', '缺少前缀班', 'WHUT/CS/CS2022/BAD_PREFIX', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4013, 3001, 'CLASS', 'BAD_TRAILING', '尾斜杠班', '/WHUT/CS/CS2022/BAD_TRAILING/', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1010, 'S010', 'BadNull', 'STUDENT', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1011, 'S011', 'BadBlank', 'STUDENT', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1012, 'S012', 'BadPrefix', 'STUDENT', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1013, 'S013', 'BadTrailing', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5010, 1010, 4010, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5011, 1011, 4011, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5012, 1012, 4012, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5013, 1013, 4013, 'STUDENT', 1, 'ACTIVE')");
@@ -1491,6 +1499,7 @@ git commit -m "feat: query unsubmitted final record roster"
 **Files:**
 - Modify: `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/AdminFinalRecordController.java`
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java`
+- Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java`
 
 - [ ] **Step 1: Write failing controller tests**
 
@@ -1617,13 +1626,28 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
             .andExpect(jsonPath("$.code").value("VAL-4001"));
 }
 
+```
+
+Do not put the `score.view.assigned` authorization contract only in this standalone controller test file. Add the route security checks to the existing `FinalRecordSecurityIntegrationTest`, which already runs the real Spring Security and method-security configuration:
+
+```java
 @Test
-void shouldProtectUnsubmittedRouteWithScoreViewAssigned() throws Exception {
+void shouldAllowUnsubmittedAdminListWithScoreViewAssigned() throws Exception {
+    given(queryApplicationService.pageUnsubmittedStudents(any()))
+            .willReturn(new PageResult<>(0, List.of()));
+
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
-                    .with(user("admin").authorities(new SimpleGrantedAuthority("other.permission"))))
-            .andExpect(status().isForbidden())
-            .andExpect(jsonPath("$.code").value("AUTH-4030"));
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "score.view.assigned")))
+            .andExpect(status().isOk());
+}
+
+@Test
+void shouldRejectUnsubmittedAdminListWithoutScoreViewAssigned() throws Exception {
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "score.confirm.assigned")))
+            .andExpect(status().isForbidden());
 }
 ```
 
@@ -1632,7 +1656,7 @@ void shouldProtectUnsubmittedRouteWithScoreViewAssigned() throws Exception {
 Run:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: 404 or path-variable capture failure because `/unsubmitted` route does not exist.
@@ -1702,7 +1726,7 @@ private List<String> mergeClassFilters(List<String> classes, List<String> arrayS
 Run:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: PASS.
@@ -1711,7 +1735,8 @@ Expected: PASS.
 
 ```bash
 git add whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/AdminFinalRecordController.java \
-  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java \
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java
 git commit -m "feat: expose unsubmitted final record endpoint"
 ```
 
@@ -1771,7 +1796,7 @@ Keep these tests aligned with actual helper names and access-validation flow in 
 Run:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,AdminFinalRecordControllerWebMvcTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: PASS.
