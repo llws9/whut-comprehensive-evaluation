@@ -65,6 +65,7 @@ Update these fields as the implementation proceeds. Every field starts as `PENDI
 - Baseline Source: `Pre-Implementation Verification Baseline` fields above; module check `mvn -pl whut-eval-app -am help:evaluate -Dexpression=project.artifactId -q -DforceStdout` exited 0 and printed the reactor root artifactId, while focused `mvn -pl whut-eval-app help:evaluate -Dexpression=project.artifactId -q -DforceStdout` printed `whut-eval-app`, confirming the module exists.
 - Task 3 `rg` Availability: `AVAILABLE` at `/Users/bytedance/.local/bin/rg`.
 - Task 3 Scope/Provider Verification Command and Result: `PASS`; command `mvn -pl whut-eval-app -am -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest,ScopeSqlTranslatorTest test -Dsurefire.failIfNoSpecifiedTests=false` reported `Tests run: 26, Failures: 0, Errors: 0, Skipped: 0`. Contract scan command `rg -n "scopeExpression" whut-eval-infra whut-eval-application whut-eval-domain whut-eval-interfaces whut-eval-app/src/test docs/superpowers/plans/2026-07-12-d11-unsubmitted-final-records.md` completed; accepted hits were limited to the plan, `FinalRecordQuerySqlProvider`, existing admin-list provider helper, D-11 mapper/repository plumbing, and D-11 tests, with no controller/service/query DTO accepting caller-provided raw SQL.
+- Task 4 Controller Verification Command and Result: `PASS`; RED command `mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest test -Dsurefire.failIfNoSpecifiedTests=false` failed as expected before implementation because `/api/admin/final-records/unsubmitted` was captured by `/{recordId}` and `pageUnsubmittedFinalRecords` did not exist. GREEN command with the same test set reported `Tests run: 20, Failures: 0, Errors: 0, Skipped: 0`. Task 4 combined command `mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest,UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false` reported `Tests run: 42, Failures: 0, Errors: 0, Skipped: 0`.
 - Task 5 Shared-Scope Diff Classification: `PENDING`; record which scope-related files changed and whether Step 2 regressions are required.
 - Task 5 Step 2 Shared-Scope Regression Command and Result: `NOT_REQUIRED` unless Step 1 marks shared scope as changed.
 - Task 5 Step 3 Focused D-11 Command and Result: `PENDING`.
@@ -2817,7 +2818,7 @@ git commit -m "feat: query unsubmitted final record roster"
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java`
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordControllerSecurityAnnotationTest.java`
 
-- [ ] **Step 1: Write failing controller tests**
+- [x] **Step 1: Write failing controller tests**
 
 Add controller tests:
 
@@ -3189,7 +3190,7 @@ void shouldRequireAdminFinalRecordAuthorities() {
 }
 ```
 
-- [ ] **Step 2: Run controller tests to verify they fail**
+- [x] **Step 2: Run controller tests to verify they fail**
 
 Run:
 
@@ -3199,7 +3200,7 @@ mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecor
 
 Expected: 404 or path-variable capture failure because `/unsubmitted` route does not exist, plus an annotation-test failure until `pageUnsubmittedFinalRecords` declares `@PreAuthorize`.
 
-- [ ] **Step 3: Add controller route and helpers**
+- [x] **Step 3: Add controller route and helpers**
 
 In `AdminFinalRecordController`, import:
 
@@ -3276,7 +3277,7 @@ private long parseLongParameter(String name, String value, long defaultValue) {
 
 `mergeClassFilters(...)` only collects raw parameter values from both supported encodings by using `HttpServletRequest.getParameterValues(...)`. It must not use `@RequestParam List<String>` for `classes` or `classes[]`, because Spring MVC can split a single comma-containing value while converting to a collection. It must not trim, drop blanks, de-duplicate, enforce length, or enforce `MAX_CLASSES`; the merged list is immediately passed into `UnsubmittedFinalRecordQuery`, which performs the single source-of-truth normalization and validation after both `classes` and `classes[]` have been combined.
 
-- [ ] **Step 4: Run controller and earlier tests**
+- [x] **Step 4: Run controller and earlier tests**
 
 Run:
 

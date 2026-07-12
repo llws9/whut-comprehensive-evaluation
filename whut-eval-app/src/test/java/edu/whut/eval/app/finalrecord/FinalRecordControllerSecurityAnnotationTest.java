@@ -36,6 +36,7 @@ class FinalRecordControllerSecurityAnnotationTest {
     void shouldRequireAdminFinalRecordAuthorities() {
         Map<String, String> expected = Map.of(
                 "pageFinalRecords", SCORE_VIEW_ASSIGNED,
+                "pageUnsubmittedFinalRecords", SCORE_VIEW_ASSIGNED,
                 "getFinalRecord", SCORE_VIEW_ASSIGNED,
                 "confirm", SCORE_CONFIRM_ASSIGNED
         );

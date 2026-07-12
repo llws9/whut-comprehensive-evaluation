@@ -7,8 +7,10 @@ import edu.whut.eval.application.finalrecord.query.AdminFinalRecordListItemView;
 import edu.whut.eval.application.finalrecord.query.ConfirmFinalRecordResultView;
 import edu.whut.eval.application.finalrecord.query.FinalRecordStudentView;
 import edu.whut.eval.application.finalrecord.query.FinalRecordView;
+import edu.whut.eval.application.finalrecord.query.UnsubmittedStudentView;
 import edu.whut.eval.application.finalrecord.service.FinalRecordCommandApplicationService;
 import edu.whut.eval.application.finalrecord.service.FinalRecordQueryApplicationService;
+import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContextLoadRequest;
 import edu.whut.eval.domain.finalrecord.model.FinalRecordStatus;
@@ -24,6 +26,7 @@ import edu.whut.eval.infra.security.jwt.JwtTokenResolver;
 import edu.whut.eval.infra.security.web.RestAccessDeniedHandler;
 import edu.whut.eval.infra.security.web.RestAuthenticationEntryPoint;
 import edu.whut.eval.interfaces.admin.AdminFinalRecordController;
+import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
 import edu.whut.eval.interfaces.student.StudentFinalRecordController;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
@@ -54,9 +57,11 @@ import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(controllers = {StudentFinalRecordController.class, AdminFinalRecordController.class})
@@ -73,7 +78,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         JwtClaimsToCurrentUserMapper.class,
         SecurityContextCurrentUserProvider.class,
         SecurityContextUserAuthorizationContextAssembler.class,
-        JwtConfigurationValidator.class
+        JwtConfigurationValidator.class,
+        GlobalExceptionHandler.class
 })
 @TestPropertySource(properties = {
         "infra.security.jwt.enabled=true",
@@ -123,6 +129,8 @@ class FinalRecordSecurityIntegrationTest {
         });
         given(queryApplicationService.getStudentFinalRecord("2025-2026")).willReturn(studentView());
         given(queryApplicationService.pageAdminFinalRecords(any())).willReturn(new PageResult<>(0, List.of()));
+        given(queryApplicationService.pageUnsubmittedStudents(any()))
+                .willReturn(new PageResult<>(1, List.of(unsubmittedStudent())));
         given(queryApplicationService.getAdminFinalRecordDetail(41001L)).willReturn(adminDetail());
         given(commandApplicationService.confirm(any())).willReturn(new ConfirmFinalRecordResultView(
                 41001L, FinalRecordStatus.CONFIRMED, "ok", Instant.now(), 2L));
@@ -154,6 +162,44 @@ class FinalRecordSecurityIntegrationTest {
                         .param("academicYear", "2025-2026")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "score.view.assigned")))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldAllowAdminUnsubmittedListWithScoreViewAssigned() throws Exception {
+        mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                        .param("academicYear", "2025-2026")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "score.view.assigned")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.records[0].status").value("UNSUBMITTED"));
+    }
+
+    @Test
+    void shouldRejectAdminUnsubmittedListWithoutScoreViewAssigned() throws Exception {
+        mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                        .param("academicYear", "2025-2026")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "score.confirm.assigned")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("AUTH-4030"));
+    }
+
+    @Test
+    void shouldReturn401WhenAnonymousReadsAdminUnsubmittedList() throws Exception {
+        mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void shouldMapUnsubmittedListServiceAccessDeniedTo403() throws Exception {
+        willThrow(new AccessDeniedAppException("当前用户无未提交最终成绩名单查询权限"))
+                .given(queryApplicationService).pageUnsubmittedStudents(any());
+
+        mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                        .param("academicYear", "2025-2026")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "score.view.assigned")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("AUTH-4030"))
+                .andExpect(jsonPath("$.message").value("当前用户无未提交最终成绩名单查询权限"));
     }
 
     @Test
@@ -208,6 +254,11 @@ class FinalRecordSecurityIntegrationTest {
                 studentView(),
                 List.of()
         );
+    }
+
+    private UnsubmittedStudentView unsubmittedStudent() {
+        return new UnsubmittedStudentView(1002L, "S1002", "Student B", "2022", "计科二班",
+                "UNSUBMITTED", Instant.parse("2026-07-07T12:34:56Z").toString());
     }
 
     @SpringBootConfiguration
