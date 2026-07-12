@@ -211,6 +211,8 @@ For D-11, the scope predicate applies to the student's active primary class memb
 - `org_path` maps to `class_ou.path`;
 - category/item scope fragments remain unsupported for whole-record student roster visibility.
 
+`ORG_UNIT` is intentionally an exact class-unit match in D-11. A rule whose `org_unit_id` points to a college, grade, department, or other non-class unit does not match students through `ORG_UNIT`; higher-level organization visibility must be expressed as `ORG_SUBTREE`. This matches the existing A-group seed for counselor and college reviewer visibility, where `score.view.assigned` uses `ORG_SUBTREE` rooted at college org id `2002`.
+
 Scope merging rule:
 
 - supported fragments are `ALL`, `ORG_UNIT`, and `ORG_SUBTREE`;
@@ -316,7 +318,7 @@ The count query must not join draft records because draft data does not affect m
 The scope block above shows the `ORG_SUBTREE` branch. It is not a fixed two-parameter contract. The SQL provider must generate the exact supported scope expression from the evaluated scope set with bound parameters only:
 
 - `ALL`: emit `1 = 1` as the whole scope expression and omit `IN` fragments;
-- one or more `ORG_UNIT` rules: emit `class_ou.id IN (...)` with one bound parameter per org-unit id;
+- one or more `ORG_UNIT` rules: emit `class_ou.id IN (...)` with one bound parameter per org-unit id; non-class ids naturally match no roster rows;
 - one or more `ORG_SUBTREE` rules: emit the `EXISTS` fragment with one bound parameter per subtree root id;
 - combined `ORG_UNIT` and `ORG_SUBTREE`: OR the two supported fragments together;
 - no supported scope fragments: emit `1 = 0`;
@@ -544,6 +546,7 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - returns empty page for unsupported category-only scopes;
 - returns all visible current-roster rows for a pure `ALL` scope;
 - returns only the exact class rows for a pure `ORG_UNIT` scope targeting a class id;
+- returns an empty page for a pure `ORG_UNIT` scope targeting a non-class grade or college id;
 - returns only subtree rows for a pure `ORG_SUBTREE` scope targeting a college id, without relying on a mixed-scope rule;
 - returns organization-scoped rows for a mixed scope containing one supported `ORG_SUBTREE` rule and one unsupported category rule;
 - resolves `ORG_SUBTREE` against real `org_unit.path` code paths, proving a scope rooted at org id `2002` can see classes whose path starts with `/WHUT/CS`;
@@ -582,6 +585,8 @@ D-11 must not change:
 - final-record submit or confirm state transitions;
 - D safe-init seed data.
 
+Compatibility note: D-11 depends on the existing authorization convention that class-level exact visibility uses `ORG_UNIT`, while grade/college visibility uses `ORG_SUBTREE`. It must not reinterpret a non-class `ORG_UNIT` rule as a subtree, because that would change the meaning of existing scope rules. Existing counselor and college reviewer seed visibility already uses `ORG_SUBTREE`, so no seed change is required for the default D-11 admin use case.
+
 If shared scope translation is fixed to resolve `ORG_SUBTREE` by real org paths, existing Minimal D admin list/detail tests must be updated or extended to assert the corrected behavior rather than loosened.
 
 ## 13. Review Checklist
@@ -596,6 +601,7 @@ If shared scope translation is fixed to resolve `ORG_SUBTREE` by real org paths,
 - Duplicate active primary membership rows do not duplicate students in the result.
 - Mixed supported and unsupported scope fragments return rows for the supported organization scope.
 - Pure `ALL`, pure `ORG_UNIT`, and pure `ORG_SUBTREE` scopes are each tested on the D-11 roster query path.
+- Non-class `ORG_UNIT` rules return an empty page unless another supported scope fragment grants matching visibility.
 - Unsupported-only scope fragments return an empty page.
 - `grade` and `classes` filters are exact code/name matches.
 - `grade` and `classes` together use intersection semantics.
