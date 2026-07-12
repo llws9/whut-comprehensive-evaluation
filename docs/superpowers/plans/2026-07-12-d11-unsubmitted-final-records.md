@@ -6,7 +6,7 @@
 
 **Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`. D-11 does not introduce dirty-data support that violates the frozen A/D SQL contracts, including missing `iam_user` columns, nullable organization path/code fields, nullable final-record status/update timestamps, or duplicate `final_record` rows for the same student and academic year. Nullable projection values from optional joins, such as no DRAFT record or no active grade parent, remain valid and are rendered as empty response strings where the API contract says so.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. Only `iam_user.status = 'ACTIVE'` users are eligible; every non-`ACTIVE` status, including `INACTIVE`, `LOCKED`, `DISABLED`, or future status values, is excluded from the unsubmitted roster. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. Rows without an active grade parent are placed after all rows with an active grade parent; within that no-active-grade group, the null grade key does not define relative order, so ordering continues by class code, student number, and user id. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order. `ORG_SUBTREE` root matching is path-prefix based for any active `org_unit` with a valid path; the root's `unit_type` is not part of the subtree predicate. `SCHOOL`, `COLLEGE`, `GRADE`, `CLASS`, or future/custom root types all follow the same rule: only active roots with non-empty leading-slash, non-trailing-slash paths without `%` or `_` can expose active class descendants by real path prefix.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. Only `iam_user.status = 'ACTIVE'` users are eligible; every non-`ACTIVE` status, including `INACTIVE`, `LOCKED`, `DISABLED`, or future status values, is excluded from the unsubmitted roster. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. Rows without an active grade parent are placed after all rows with an active grade parent; within that no-active-grade group, the null grade key does not define relative order, so ordering continues by class code, student number, and user id. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. The `grade` filter matches only an active parent `org_unit` whose `unit_type = 'GRADE'`; classes with inactive, missing, or non-GRADE parents are excluded when a grade filter is present. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order. `ORG_SUBTREE` root matching is path-prefix based for any active `org_unit` with a valid path; the root's `unit_type` is not part of the subtree predicate. `SCHOOL`, `COLLEGE`, `GRADE`, `CLASS`, or future/custom root types all follow the same rule: only active roots with non-empty leading-slash, non-trailing-slash paths without `%` or `_` can expose active class descendants by real path prefix.
 
 **Frozen Schema Precedence:** If the source design and frozen SQL schema conflict, the frozen A/D schema wins for D-11 implementation and tests. `docs/team-delivery/group-a-identity-user-admin.sql` defines `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, and `org_unit.status` as `NOT NULL`; `docs/team-delivery/group-d-score-finalization-import-export.safe-init.sql` defines `final_record.status` and `final_record.updated_at` as `NOT NULL` and enforces `UNIQUE KEY uk_final_record_student_year (student_user_id, academic_year)`. Therefore D-11 must not add duplicate final-record rows for one student/year, nullable organization path/code cases, nullable final-record status/update timestamps, or missing IAM columns as tests or production behavior. Malformed but schema-valid path strings, such as empty strings, missing leading `/`, trailing `/`, or embedded SQL `LIKE` wildcard characters `%` and `_`, are still valid boundary cases for D-11 subtree guards and must be tested. D-11 treats such malformed subtree paths as non-matching instead of trying to repair or escape them at query time.
 
@@ -589,6 +589,23 @@ void shouldRenderMissingDraftLastUpdatedAtAsEmptyString() {
 
     assertThat(page.records()).containsExactly(
             new UnsubmittedStudentView(1001L, "S001", "Alice", "2022级", "CS2201", "UNSUBMITTED", "")
+    );
+}
+
+@Test
+void shouldRenderNullStringProjectionsAsEmptyStrings() {
+    UserAuthorizationContext admin = adminWithAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED);
+    when(userAuthorizationContextAssembler.requiredAuthorizationContext()).thenReturn(admin);
+    UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20);
+    when(finalRecordQueryRepository.pageUnsubmittedStudents(any(), same(query)))
+            .thenReturn(new PageResult<>(1, List.of(
+                    unsubmittedRow(1001L, null, null, "2022级", null, null)
+            )));
+
+    PageResult<UnsubmittedStudentView> page = service.pageUnsubmittedStudents(query);
+
+    assertThat(page.records()).containsExactly(
+            new UnsubmittedStudentView(1001L, "", "", "2022级", "", "UNSUBMITTED", "")
     );
 }
 
@@ -1579,6 +1596,21 @@ void shouldRejectMalformedOrgSubtreeRootAndClassPaths() {
             .containsExactly(1003L);
     assertThat(trailingSlashClassPath.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1003L);
+}
+
+@Test
+void shouldKeepMalformedClassPathVisibleForExactOrgUnitScope() {
+    seedRoster();
+    jdbcTemplate.update("UPDATE org_unit SET path = '' WHERE id = 4001");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgUnit(4001L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(2);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L);
 }
 
 @Test

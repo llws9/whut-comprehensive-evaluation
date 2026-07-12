@@ -10,6 +10,8 @@ For D-11, "expected to submit" is deliberately defined as the current active stu
 
 This is the first deferred D-group function after Minimal D. It must reuse the Minimal D final-record authorization model and must not introduce import/export behavior.
 
+Frozen A/D SQL schema is authoritative for D-11. `docs/team-delivery/group-a-identity-user-admin.sql` defines `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, and `org_unit.status` as `NOT NULL`. `docs/team-delivery/group-d-score-finalization-import-export.safe-init.sql` defines `final_record.status` and `final_record.updated_at` as `NOT NULL` and enforces one `final_record` row per `(student_user_id, academic_year)`. D-11 therefore does not implement dirty-data behavior that requires nullable organization metadata, nullable final-record timestamps/status, missing IAM columns, or duplicate same-student same-year final records. Schema-valid malformed paths, such as empty strings, missing leading slashes, trailing slashes, or embedded `%` / `_`, remain D-11 defensive boundary cases for subtree matching.
+
 ## 2. Current Baseline
 
 Minimal D already provides:
@@ -109,7 +111,7 @@ No fuzzy match, prefix match, contains match, or case normalization is performed
 
 If a filter value exactly matches one organization unit's `unit_code` and another organization unit's `unit_name`, both matching units are included because the filter uses OR semantics. If `grade` is provided, students whose selected class has no active parent grade row are excluded because there is no grade code/name to match. Without a `grade` filter, those students may still appear with `grade = ""`.
 
-If dirty organization data has a null `unit_code`, the code side of the `grade` or `classes` exact-match predicate does not match that row. The same row may still match through the corresponding `unit_name` predicate when `unit_name` is present.
+The frozen A schema requires `unit_code` and `unit_name` to be non-null, so D-11 does not add null-code or null-name filter behavior. Defensive path validation is limited to schema-valid malformed path strings.
 
 ### 4.4 Success Response
 
@@ -120,12 +122,12 @@ If dirty organization data has a null `unit_code`, the code side of the `grade` 
 | Field | Type | Rule |
 |---|---|---|
 | `studentUserId` | number | `iam_user.id` |
-| `userNo` | string | `iam_user.user_no`; active student rows are expected to be non-null, and dirty null values map to empty string in the view |
-| `userName` | string | `iam_user.user_name`; active student rows are expected to be non-null, and dirty null values map to empty string in the view |
+| `userNo` | string | `iam_user.user_no`; active student rows are expected to be non-null, and a null repository projection maps to empty string in the view |
+| `userName` | string | `iam_user.user_name`; active student rows are expected to be non-null, and a null repository projection maps to empty string in the view |
 | `grade` | string | active parent grade `org_unit.unit_name`; empty string if the class has no active `GRADE` parent |
-| `className` | string | active primary class `org_unit.unit_name`; dirty null values map to empty string in the view |
+| `className` | string | active primary class `org_unit.unit_name`; a null repository projection maps to empty string in the view |
 | `status` | string | fixed `UNSUBMITTED` |
-| `lastUpdatedAt` | string | ISO-8601 UTC string serialized from `MAX(final_record.updated_at)` across `DRAFT` rows for the academic year; empty string when the student has no `DRAFT` final record or dirty `DRAFT` rows have only null `updated_at` values |
+| `lastUpdatedAt` | string | ISO-8601 UTC string serialized from the same-year `DRAFT` row's non-null `final_record.updated_at`; empty string when the student has no `DRAFT` final record |
 
 When no data matches, return `200` with `total = 0` and `records = []`.
 
@@ -173,9 +175,9 @@ NOT EXISTS (
 
 If a `DRAFT` final record exists for the same student/year, the student is still unsubmitted. Draft records only supply `lastUpdatedAt`.
 
-Minimal D expects at most one `final_record` per `(student_user_id, academic_year)`, but the D-11 query must still be defensive in case dirty data contains multiple draft rows for the same student/year. Draft data is joined through an aggregate subquery with one row per `student_user_id`, and `lastUpdatedAt` is `MAX(updated_at)`. Count and select SQL must both preserve one result row per student.
+Frozen D schema enforces at most one `final_record` per `(student_user_id, academic_year)`. D-11 must preserve that contract in implementation fixtures and must not add duplicate same-year final-record rows to simulate categories or dirty data. The optional DRAFT join therefore contributes at most one timestamp per student/year and must not affect count semantics.
 
-Minimal D recognizes only `DRAFT`, `SUBMITTED`, and `CONFIRMED`. If dirty data contains any other `final_record.status`, D-11 ignores that row: it does not exclude the student from the unsubmitted list and it does not contribute to `lastUpdatedAt`. If dirty data contains a `SUBMITTED` or `CONFIRMED` row for the same student/year, the student is excluded from D-11 even when one or more `DRAFT` rows also exist.
+Minimal D recognizes only `DRAFT`, `SUBMITTED`, and `CONFIRMED`. If a `SUBMITTED` or `CONFIRMED` row exists for the same student/year, the student is excluded from D-11. Unknown same-year final-record status values are outside the frozen D contract and are not required D-11 behavior.
 
 ### 5.3 Source of Truth
 
@@ -352,7 +354,7 @@ FROM (
 ) visible_students
 ```
 
-This shape intentionally evaluates scope and filters before grouping by student. A dirty lower-id membership outside scope, in another class, or without a matching grade must not hide another active primary membership that is visible and matches the request. The count query only needs one row per visible student; display membership selection is only required in the select query. The count query must not join draft records because draft data does not affect membership in the result set and a dirty duplicate draft row must never inflate `total`.
+This shape intentionally evaluates scope and filters before grouping by student. A lower-id membership outside scope, in another class, or without a matching grade must not hide another active primary membership that is visible and matches the request. The count query only needs one row per visible student; display membership selection is only required in the select query. The count query must not join draft records because draft data does not affect membership in the result set.
 
 Recommended select query uses the same roster, scope, filter, and submitted/confirmed exclusion predicates inside a visible-membership picker, then joins the selected visible membership back to display fields:
 
@@ -409,7 +411,7 @@ LEFT JOIN org_unit grade_ou
  AND grade_ou.unit_type = 'GRADE'
  AND grade_ou.status = 'ACTIVE'
 LEFT JOIN (
-  SELECT student_user_id, MAX(updated_at) AS last_updated_at
+  SELECT student_user_id, updated_at AS last_updated_at
   FROM final_record
   WHERE academic_year = #{query.academicYear}
     AND status = 'DRAFT'
@@ -449,7 +451,7 @@ ORDER BY CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
          u.id ASC
 ```
 
-This order is stable for pagination and matches the existing organization code ordering used by management views. The response still displays grade and class names, but sorting intentionally uses `unit_code` because codes are designed to be stable and unique; switching to `unit_name` sorting would require a separate product decision about display-name uniqueness and rename behavior. Rows with no active grade parent sort after rows with a grade. The class-code null guard is only defensive ordering for dirty class rows with a null `unit_code`; those rows sort after non-null class codes within the same grade ordering and remain stable through `u.user_no` and `u.id`. It does not imply a student can be returned without an active class row.
+This order is stable for pagination and matches the existing organization code ordering used by management views. The response still displays grade and class names, but sorting intentionally uses `unit_code` because codes are designed to be stable and unique; switching to `unit_name` sorting would require a separate product decision about display-name uniqueness and rename behavior. Rows with no active grade parent sort after rows with a grade. The frozen A schema requires class codes to be non-null; stable tie-breakers through `u.user_no` and `u.id` still keep ordering deterministic. This does not imply a student can be returned without an active class row.
 
 Pagination is applied only in the outermost select query after visible membership selection, draft aggregation, display joins, and the stable `ORDER BY`. The count query uses the same roster/scope/filter/exclusion predicates without `LIMIT` or `OFFSET`, so `total` remains the full matching row count while `records` contains only the requested page.
 
@@ -521,7 +523,7 @@ public record UnsubmittedStudentView(
 
 The service maps every row with `status = "UNSUBMITTED"`, maps missing `userNo`, `userName`, `grade`, `className`, and `lastUpdatedAt` values to empty strings, and preserves the frozen response-field type contract.
 
-When present, `lastUpdatedAt` must be formatted as an ISO-8601 UTC string from `Instant`, not a numeric epoch timestamp. The output format matches `Instant.toString()`: it uses `Z` for UTC and preserves the actual fractional precision returned from `MAX(final_record.updated_at)` instead of truncating to whole seconds.
+When present, `lastUpdatedAt` must be formatted as an ISO-8601 UTC string from `Instant`, not a numeric epoch timestamp. The output format matches `Instant.toString()`: it uses `Z` for UTC and preserves the actual fractional precision returned from `final_record.updated_at` instead of truncating to whole seconds.
 
 ### 8.4 Repository Contract
 
@@ -643,7 +645,7 @@ Extend `FinalRecordQueryApplicationServiceTest`:
 - denies callers without `score.view.assigned`;
 - preserves `lastUpdatedAt` from a draft row;
 - returns `lastUpdatedAt = ""` for an unsubmitted student with no `final_record`;
-- returns `lastUpdatedAt = ""` when draft rows exist but the aggregate timestamp is null;
+- maps a null repository projection for optional `lastUpdatedAt` to `lastUpdatedAt = ""`;
 - maps raw row `grade = null` to view `grade = ""`;
 - maps raw row `className = null` to view `className = ""`;
 - maps raw row `userNo = null` or `userName = null` to empty strings;
@@ -669,7 +671,7 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - filters by `grade` and `classes` together using intersection semantics;
 - proves `grade` and `classes` filters match organization code and organization name by exact equality;
 - proves `grade` and `classes` exact matches are case-sensitive and do not rely on database default collation;
-- proves dirty null `unit_code` rows do not match through the code predicate, can still match through `unit_name`, and sort after non-null class codes with stable `user_no` / `id` tie-breakers;
+- proves malformed but schema-valid org paths are rejected for `ORG_SUBTREE` matching while exact `ORG_UNIT` class-id matching remains path-insensitive;
 - proves a partial name such as `计算机` does not match `计算机 2022 级`;
 - proves a filter value that matches one org unit's code and another org unit's name includes both exact matches while still returning each student once;
 - proves a filter value that matches both `unit_code` and `unit_name` of the same org unit returns each student once;
@@ -692,9 +694,8 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 
 The two `ORG_SUBTREE` path tests are mandatory because a numeric-id path comparison such as `LIKE '%/2002/%'` would return zero rows against the seeded organization path format, while an unsafe prefix comparison would incorrectly include similar-prefix non-child paths.
 
-- verifies a student with duplicate dirty draft final records still appears once and uses `MAX(updated_at)` for `lastUpdatedAt`;
-- verifies a dirty status outside `DRAFT`, `SUBMITTED`, and `CONFIRMED` does not exclude the student and does not contribute to `lastUpdatedAt`;
-- verifies a student with both `DRAFT` and `SUBMITTED` or `CONFIRMED` dirty rows is excluded from D-11;
+- verifies a DRAFT final record keeps the student unsubmitted and supplies its non-null `updated_at`;
+- verifies a student with `SUBMITTED` or `CONFIRMED` for the same year is excluded from D-11;
 - verifies a student with no `final_record` has raw row `lastUpdatedAt = null` for service mapping;
 - verifies a class with no active `GRADE` parent row is excluded when `grade` is provided and can appear with raw row `grade = null` when no `grade` filter is provided.
 
@@ -764,10 +765,9 @@ If shared scope translation is fixed to resolve `ORG_SUBTREE` by real org paths,
 - Rows without an active grade parent sort after rows with an active grade.
 - ORG_SUBTREE path matching rejects similar-prefix non-child paths.
 - ORG_SUBTREE path matching rejects malformed root and class paths and supports valid top-level paths such as `/WHUT`.
-- Duplicate dirty draft final records do not duplicate students in the result.
-- Unknown dirty final-record statuses are ignored.
-- Any `SUBMITTED` or `CONFIRMED` row excludes the student even if dirty `DRAFT` rows also exist.
-- `lastUpdatedAt` is the draft aggregate `MAX(final_record.updated_at)` formatted without losing `Instant` precision, or an empty string when absent.
+- Frozen D unique-key behavior is preserved; tests do not create duplicate same-student same-year final records.
+- Any `SUBMITTED` or `CONFIRMED` row for the same student/year excludes the student.
+- `lastUpdatedAt` is the DRAFT `final_record.updated_at` formatted without losing `Instant` precision, or an empty string when absent.
 - No data returns an empty page, not `404`.
 - `ORG_SUBTREE` matches the real code-path format in `org_unit.path`.
 - The implementation does not introduce D-7, D-8, D-9, or D-10 behavior.
