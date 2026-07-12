@@ -6,7 +6,7 @@
 
 **Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`. D-11 does not introduce dirty-data support that violates the frozen A/D SQL contracts, including missing `iam_user` columns, nullable organization path/code fields, nullable final-record status/update timestamps, or duplicate `final_record` rows for the same student and academic year. Nullable projection values from optional joins, such as no DRAFT record or no active grade parent, remain valid and are rendered as empty response strings where the API contract says so.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. Only `iam_user.status = 'ACTIVE'` users are eligible; every non-`ACTIVE` status, including `INACTIVE`, `LOCKED`, `DISABLED`, or future status values, is excluded from the unsubmitted roster. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. Rows without an active grade parent are placed after all rows with an active grade parent; within that no-active-grade group, the null grade key does not define relative order, so ordering continues by class code, student number, and user id. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. The `grade` filter matches only an active parent `org_unit` whose `unit_type = 'GRADE'`; classes with inactive, missing, or non-GRADE (e.g. COLLEGE, CUSTOM, SCHOOL) parents are excluded when a grade filter is present. Grade filter matching is case-sensitive and matches exactly against either `unit_code` or `unit_name` of the active GRADE parent. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order. `ORG_SUBTREE` root matching is path-prefix based for any active `org_unit` with a valid path; the root's `unit_type` is not part of the subtree predicate. `SCHOOL`, `COLLEGE`, `GRADE`, `CLASS`, or future/custom root types all follow the same rule: only active roots with non-empty leading-slash, non-trailing-slash paths without `%` or `_` can expose active class descendants by real path prefix. The `%`/`_` check on class paths is a uniform malformed-path policy for D-11 subtree matching, not a `LIKE`-injection requirement for the right-hand class path; exact `ORG_UNIT` scope remains path-insensitive and continues to match only by class id.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has a `SUBMITTED` or `CONFIRMED` final record in the requested academic year. Only `iam_user.status = 'ACTIVE'` users are eligible; every non-`ACTIVE` status, including `INACTIVE`, `LOCKED`, `DISABLED`, or future status values, is excluded from the unsubmitted roster. A missing final record and a single `DRAFT` final record both mean the student is unsubmitted; `DRAFT` contributes `lastUpdatedAt` from its non-null `updated_at`. For D-11's frozen route semantics, only `SUBMITTED` and `CONFIRMED` mean submitted; any other current or future final-record status is treated as unsubmitted and the API still returns fixed `status = "UNSUBMITTED"`. Sort rows by active-grade-present first, grade code, class code, student number, then user id; `user_id ASC` is the final tie-breaker and part of the pagination contract. Rows without an active grade parent are placed after all rows with an active grade parent; within that no-active-grade group, the null grade key does not define relative order, so ordering continues by class code, student number, and user id. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics, and both filters decide which memberships enter the visible set before the lowest visible membership is chosen. The `grade` filter matches only an active parent `org_unit` whose `unit_type = 'GRADE'`; classes with inactive, missing, or non-GRADE (e.g. COLLEGE, CUSTOM, SCHOOL) parents are excluded when a grade filter is present. Grade filter matching is case-sensitive and matches exactly against either `unit_code` or `unit_name` of the active GRADE parent. Final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order. `ORG_SUBTREE` root matching is path-prefix based for any active `org_unit` with a valid path; the root's `unit_type` is not part of the subtree predicate. `SCHOOL`, `COLLEGE`, `GRADE`, `CLASS`, or future/custom root types all follow the same rule: only active roots with non-empty leading-slash, non-trailing-slash paths without `%` or `_` can expose active class descendants by real path prefix. The `%`/`_` check on class paths is a uniform malformed-path policy for D-11 subtree matching, not a `LIKE`-injection requirement for the right-hand class path; exact `ORG_UNIT` scope remains path-insensitive and continues to match only by class id.
 
 **Frozen Schema Precedence:** If the source design and frozen SQL schema conflict, the frozen A/D schema wins for D-11 implementation and tests. `docs/team-delivery/group-a-identity-user-admin.sql` defines `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, and `org_unit.status` as `NOT NULL`; `docs/team-delivery/group-d-score-finalization-import-export.safe-init.sql` defines `final_record.status` and `final_record.updated_at` as `NOT NULL` and enforces `UNIQUE KEY uk_final_record_student_year (student_user_id, academic_year)`. Therefore D-11 must not add duplicate final-record rows for one student/year, nullable organization path/code cases, nullable final-record status/update timestamps, or missing IAM columns as tests or production behavior. Malformed but schema-valid path strings, such as empty strings, missing leading `/`, trailing `/`, or embedded SQL `LIKE` wildcard characters `%` and `_`, are still valid boundary cases for D-11 subtree guards and must be tested. D-11 treats such malformed subtree paths as non-matching instead of trying to repair or escape them at query time. This policy applies to both root and class paths for consistent subtree semantics; it is deliberately stricter than the minimum `LIKE`-injection guard needed for root paths only.
 
@@ -44,7 +44,7 @@ mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpe
 
 This focused baseline is only a fallback for pre-implementation comparison. It does not replace the final Task 5 full `mvn test` attempt and does not allow D-11-touched tests to fail.
 
-Execution notes are recorded in this plan document, not only in terminal scrollback or a handoff summary. Update the fields in this section in place before D-11 implementation starts. Keep the updated fields in the D-11 branch so Task 5 can compare against the same source of truth. Do not create a separate baseline-only commit unless explicitly requested; the recorded values may be committed together with the implementation or final verification changes.
+Execution notes are recorded in this plan document, not only in terminal scrollback or a handoff summary. Update the fields in this section in place before D-11 implementation starts. Keep the updated fields in the D-11 branch so Task 5 can compare against the same source of truth. Do not create a separate baseline-only commit unless explicitly requested; the recorded values may be committed together with the implementation or final verification changes. Whenever any baseline or execution-note field in this plan changes, include this plan file in the next verified commit that depends on that evidence; no Task 1-5 code/test commit may leave required plan evidence only in the working tree.
 
 - Full Baseline Result: `PENDING` before implementation; replace with `PASS`, `FAIL`, or `BLOCKED`.
 - Full Baseline Command: `mvn test`
@@ -518,7 +518,8 @@ Expected: PASS.
 
 ```bash
 git add whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/query/UnsubmittedFinalRecordQuery.java \
-  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/UnsubmittedFinalRecordQueryTest.java
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/UnsubmittedFinalRecordQueryTest.java \
+  docs/superpowers/plans/2026-07-12-d11-unsubmitted-final-records.md
 git commit -m "feat: add unsubmitted final record query"
 ```
 
@@ -785,7 +786,8 @@ git add whut-eval-application/src/main/java/edu/whut/eval/application/finalrecor
   whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/query/UnsubmittedStudentView.java \
   whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/repository/FinalRecordQueryRepository.java \
   whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/service/FinalRecordQueryApplicationService.java \
-  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordQueryApplicationServiceTest.java
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordQueryApplicationServiceTest.java \
+  docs/superpowers/plans/2026-07-12-d11-unsubmitted-final-records.md
 git commit -m "feat: map unsubmitted final record views"
 ```
 
@@ -1037,11 +1039,13 @@ void shouldExcludeInactiveUsersInactiveMembershipsAndNonPrimaryMemberships() {
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1006, 'S006', 'NonPrimary', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1007, 'S007', 'LockedUser', 'LOCKED')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1008, 'T008', 'TeacherMembership', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1009, 'S009', 'DisabledUser', 'DISABLED')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4001, 'STUDENT', 1, 'INACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4001, 'STUDENT', 0, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5007, 1007, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5008, 1008, 4001, 'TEACHER', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5009, 1009, 4001, 'STUDENT', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -1051,7 +1055,7 @@ void shouldExcludeInactiveUsersInactiveMembershipsAndNonPrimaryMemberships() {
     assertThat(page.total()).isEqualTo(3);
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1001L, 1002L, 1003L)
-            .doesNotContain(1007L);
+            .doesNotContain(1007L, 1009L);
 }
 
 @Test
@@ -1163,6 +1167,18 @@ void shouldApplyOrgUnitAsExactClassOnly() {
 @Test
 void shouldApplyGradeAndClassesFiltersTogetherWithCaseSensitiveExactCodeOrNameMatches() {
     seedRoster();
+
+    List<Long> withoutGrade = repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)).records().stream()
+            .map(UnsubmittedStudentRow::getStudentUserId)
+            .toList();
+    List<Long> blankGrade = repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "   ", null, 1, 20)).records().stream()
+            .map(UnsubmittedStudentRow::getStudentUserId)
+            .toList();
+    assertThat(blankGrade)
+            .as("blank grade must normalize to null and reach SQL as no grade filter")
+            .containsExactlyElementsOf(withoutGrade);
 
     assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
             new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2201"), 1, 20)).records())
@@ -1682,8 +1698,8 @@ void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSema
     assertScopeParity(accessContextWithEmptyGrantedScopes());
     assertScopeParity(accessContextWithoutScoreViewAssigned());
 
-    assertFilteredScopeDoesNotLeakOutsideGrantedClasses(accessContextWithOrgUnit(4001L));
-    assertFilteredScopeDoesNotLeakOutsideGrantedClasses(accessContextWithOrgSubtree(3001L));
+    assertFilteredScopeDoesNotLeakOutsideGrantedClasses(accessContextWithOrgUnit(4001L), 1001L, 1002L);
+    assertFilteredScopeDoesNotLeakOutsideGrantedClasses(accessContextWithOrgSubtree(3001L), 1001L, 1002L, 1003L);
 }
 
 private void assertParityFixtureHasOneSubmittedRecordPerActiveRosterStudent() {
@@ -1726,7 +1742,8 @@ private void assertScopeParity(FinalRecordAccessContext accessContext) {
     assertThat(d11Visible).containsExactlyInAnyOrderElementsOf(submittedVisible);
 }
 
-private void assertFilteredScopeDoesNotLeakOutsideGrantedClasses(FinalRecordAccessContext accessContext) {
+private void assertFilteredScopeDoesNotLeakOutsideGrantedClasses(FinalRecordAccessContext accessContext,
+                                                                 Long... expectedVisibleStudentIds) {
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContext,
             new UnsubmittedFinalRecordQuery(
@@ -1742,7 +1759,7 @@ private void assertFilteredScopeDoesNotLeakOutsideGrantedClasses(FinalRecordAcce
 
     assertThat(visibleStudentIds)
             .as("grade/classes filters must narrow within the granted scope and must not reopen out-of-scope classes")
-            .containsOnly(1001L, 1002L, 1003L);
+            .containsExactlyInAnyOrder(expectedVisibleStudentIds);
     assertThat(visibleStudentIds).doesNotContain(1004L, 1099L);
 }
 ```
@@ -2448,6 +2465,9 @@ public final class D11ScopeSqlShape {
 ```
 
 ```java
+private static final Pattern SCOPE_PARAMETER_PATTERN =
+        Pattern.compile("#\\{scopeFragment\\.parameters\\.([A-Za-z0-9_]+)\\}");
+
 private String classPredicate(Map<String, Object> params, String classAlias) {
     UnsubmittedFinalRecordQuery query = (UnsubmittedFinalRecordQuery) params.get("query");
     if (query == null || query.isClassesEmpty()) {
@@ -2499,8 +2519,7 @@ private void validateD11ScopeExpression(String expression, Map<String, Object> p
 }
 
 private Set<String> referencedScopeParameterNames(String normalizedExpression) {
-    Pattern pattern = Pattern.compile("#\\{scopeFragment\\.parameters\\.([A-Za-z0-9_]+)\\}");
-    Matcher matcher = pattern.matcher(normalizedExpression);
+    Matcher matcher = SCOPE_PARAMETER_PATTERN.matcher(normalizedExpression);
     Set<String> names = new LinkedHashSet<>();
     while (matcher.find()) {
         names.add(matcher.group(1));
@@ -2767,7 +2786,8 @@ git add whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/Fin
   whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusFinalRecordQueryRepository.java \
   whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/D11ScopeSqlShape.java \
   whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/SqlPredicateFragment.java \
-  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java \
+  docs/superpowers/plans/2026-07-12-d11-unsubmitted-final-records.md
 git commit -m "feat: query unsubmitted final record roster"
 ```
 
@@ -3256,7 +3276,8 @@ Expected: PASS.
 git add whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/AdminFinalRecordController.java \
   whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java \
   whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java \
-  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordControllerSecurityAnnotationTest.java
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordControllerSecurityAnnotationTest.java \
+  docs/superpowers/plans/2026-07-12-d11-unsubmitted-final-records.md
 git commit -m "feat: expose unsubmitted final record endpoint"
 ```
 
@@ -3411,7 +3432,7 @@ Expected:
 - `git status --short`, `git diff --stat HEAD`, and `git diff --name-status HEAD` are run after the last edit and before the final commit. They are the authoritative final working-tree diff review for uncommitted or staged changes. The base-branch or fallback commit-range diff is an additional branch-history view and does not replace the current-working-tree review.
 - The scope, status, numeric-path, `scopeExpression`, and `alwaysTrue` scans are mandatory. Run either the five `rg` commands or, when `rg` is unavailable, the five `grep -RInE` fallback commands over the same directories. Task 5 verification is incomplete unless one full scan set has been executed and every hit has been accepted or rejected using the rules below.
 - The `scopeExpression` scan is mandatory. It may find the mapper/provider infrastructure and repository-internal builder, but must not find a D-11 public API, request object, controller, service, repository contract, or DTO that accepts a caller-provided raw SQL fragment.
-- The `alwaysTrue` scan may find `SqlPredicateFragment.alwaysTrue()`, D-11 `rosterScopeFragment(...)`, and D-11 provider whitelist tests. It must not find new `alwaysTrue()` call sites in existing submitted/confirmed final-record paths, `ApplicationScopeSqlTranslator`, or other shared authorization translators unless the execution notes name the file/line and justify why the use cannot bypass scope checks.
+- The `alwaysTrue` scan has an explicit allowlist: `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/SqlPredicateFragment.java` may define `alwaysTrue()`, `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusFinalRecordQueryRepository.java` may call it only from the D-11 `rosterScopeFragment(...)` allow-all branch, and `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java` may use it only in D-11 provider whitelist/scope regression tests. No other production file should contain a new `alwaysTrue()` hit. It must not appear in existing submitted/confirmed final-record paths, `ApplicationScopeSqlTranslator`, or other shared authorization translators unless the execution notes name the file/line and justify why the use cannot bypass scope checks.
 - The scans pass only when they produce no new D-11 contract-drift hits in changed files. Any new hit fails the verification unless the execution notes name the file/line and explain why the hit is unrelated to D-11 contract drift.
 - No `PageResult` metadata fields are added.
 - Controller tests assert the D-11 `$.data` object has exactly `total` and `records`, with no `pages`, `pageNum`, `pageNo`, or `pageSize`.
@@ -3431,7 +3452,7 @@ If Task 5 added regression tests or fixes:
 
 ```bash
 git status --short
-git add <all Task 5 files shown by git status, including any shared scope implementation files and regression tests>
+git add <all Task 5 files shown by git status, including any shared scope implementation files, regression tests, and docs/superpowers/plans/2026-07-12-d11-unsubmitted-final-records.md if execution notes changed>
 git status --short
 git commit -m "test: cover final record scope regressions"
 ```
