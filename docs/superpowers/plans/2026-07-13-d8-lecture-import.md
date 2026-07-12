@@ -649,24 +649,6 @@ class LectureImportApplicationServiceTest {
                 .hasMessage("当前用户无导入权限");
     }
 
-    @Test
-    void shouldValidateCodePointLengthBoundaries() {
-        String validTitle = "一".repeat(255);
-        String tooLongTitle = "一".repeat(256);
-        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
-        given(parser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", "讲座")));
-        given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
-        given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
-        given(repository.insertLectureComponents(eq("2025-2026"), any(), any())).willReturn(List.of());
-
-        LectureImportResult result = service.importLectures(command(validTitle, "2026-05-18T14:30", "2025-2026"));
-
-        assertThat(result.successCount()).isEqualTo(1);
-        assertThatThrownBy(() -> service.importLectures(command(tooLongTitle, "2026-05-18T14:30", "2025-2026")))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage("title 长度不能超过 255");
-    }
-
     private ImportLecturesCommand command(String title, String heldAt, String academicYear) {
         return new ImportLecturesCommand(new byte[]{1}, title, heldAt, academicYear);
     }
@@ -920,16 +902,36 @@ void shouldCollectFieldFailuresInFrozenOrderAndRawValueShape() {
     given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
     given(parser.parse(any())).willReturn(List.of(
             new LectureImportRow(2L, null, null, "x"),
-            new LectureImportRow(3L, "S1", "99999999.999", "x"),
-            new LectureImportRow(4L, "S2", "1.234", "x"),
-            new LectureImportRow(5L, "S3", "1.00", "一".repeat(1001))
+            new LectureImportRow(3L, "S0", null, "x"),
+            new LectureImportRow(4L, "S1", "99999999.999", "x"),
+            new LectureImportRow(5L, "S2", "1.234", "x"),
+            new LectureImportRow(6L, "S3", "1.230", "x"),
+            new LectureImportRow(7L, "S4", "1.00", "一".repeat(1001))
     ));
 
     LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
 
     assertThat(result.failedRows()).extracting("code")
-            .containsExactly("STUDENT_NO_REQUIRED", "SCORE_VALUE_OUT_OF_RANGE", "SCORE_VALUE_SCALE_INVALID", "DISPLAY_TEXT_TOO_LONG");
+            .containsExactly("STUDENT_NO_REQUIRED", "SCORE_VALUE_REQUIRED", "SCORE_VALUE_OUT_OF_RANGE", "SCORE_VALUE_SCALE_INVALID", "SCORE_VALUE_SCALE_INVALID", "DISPLAY_TEXT_TOO_LONG");
     assertThat(result.failedRows().get(0).rawValue()).containsOnlyKeys("studentNo", "scoreValue", "displayText");
+}
+
+@Test
+void shouldValidateTitleLengthCodePointBoundaries() {
+    String validTitle = "一".repeat(255);
+    String tooLongTitle = "一".repeat(256);
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+    given(parser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", "讲座")));
+    given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
+    given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+    given(repository.insertLectureComponents(eq("2025-2026"), any(), any())).willReturn(List.of());
+
+    LectureImportResult result = service.importLectures(command(validTitle, "2026-05-18T14:30", "2025-2026"));
+
+    assertThat(result.successCount()).isEqualTo(1);
+    assertThatThrownBy(() -> service.importLectures(command(tooLongTitle, "2026-05-18T14:30", "2025-2026")))
+            .isInstanceOf(ValidationException.class)
+            .hasMessage("title 长度不能超过 255");
 }
 
 @Test
@@ -1145,7 +1147,7 @@ private Optional<LectureImportFailedRow> validateFields(LectureImportRow row) {
     if (score.compareTo(MAX_SCORE) > 0) {
         return Optional.of(failed(row, "SCORE_VALUE_OUT_OF_RANGE", "scoreValue 必须在 0 到 99999999.99 之间"));
     }
-    if (score.stripTrailingZeros().scale() > 2) {
+    if (score.scale() > 2) {
         return Optional.of(failed(row, "SCORE_VALUE_SCALE_INVALID", "scoreValue 最多保留 2 位小数"));
     }
     if (row.displayText() != null && row.displayText().codePointCount(0, row.displayText().length()) > 1000) {
@@ -1297,6 +1299,7 @@ void shouldInsertLectureComponentsWithoutOverwritingPreviousLectureBatches() {
 @Test
 void shouldRecalculateTotalsOncePerExistingFinalRecordAndIncrementVersion() {
     Long recordId = insertDraftRecord(1001L, "2025-2026");
+    // Test fixture inserts a pre-existing application component directly and does not change final_record.version.
     insertComponent(recordId, "INTELLECTUAL", "INTELLECTUAL_APPLICATION", "2.00", "APPLICATION", "app-1");
 
     repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-EXISTING0001", List.of(
@@ -1367,9 +1370,32 @@ String selectActiveOrgPath(@Param("orgUnitId") Long orgUnitId);
         """)
 long countLectureBatchComponents(@Param("academicYear") String academicYear,
                                  @Param("lectureBatchId") String lectureBatchId);
+
+@Select("SELECT id, student_user_id, academic_year, status, moral_total, intellectual_total, physical_total, labor_total, grand_total, submitted_at, confirmed_at, confirm_comment, version, created_at, updated_at FROM final_record WHERE student_user_id = #{studentUserId} AND academic_year = #{academicYear} FOR UPDATE")
+FinalRecordDO selectFinalRecordForUpdate(@Param("studentUserId") Long studentUserId,
+                                         @Param("academicYear") String academicYear);
+
+@Insert("INSERT INTO final_record (student_user_id, academic_year, status, moral_total, intellectual_total, physical_total, labor_total, grand_total, submitted_at, confirmed_at, confirm_comment, version, created_at, updated_at) VALUES (#{studentUserId}, #{academicYear}, #{status}, #{moralTotal}, #{intellectualTotal}, #{physicalTotal}, #{laborTotal}, #{grandTotal}, #{submittedAt}, #{confirmedAt}, #{confirmComment}, #{version}, #{createdAt}, #{updatedAt})")
+@Options(useGeneratedKeys = true, keyProperty = "id")
+int insertDraft(FinalRecordDO record);
+
+@Insert("INSERT INTO final_component_score (final_record_id, category_code, item_code, score_value, display_text, source_type, source_ref_id, created_at) VALUES (#{finalRecordId}, #{categoryCode}, #{itemCode}, #{scoreValue}, #{displayText}, 'IMPORT', #{sourceRefId}, #{createdAt})")
+int insertLectureComponent(LectureImportedComponentRow component);
+
+@Select("SELECT category_code AS categoryCode, COALESCE(SUM(score_value), 0) AS scoreValue FROM final_component_score WHERE final_record_id = #{finalRecordId} GROUP BY category_code")
+List<LectureScoreCategoryTotalRow> selectTotals(@Param("finalRecordId") Long finalRecordId);
+
+@Update("UPDATE final_record SET moral_total = #{moral}, intellectual_total = #{intellectual}, physical_total = #{physical}, labor_total = #{labor}, grand_total = #{grand}, updated_at = #{updatedAt}, version = version + 1 WHERE id = #{finalRecordId} AND status = 'DRAFT'")
+int updateTotals(@Param("finalRecordId") Long finalRecordId,
+                 @Param("moral") BigDecimal moral,
+                 @Param("intellectual") BigDecimal intellectual,
+                 @Param("physical") BigDecimal physical,
+                 @Param("labor") BigDecimal labor,
+                 @Param("grand") BigDecimal grand,
+                 @Param("updatedAt") LocalDateTime updatedAt);
 ```
 
-Add `selectFinalRecordForUpdate`, `insertDraft`, `insertLectureComponent`, `selectTotals`, and `updateTotals` by adapting D-7. `updateTotals` must keep `WHERE id = ? AND status = 'DRAFT'`.
+`findTarget(String studentNo, String academicYear)` keeps the `academicYear` argument to match the D-7 port shape and to make later historical-organization lookup changes binary-local to the infra adapter. Minimal D-8 intentionally does not use the argument in the SQL because the current schema has only current `org_membership` state.
 
 - [ ] **Step 4: Implement repository**
 
@@ -1380,11 +1406,11 @@ Create `MybatisLectureImportRepository`:
 - `insertLectureComponents` returns `List<LectureImportFailedRow>` and loops over sorted components. For each component:
   - locks `final_record`;
   - inserts a new DRAFT final record if missing, reloading on unique-key race;
-  - if locked record status is not `DRAFT`, add `LectureImportFailedRow` with `FINAL_RECORD_LOCKED` and continue;
+  - if locked record status is not `DRAFT`, add `LectureImportFailedRow` with `FINAL_RECORD_LOCKED` and continue; this is a row-level business failure and does not roll back previously inserted DRAFT rows;
   - insert a new `final_component_score` with `category_code='INTELLECTUAL'`, `item_code='INTELLECTUAL_LECTURE'`, `source_type='IMPORT'`, `source_ref_id=lectureBatchId`;
   - remember the touched `final_record_id` in insertion order.
 - After all insertions, recalculate totals once per touched `final_record_id` from all current components. This keeps version increments deterministic when multiple lecture rows target the same student in one repository call.
-- If `updateTotals` returns 0 after a DRAFT lock, throw `ConflictException("最终成绩状态已变更，请刷新后重试")` so the outer transaction rolls back.
+- If `updateTotals` returns 0 after a DRAFT lock, throw `ConflictException("最终成绩状态已变更，请刷新后重试")` so the outer transaction rolls back. This path is a persistence consistency failure, not a row-level validation failure, so it must not be represented in the returned failure list.
 - A partial-success batch is intentionally not idempotent in Minimal D-8: if any component already exists for `lectureBatchId`, `lectureBatchExists` makes a later same-batch request return 409. Operators must change `title` or `heldAt` to create a new deterministic batch id for a retry; D-8 does not add batch deletion or patch-retry semantics.
 
 - [ ] **Step 5: Verify repository**
@@ -1658,9 +1684,21 @@ public record LectureImportResultResponse(
 }
 ```
 
-Modify `AdminScoreImportController` constructor to inject `LectureImportApplicationService`. Add:
+Modify `AdminScoreImportController` to keep a single constructor and inject both services:
 
 ```java
+private static final long MAX_LECTURE_IMPORT_BYTES = 5L * 1024 * 1024;
+private static final DateTimeFormatter LECTURE_RESPONSE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
+
+private final MentorScoreImportApplicationService mentorScoreImportApplicationService;
+private final LectureImportApplicationService lectureImportApplicationService;
+
+public AdminScoreImportController(MentorScoreImportApplicationService mentorScoreImportApplicationService,
+                                  LectureImportApplicationService lectureImportApplicationService) {
+    this.mentorScoreImportApplicationService = mentorScoreImportApplicationService;
+    this.lectureImportApplicationService = lectureImportApplicationService;
+}
+
 @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_IMPORT)")
 @PostMapping(value = "/lectures", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
 public ApiResponse<LectureImportResultResponse> importLectures(
@@ -1674,6 +1712,9 @@ public ApiResponse<LectureImportResultResponse> importLectures(
     if (title == null || title.trim().isEmpty()) {
         throw new ValidationException("title 不能为空");
     }
+    if (file.getSize() > MAX_LECTURE_IMPORT_BYTES) {
+        throw new ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB");
+    }
     byte[] bytes;
     try {
         bytes = file.getBytes();
@@ -1684,6 +1725,21 @@ public ApiResponse<LectureImportResultResponse> importLectures(
             new ImportLecturesCommand(bytes, title, heldAt, academicYear)
     );
     return ApiResponse.success(toLectureResponse(result));
+}
+
+private LectureImportResultResponse toLectureResponse(LectureImportResult result) {
+    return new LectureImportResultResponse(
+            result.lectureBatchId(),
+            result.title(),
+            result.heldAt().format(LECTURE_RESPONSE_TIME_FORMATTER),
+            result.academicYear(),
+            result.totalCount(),
+            result.successCount(),
+            result.failedCount(),
+            result.failedRows().stream()
+                    .map(row -> new LectureImportFailedRowResponse(row.rowNo(), row.code(), row.message(), row.rawValue()))
+                    .toList()
+    );
 }
 ```
 
