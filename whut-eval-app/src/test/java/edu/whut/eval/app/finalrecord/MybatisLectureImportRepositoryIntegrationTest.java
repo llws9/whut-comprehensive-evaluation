@@ -21,9 +21,12 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
 
 import javax.sql.DataSource;
 import java.math.BigDecimal;
@@ -31,6 +34,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @ExtendWith(SpringExtension.class)
 @ContextConfiguration(classes = MybatisLectureImportRepositoryIntegrationTest.TestConfig.class)
@@ -85,7 +89,7 @@ class MybatisLectureImportRepositoryIntegrationTest {
                   final_record_id BIGINT NOT NULL,
                   category_code VARCHAR(64) NOT NULL,
                   item_code VARCHAR(64) NOT NULL,
-                  score_value DECIMAL(10,2) NOT NULL,
+                  score_value DECIMAL(10,3) NOT NULL,
                   display_text VARCHAR(1000) NULL,
                   source_type VARCHAR(32) NOT NULL,
                   source_ref_id VARCHAR(64) NULL,
@@ -134,13 +138,20 @@ class MybatisLectureImportRepositoryIntegrationTest {
 
     @Test
     void shouldInsertLectureComponentsWithoutOverwritingPreviousLectureBatches() {
-        repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-AAAABBBBCCCC", List.of(
-                component(2L, 1001L, "S1001", "1.25", "讲座A"),
-                component(3L, 1001L, "S1001", "2.00", "讲座A second batch row should not happen in service")
+        repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-BATCH0000001", List.of(
+                component(2L, 1001L, "S1001", "1.25", "讲座A")
+        ));
+        repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-BATCH0000002", List.of(
+                component(3L, 1001L, "S1001", "2.00", "讲座B")
         ));
 
         Long recordId = jdbcTemplate.queryForObject("SELECT id FROM final_record WHERE student_user_id = 1001 AND academic_year = '2025-2026'", Long.class);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score WHERE final_record_id = ?", Long.class, recordId)).isEqualTo(2L);
+        assertThat(jdbcTemplate.queryForList("SELECT source_ref_id FROM final_component_score WHERE final_record_id = ? ORDER BY id", String.class, recordId))
+                .containsExactly(
+                        "LECTURE-20252026-20260518143000-BATCH0000001",
+                        "LECTURE-20252026-20260518143000-BATCH0000002"
+                );
         assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
                 .isEqualByComparingTo("3.25");
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(2L);
@@ -159,6 +170,64 @@ class MybatisLectureImportRepositoryIntegrationTest {
         assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
                 .isEqualByComparingTo("5.25");
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(2L);
+    }
+
+    @Test
+    void shouldRoundTotalsHalfUpAndIncrementVersionPerSuccessfulLectureRow() {
+        Long recordId = insertDraftRecord(1001L, "2025-2026");
+        insertComponent(recordId, "INTELLECTUAL", "INTELLECTUAL_APPLICATION", "1.235", "APPLICATION", "app-1");
+
+        repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-ROUND0000001", List.of(
+                component(2L, 1001L, "S1001", "0.001", "讲座A"),
+                component(3L, 1001L, "S1001", "0.004", "讲座B")
+        ));
+
+        assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
+                .isEqualByComparingTo("1.24");
+        assertThat(jdbcTemplate.queryForObject("SELECT grand_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
+                .isEqualByComparingTo("1.24");
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(2L);
+    }
+
+    @Test
+    void shouldKeepEarlierSuccessfulDraftRowsWhenLaterRowIsLocked() {
+        Long draftRecordId = insertDraftRecord(1001L, "2025-2026");
+        insertFinalRecord(1004L, "2025-2026", "SUBMITTED");
+        insertStudent(1004L, "S1004", "ACTIVE");
+        insertMembership(8004L, 1004L, 2010L, true, "ACTIVE");
+
+        List<LectureImportFailedRow> failures = repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-MIXED0000001", List.of(
+                component(2L, 1001L, "S1001", "1.00", "讲座A"),
+                component(3L, 1004L, "S1004", "2.00", "讲座B")
+        ));
+
+        assertThat(failures).extracting("rowNo").containsExactly(3L);
+        assertThat(failures).extracting("code").containsExactly("FINAL_RECORD_LOCKED");
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score WHERE final_record_id = ?", Long.class, draftRecordId))
+                .isEqualTo(1L);
+        assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, draftRecordId))
+                .isEqualByComparingTo("1.00");
+    }
+
+    @Test
+    void shouldRollbackAllInsertedComponentsWhenTotalsUpdateFails() {
+        Long draftRecordId = insertDraftRecord(1001L, "2025-2026");
+        insertComponent(draftRecordId, "UNKNOWN", "UNKNOWN_ITEM", "3.00", "APPLICATION", "bad-category");
+
+        assertThatThrownBy(() -> repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-ROLLBACK00001", List.of(
+                component(2L, 1001L, "S1001", "1.00", "讲座A")
+        )))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("unsupported final record category");
+
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM final_component_score
+                WHERE source_ref_id = 'LECTURE-20252026-20260518143000-ROLLBACK00001'
+                """, Long.class)).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, draftRecordId))
+                .isEqualByComparingTo("0.00");
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, draftRecordId)).isZero();
     }
 
     @Test
@@ -242,6 +311,7 @@ class MybatisLectureImportRepositoryIntegrationTest {
     }
 
     @Configuration
+    @EnableTransactionManagement
     @MapperScan(basePackageClasses = LectureImportMapper.class)
     @Import({
             MybatisPlusConfig.class,
@@ -278,6 +348,11 @@ class MybatisLectureImportRepositoryIntegrationTest {
         @Bean
         JdbcTemplate jdbcTemplate(DataSource dataSource) {
             return new JdbcTemplate(dataSource);
+        }
+
+        @Bean
+        PlatformTransactionManager transactionManager(DataSource dataSource) {
+            return new DataSourceTransactionManager(dataSource);
         }
     }
 }

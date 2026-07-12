@@ -28,6 +28,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -92,6 +98,7 @@ class LectureImportApplicationServiceTest {
         assertThat(withoutSeconds.heldAt().toString()).isEqualTo("2026-05-18T14:30");
         assertThat(result.lectureBatchId()).startsWith("LECTURE-20252026-20260518143000-");
         assertThat(result.lectureBatchId()).hasSize(44);
+        assertThat(result.lectureBatchId()).isEqualTo(withoutSeconds.lectureBatchId());
         assertThat(result.title()).isEqualTo("学院学术讲座");
         assertThat(result.heldAt().toString()).isEqualTo("2026-05-18T14:30");
         assertThat(result.academicYear()).isEqualTo("2025-2026");
@@ -278,6 +285,7 @@ class LectureImportApplicationServiceTest {
         assertThat(first.successCount()).isZero();
         assertThat(first.failedRows()).extracting("code").containsExactly("STUDENT_NOT_FOUND");
         assertThat(retry.successCount()).isZero();
+        assertThat(lock.releases.get()).isEqualTo(2);
         verify(repository, never()).insertLectureComponents(any(), any(), any());
         verify(repository, times(2)).lectureBatchExists(eq("2025-2026"), eq(first.lectureBatchId()));
     }
@@ -336,6 +344,82 @@ class LectureImportApplicationServiceTest {
     }
 
     @Test
+    void shouldReturnOutOfScopeWhenOnlyUnsupportedScopeRulesExist() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(new UserAuthorizationContext(
+                1010L,
+                "T1010",
+                "Counselor",
+                "teacher",
+                Set.of("COUNSELOR"),
+                Set.of("score.import"),
+                List.of(new IamScopeRule(7012L, "score.import", "MAJOR", 2201L, null, null, null, 80, "ACTIVE"))
+        ));
+        given(parser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", null)));
+        given(repository.findTarget(eq("S1"), eq("2025-2026")))
+                .willReturn(Optional.of(new LectureImportStudentTarget(1001L, "S1", 2201L, "/WHUT/CS/CS2022/CS2201")));
+
+        LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.successCount()).isZero();
+        assertThat(result.failedRows()).extracting("code").containsExactly("OUT_OF_SCOPE");
+        verify(repository, never()).insertLectureComponents(any(), any(), any());
+    }
+
+    @Test
+    void shouldAllowAllScopeWithoutOrgPathLookup() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(new UserAuthorizationContext(
+                1010L,
+                "T1010",
+                "Counselor",
+                "teacher",
+                Set.of("COUNSELOR"),
+                Set.of("score.import"),
+                List.of(new IamScopeRule(7013L, "score.import", "ALL", null, null, null, null, 80, "ACTIVE"))
+        ));
+        given(parser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", null)));
+        given(repository.findTarget(eq("S1"), eq("2025-2026")))
+                .willReturn(Optional.of(new LectureImportStudentTarget(1001L, "S1", 2201L, "/WHUT/CS/CS2022/CS2201")));
+        given(repository.insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components ->
+                components.size() == 1 && components.get(0).studentNo().equals("S1"))))
+                .willReturn(List.of());
+
+        LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.successCount()).isEqualTo(1);
+        assertThat(result.failedCount()).isZero();
+        verify(repository, never()).findActiveOrgPath(any());
+    }
+
+    @Test
+    void shouldApplyUnionSemanticsAcrossMultipleScopeRules() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(new UserAuthorizationContext(
+                1010L,
+                "T1010",
+                "Counselor",
+                "teacher",
+                Set.of("COUNSELOR"),
+                Set.of("score.import"),
+                List.of(
+                        new IamScopeRule(7014L, "score.import", "MAJOR", 9999L, null, null, null, 80, "ACTIVE"),
+                        new IamScopeRule(7015L, "score.import", "ORG_UNIT", 2202L, null, null, null, 80, "ACTIVE"),
+                        new IamScopeRule(7016L, "score.import", "ORG_SUBTREE", 2002L, null, null, null, 80, "ACTIVE")
+                )
+        ));
+        given(parser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", null)));
+        given(repository.findTarget(eq("S1"), eq("2025-2026")))
+                .willReturn(Optional.of(new LectureImportStudentTarget(1001L, "S1", 2201L, "/WHUT/CS/CS2022/CS2201")));
+        given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+        given(repository.insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components ->
+                components.size() == 1 && components.get(0).studentNo().equals("S1"))))
+                .willReturn(List.of());
+
+        LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.successCount()).isEqualTo(1);
+        assertThat(result.failedCount()).isZero();
+    }
+
+    @Test
     void shouldReleaseAcquiredLockOnDuplicateConflict() {
         given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
         given(parser.parse(any())).willReturn(List.of());
@@ -360,6 +444,71 @@ class LectureImportApplicationServiceTest {
                 .isInstanceOf(ConflictException.class)
                 .hasMessage("最终成绩状态已变更，请刷新后重试");
         assertThat(lock.releases.get()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldRejectConcurrentSameBatchImportBeforeSecondMutation() throws Exception {
+        UserAuthorizationContextAssembler concurrentAuthorizationContextAssembler = mock(UserAuthorizationContextAssembler.class);
+        LectureImportParser concurrentParser = mock(LectureImportParser.class);
+        LectureImportRepository concurrentRepository = mock(LectureImportRepository.class);
+        ConcurrentLock concurrentLock = new ConcurrentLock();
+        LectureImportApplicationService concurrentService = new LectureImportApplicationService(
+                concurrentAuthorizationContextAssembler,
+                concurrentParser,
+                concurrentRepository,
+                concurrentLock,
+                transactionOperations
+        );
+        CountDownLatch firstReachedBatchCheck = new CountDownLatch(1);
+        CountDownLatch allowFirstToContinue = new CountDownLatch(1);
+        AtomicInteger mutations = new AtomicInteger();
+        AtomicBoolean firstBatchCheck = new AtomicBoolean(true);
+        given(concurrentAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(concurrentParser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", null)));
+        given(concurrentRepository.lectureBatchExists(eq("2025-2026"), any())).willAnswer(invocation -> {
+            if (firstBatchCheck.getAndSet(false)) {
+                firstReachedBatchCheck.countDown();
+                assertThat(allowFirstToContinue.await(5, TimeUnit.SECONDS)).isTrue();
+            }
+            return false;
+        });
+        given(concurrentRepository.findTarget(eq("S1"), eq("2025-2026")))
+                .willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
+        given(concurrentRepository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+        given(concurrentRepository.insertLectureComponents(eq("2025-2026"), any(), any())).willAnswer(invocation -> {
+            mutations.incrementAndGet();
+            return List.of();
+        });
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            CompletableFuture<LectureImportResult> first = CompletableFuture.supplyAsync(
+                    () -> concurrentService.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026")),
+                    executor
+            );
+            assertThat(firstReachedBatchCheck.await(5, TimeUnit.SECONDS)).isTrue();
+
+            CompletableFuture<Throwable> second = CompletableFuture.supplyAsync(() -> {
+                try {
+                    concurrentService.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+                    return null;
+                } catch (Throwable throwable) {
+                    return throwable;
+                }
+            }, executor);
+
+            assertThat(second.get(5, TimeUnit.SECONDS))
+                    .isInstanceOf(ConflictException.class)
+                    .hasMessage("同一讲座批次正在导入，请稍后重试");
+            allowFirstToContinue.countDown();
+            assertThat(first.get(5, TimeUnit.SECONDS).successCount()).isEqualTo(1);
+            assertThat(mutations.get()).isEqualTo(1);
+            verify(concurrentRepository, times(1)).insertLectureComponents(eq("2025-2026"), any(), any());
+            verify(concurrentRepository, times(1)).lectureBatchExists(eq("2025-2026"), any());
+        } finally {
+            allowFirstToContinue.countDown();
+            executor.shutdownNow();
+        }
     }
 
     @Test
@@ -414,6 +563,20 @@ class LectureImportApplicationServiceTest {
         @Override
         public void release(String lectureBatchId) {
             releases.incrementAndGet();
+        }
+    }
+
+    private static class ConcurrentLock implements LectureImportBatchLock {
+        private final Set<String> held = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+        @Override
+        public boolean tryAcquire(String lectureBatchId, Duration timeout) {
+            return held.add(lectureBatchId);
+        }
+
+        @Override
+        public void release(String lectureBatchId) {
+            held.remove(lectureBatchId);
         }
     }
 }
