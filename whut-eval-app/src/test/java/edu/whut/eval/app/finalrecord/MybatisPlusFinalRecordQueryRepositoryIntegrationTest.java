@@ -157,6 +157,23 @@ class MybatisPlusFinalRecordQueryRepositoryIntegrationTest {
     }
 
     @Test
+    void shouldKeepSubmittedAdminListOrgSubtreeVisibilityOnRealOrgPaths() {
+        insertLegacyOrgUnit(2999L, "相似学院", "/WHUT/CS2", "COLLEGE");
+        insertStudent(1099L, "2024305099", "相似路径学生", 4999L, "相似班", "/WHUT/CS2/CS2201");
+        insertFinalRecord(41099L, 1099L, "2025-2026", "SUBMITTED", "2026-07-07 14:00:00");
+
+        PageResult<FinalRecordQueryRow> page = repository.pageAdminFinalRecords(
+                accessContextWithOrgSubtree(2002L),
+                new FinalRecordPageQuery("2025-2026", null, null, null, 1, 20)
+        );
+
+        assertThat(page.total()).isEqualTo(2L);
+        assertThat(page.records()).extracting(FinalRecordQueryRow::getFinalRecordId)
+                .containsExactly(41002L, 41001L)
+                .doesNotContain(41099L);
+    }
+
+    @Test
     void shouldHideDraftRecordsFromAdminListAndDetail() {
         insertStudent(1003L, "2024305003", "王五", 2012L, "计科三班", "/WHUT/CS/CS2022/CS2203");
         insertFinalRecord(41003L, 1003L, "2025-2026", "DRAFT", "2026-07-07 14:00:00");

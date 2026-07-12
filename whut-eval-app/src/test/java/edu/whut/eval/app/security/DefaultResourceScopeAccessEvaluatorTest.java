@@ -196,6 +196,30 @@ class DefaultResourceScopeAccessEvaluatorTest {
     }
 
     @Test
+    void shouldDenyFinalRecordWhenCodePathOnlySharesSimilarPrefixWithOrgSubtreeRoot() {
+        UserAuthorizationContext admin = new UserAuthorizationContext(
+                1010L,
+                "T1010",
+                "Counselor",
+                "teacher",
+                Set.of("counselor"),
+                Set.of("score.view.assigned"),
+                List.of(
+                        new IamScopeRule(405L, "score.view.assigned", "ORG_SUBTREE", 2002L, null, null, null, 70, "ACTIVE")
+                )
+        );
+
+        ScopeAccessDecision decision = evaluator.canAccessFinalRecord(
+                admin,
+                "score.view.assigned",
+                new FinalRecordResourceContext(41099L, 1099L, 4999L, "/WHUT/CS2/CS2201", "2025-2026")
+        );
+
+        assertThat(decision.isAllowed()).isFalse();
+        assertThat(decision.getReason()).isEqualTo("no-scope-matched");
+    }
+
+    @Test
     void shouldDenyFinalRecordForCategoryItemAndCustomExpressionOnlyScopes() {
         UserAuthorizationContext admin = new UserAuthorizationContext(
                 1010L,

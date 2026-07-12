@@ -66,13 +66,13 @@ Update these fields as the implementation proceeds. Every field starts as `PENDI
 - Task 3 `rg` Availability: `AVAILABLE` at `/Users/bytedance/.local/bin/rg`.
 - Task 3 Scope/Provider Verification Command and Result: `PASS`; command `mvn -pl whut-eval-app -am -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest,ScopeSqlTranslatorTest test -Dsurefire.failIfNoSpecifiedTests=false` reported `Tests run: 26, Failures: 0, Errors: 0, Skipped: 0`. Contract scan command `rg -n "scopeExpression" whut-eval-infra whut-eval-application whut-eval-domain whut-eval-interfaces whut-eval-app/src/test docs/superpowers/plans/2026-07-12-d11-unsubmitted-final-records.md` completed; accepted hits were limited to the plan, `FinalRecordQuerySqlProvider`, existing admin-list provider helper, D-11 mapper/repository plumbing, and D-11 tests, with no controller/service/query DTO accepting caller-provided raw SQL.
 - Task 4 Controller Verification Command and Result: `PASS`; RED command `mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest test -Dsurefire.failIfNoSpecifiedTests=false` failed as expected before implementation because `/api/admin/final-records/unsubmitted` was captured by `/{recordId}` and `pageUnsubmittedFinalRecords` did not exist. GREEN command with the same test set reported `Tests run: 20, Failures: 0, Errors: 0, Skipped: 0`. Task 4 combined command `mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest,UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false` reported `Tests run: 42, Failures: 0, Errors: 0, Skipped: 0`.
-- Task 5 Shared-Scope Diff Classification: `PENDING`; record which scope-related files changed and whether Step 2 regressions are required.
-- Task 5 Step 2 Shared-Scope Regression Command and Result: `NOT_REQUIRED` unless Step 1 marks shared scope as changed.
-- Task 5 Step 3 Focused D-11 Command and Result: `PENDING`.
-- Task 5 Step 4 FinalRecord Regression Command and Result: `PENDING`.
-- Task 5 Step 5 Full Suite Command and Result: `PENDING`.
-- Task 5 Step 6 Contract-Drift Scan Command Set and Result: `PENDING`; record whether `rg` or fallback `grep -RInE` was used, plus accepted hit file/line notes.
-- Final Verification After Last Edit: `PENDING`; list the exact final commands run after the last file change and before the final commit.
+- Task 5 Shared-Scope Diff Classification: `REQUIRED`; branch diff changes `SqlPredicateFragment` by adding `alwaysTrue()`, so shared-scope regression coverage is required. `ApplicationScopeSqlTranslator` and `FinalRecordScopePredicateBuilder` production code were not changed by D-11. Existing submitted/confirmed provider paths remained in place, and Task 5 added explicit similar-prefix real-org-path regressions for the submitted/confirmed admin list SQL and single-record final-record access evaluator.
+- Task 5 Step 2 Shared-Scope Regression Command and Result: `PASS`; added `shouldKeepSubmittedAdminListOrgSubtreeVisibilityOnRealOrgPaths` in `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` and `shouldDenyFinalRecordWhenCodePathOnlySharesSimilarPrefixWithOrgSubtreeRoot` in `DefaultResourceScopeAccessEvaluatorTest`. Command `mvn -pl whut-eval-app -am -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest,DefaultResourceScopeAccessEvaluatorTest test -Dsurefire.failIfNoSpecifiedTests=false` reported `Tests run: 31, Failures: 0, Errors: 0, Skipped: 0`.
+- Task 5 Step 3 Focused D-11 Command and Result: `PASS`; command `mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest,ScopeSqlTranslatorTest test -Dsurefire.failIfNoSpecifiedTests=false` reported `Tests run: 69, Failures: 0, Errors: 0, Skipped: 0`.
+- Task 5 Step 4 FinalRecord Regression Command and Result: `PASS`; command `mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpecifiedTests=false` reported `Tests run: 90, Failures: 0, Errors: 0, Skipped: 0`.
+- Task 5 Step 5 Full Suite Command and Result: `PASS`; command `mvn test` reported `Tests run: 533, Failures: 0, Errors: 0, Skipped: 0`. Compared with the recorded full baseline `Tests run: 493, Failures: 0, Errors: 0, Skipped: 0`, D-11 has zero new failing tests.
+- Task 5 Step 6 Contract-Drift Scan Command Set and Result: `PASS`; `rg` was available at `/Users/bytedance/.local/bin/rg`. `git diff --check` passed; working-tree status and diff review showed only Task 5 regression tests and this plan evidence before final staging. Base branch diff against `main` showed the D-11 branch scope. Contract scans accepted historical application/import/export table hits and `academicYear 不能为空` in existing non-D-11 code, intentional submitted/confirmed predicates in existing final-record list/detail and D-11 exclusion SQL, no numeric org-id path anti-pattern hits, `scopeExpression` only in mapper/provider/repository-internal plumbing and tests, and `alwaysTrue()` only in `SqlPredicateFragment`, the D-11 `rosterScopeFragment(...)` allow-all branch, and the D-11 provider whitelist test.
+- Final Verification After Last Edit: `PASS`; after the Task 5 evidence edit, reran focused D-11 tests with `mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest,ScopeSqlTranslatorTest test -Dsurefire.failIfNoSpecifiedTests=false`, which reported `Tests run: 69, Failures: 0, Errors: 0, Skipped: 0`. Reran `git diff --check`, `git status --short`, `git diff --stat HEAD`, `git diff --name-status HEAD`, base branch diff review, `command -v rg`, and the five mandatory `rg` contract scans before final staging. Final uncommitted diff was limited to this plan file plus Task 5 shared-scope regression tests.
 
 **Tech Stack:** Java 21, Spring Boot 3.3.2, Spring MVC with `jakarta.servlet`, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -3287,7 +3287,7 @@ mvn -pl whut-eval-app -am -Dtest=AdminFinalRecordControllerWebMvcTest,FinalRecor
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/AdminFinalRecordController.java \
@@ -3309,7 +3309,7 @@ git commit -m "feat: expose unsubmitted final record endpoint"
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordQueryApplicationServiceTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordScopePredicateBuilderTest.java`
 
-- [ ] **Step 1: Inspect shared-scope impact**
+- [x] **Step 1: Inspect shared-scope impact**
 
 Review the actual final diff, not only file names. Record the result of each check in the execution notes before continuing:
 
@@ -3321,7 +3321,7 @@ Review the actual final diff, not only file names. Record the result of each che
 - Existing submitted/confirmed admin list/detail data needed by `FinalRecordAccessValidator` changed: add Step 2 regressions.
 - Only new D-11 provider methods, `D11ScopeSqlShape`, and a D-11-only private `rosterScopeFragment(...)` changed, with no `SqlPredicateFragment` or shared scope translator changes: document that no shared-scope files or methods changed and continue to Step 3.
 
-- [ ] **Step 2: Add shared-scope regression tests if required**
+- [x] **Step 2: Add shared-scope regression tests if required**
 
 If shared scope behavior changed, add tests proving the existing submitted/confirmed list and detail paths still enforce real org-path scope, including negative similar-prefix cases:
 
@@ -3365,7 +3365,7 @@ mvn -pl whut-eval-app -am -Dtest=ScopeSqlTranslatorTest test -Dsurefire.failIfNo
 
 Expected: PASS. This command is mandatory whenever Step 1 marks shared scope translation as changed; passing D-11/final-record tests alone is not enough in that case. Record the command and result in the execution notes.
 
-- [ ] **Step 3: Run focused D-11 tests**
+- [x] **Step 3: Run focused D-11 tests**
 
 Run:
 
@@ -3375,7 +3375,7 @@ mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQuer
 
 Expected: PASS. `ScopeSqlTranslatorTest` is included here unconditionally because D-11 changes `SqlPredicateFragment`.
 
-- [ ] **Step 4: Run final-record regression tests**
+- [x] **Step 4: Run final-record regression tests**
 
 Run:
 
@@ -3385,7 +3385,7 @@ mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpe
 
 Expected: PASS. If Step 1 marked shared scope translation as changed, also run `mvn -pl whut-eval-app -am -Dtest=ScopeSqlTranslatorTest test -Dsurefire.failIfNoSpecifiedTests=false` here unless it was already run after Step 2 with the final shared-scope code. `ScopeSqlTranslatorTest` failures are in scope for D-11 when shared translator code changed.
 
-- [ ] **Step 5: Run full test suite and compare with the pre-implementation baseline**
+- [x] **Step 5: Run full test suite and compare with the pre-implementation baseline**
 
 Run:
 
@@ -3395,7 +3395,7 @@ mvn test
 
 Expected: PASS. Before comparing failures, check the Pre-Implementation Verification Baseline entry. If `Full Baseline Result` still says `PENDING` or `BLOCKED`, do not claim "zero new failures" for the full suite; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4 as observed evidence. If a full baseline exists, compare this run with that recorded full baseline and confirm there are zero new failing tests. If only the focused fallback baseline exists, compare only D-11/final-record tests against that fallback; failures outside the focused set are observed state and must not be labeled new or pre-existing. D-11 added or modified tests must pass regardless of baseline availability. Existing failures that were already present in `whut-eval-domain`, `whut-eval-application`, `whut-eval-infra`, `whut-eval-interfaces`, or unrelated `whut-eval-app` tests may be treated as pre-existing only when they are named in the recorded full baseline and the final run shows zero new failing tests. In `whut-eval-app`, every final-record related test that was modified, added, or explicitly run by this plan is D-11-touched for verification purposes, including Task 3 mandatory D-11 private scope-parity tests, Step 2 shared-scope regressions, Step 3 focused D-11 tests, and Step 4 `*FinalRecord*Test` regressions; a failure in any of these D-11-touched tests fails D-11 verification even if the same run also contains unrelated pre-existing failures.
 
-- [ ] **Step 6: Review diff for contract drift**
+- [x] **Step 6: Review diff for contract drift**
 
 Run:
 
