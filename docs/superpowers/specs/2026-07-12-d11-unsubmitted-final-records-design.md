@@ -101,12 +101,12 @@ Invalid `academicYear` returns `400 / VAL-4001`.
 `grade` and `classes` are filter names from the target D-group contract. The implementation maps them to organization metadata:
 
 - `classes` filters the active primary student class unit with exact equality: `class_ou.unit_code = classes OR class_ou.unit_name = classes`;
-- `grade` filters the parent grade unit with exact equality: `grade_ou.unit_code = grade OR grade_ou.unit_name = grade`;
+- `grade` filters the active parent grade unit with exact equality: `grade_ou.unit_code = grade OR grade_ou.unit_name = grade`;
 - blank values are ignored.
 
 No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. The parameter name remains `classes`, not `className`, to match the team-delivery contract; despite the plural name, this D-11 increment accepts a single class filter value.
 
-If `grade` is provided, students whose selected class has no parent grade row are excluded because there is no grade code/name to match. Without a `grade` filter, those students may still appear with `grade = null`.
+If a filter value exactly matches one organization unit's `unit_code` and another organization unit's `unit_name`, both matching units are included because the filter uses OR semantics. If `grade` is provided, students whose selected class has no active parent grade row are excluded because there is no grade code/name to match. Without a `grade` filter, those students may still appear with `grade = null`.
 
 ### 4.4 Success Response
 
@@ -119,7 +119,7 @@ If `grade` is provided, students whose selected class has no parent grade row ar
 | `studentUserId` | number | `iam_user.id` |
 | `userNo` | string | `iam_user.user_no` |
 | `userName` | string | `iam_user.user_name` |
-| `grade` | string | parent grade `org_unit.unit_name`; `null` if the class has no grade parent |
+| `grade` | string | active parent grade `org_unit.unit_name`; `null` if the class has no active `GRADE` parent |
 | `className` | string | active primary class `org_unit.unit_name` |
 | `status` | string | fixed `UNSUBMITTED` |
 | `lastUpdatedAt` | string/null | ISO-8601 UTC string serialized from `MAX(final_record.updated_at)` across `DRAFT` rows for the academic year; otherwise `null` |
@@ -175,7 +175,9 @@ The candidate roster comes from A-group IAM and organization tables:
 - `iam_user`;
 - `org_membership`;
 - `org_unit` as class organization;
-- `org_unit` as parent grade organization.
+- `org_unit` as active parent grade organization.
+
+The grade organization is only considered valid when the parent row satisfies `grade_ou.unit_type = 'GRADE'` and `grade_ou.status = 'ACTIVE'`. If the class parent is missing, inactive, or not a grade unit, D-11 treats the class as having no grade: `grade = null`, `grade` filters do not match it, and an unfiltered query may still return the student.
 
 The submission state comes from D-group final-record tables:
 
@@ -282,6 +284,8 @@ JOIN org_unit class_ou
  AND class_ou.status = 'ACTIVE'
 LEFT JOIN org_unit grade_ou
   ON grade_ou.id = class_ou.parent_id
+ AND grade_ou.unit_type = 'GRADE'
+ AND grade_ou.status = 'ACTIVE'
 WHERE u.status = 'ACTIVE'
   AND (
     #{scopeAllowsAll} = TRUE
@@ -345,13 +349,14 @@ draft_fr.last_updated_at AS last_updated_at
 Recommended ordering:
 
 ```sql
-ORDER BY grade_ou.unit_code ASC,
+ORDER BY CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
+         grade_ou.unit_code ASC,
          class_ou.unit_code ASC,
          u.user_no ASC,
          u.id ASC
 ```
 
-This order is stable for pagination and matches how admins scan a roster.
+This order is stable for pagination and matches how admins scan a roster. Rows with no active grade parent sort after rows with a grade.
 
 ## 8. Application Model
 
@@ -369,8 +374,9 @@ Fields:
 
 Validation:
 
-- throw `ValidationException("academicYear 不能为空")` for blank academic year;
-- throw `ValidationException("academicYear 不合法")` when the value does not match `YYYY-YYYY` or the second year is not the first year plus 1;
+- normalize `academicYear` by trimming before validation and storage;
+- throw `ValidationException("academicYear 不能为空")` for a missing or blank academic year after trim;
+- throw `ValidationException("academicYear 不合法")` when the trimmed value does not match `YYYY-YYYY` or the second year is not the first year plus 1;
 - normalize optional filters by trimming blank to `null`;
 - normalize pagination like existing `FinalRecordPageQuery`.
 
@@ -484,12 +490,14 @@ D-11 does not return `404` for no data.
 Add tests that prove:
 
 - blank academic year throws `ValidationException`;
+- `academicYear = " 2025-2026 "` is accepted and normalized to `2025-2026`;
 - malformed academic years such as `abc`, `2025`, and `2025-2027` throw `ValidationException`;
 - `2025-2026` is accepted;
 - blank `grade` and `classes` normalize to `null`;
 - nonblank `grade` and `classes` are trimmed but not case-normalized;
 - `pageNo <= 0` becomes `1`;
 - `pageSize <= 0` becomes `20`;
+- `pageSize = 100` remains `100`;
 - `pageSize > 100` becomes `100`.
 
 These can live near existing final-record query tests.
@@ -503,7 +511,7 @@ Extend `FinalRecordQueryApplicationServiceTest`:
 - denies callers without `score.view.assigned`;
 - preserves `lastUpdatedAt` from a draft row;
 - returns `lastUpdatedAt = null` for an unsubmitted student with no `final_record`;
-- returns an empty page without throwing.
+- returns an empty page without throwing;
 - maps every row to `status = "UNSUBMITTED"` without trusting mapper data for that value.
 
 ### 11.3 Repository Integration Tests
@@ -520,9 +528,12 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - de-duplicates duplicate active primary memberships for the same student by selecting the lowest `org_membership.id`;
 - filters by `grade`;
 - filters by `classes`;
+- filters by `grade` and `classes` together using intersection semantics;
 - proves `grade` and `classes` filters match organization code and organization name by exact equality;
 - proves a partial name such as `计算机` does not match `计算机 2022 级`;
+- proves a filter value that matches one org's code and another org's name includes both exact matches;
 - verifies stable ordering by grade code, class code, user no, and user id;
+- verifies rows with `grade = null` sort after rows with an active grade;
 - verifies two-page pagination has no duplicated student ids and the combined rows match the same stable order;
 - returns empty page for unsupported category-only scopes;
 - returns all visible current-roster rows for a pure `ALL` scope;
@@ -530,9 +541,10 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - returns only subtree rows for a pure `ORG_SUBTREE` scope targeting a college id, without relying on a mixed-scope rule;
 - returns organization-scoped rows for a mixed scope containing one supported `ORG_SUBTREE` rule and one unsupported category rule;
 - resolves `ORG_SUBTREE` against real `org_unit.path` code paths, proving a scope rooted at org id `2002` can see classes whose path starts with `/WHUT/CS`.
+- proves an org path with a similar prefix but not a real child path, such as `/WHUT/CS2/CS2201`, is not visible to a root path `/WHUT/CS`;
 - verifies a student with duplicate dirty draft final records still appears once and uses `MAX(updated_at)` for `lastUpdatedAt`;
 - verifies a student with no `final_record` has `lastUpdatedAt = null`;
-- verifies a class with no parent grade row is excluded when `grade` is provided and can appear with `grade = null` when no `grade` filter is provided.
+- verifies a class with no active `GRADE` parent row is excluded when `grade` is provided and can appear with `grade = null` when no `grade` filter is provided.
 
 The last test is mandatory because a numeric-id path comparison such as `LIKE '%/2002/%'` would return zero rows against the seeded organization path format.
 
@@ -579,8 +591,11 @@ If shared scope translation is fixed to resolve `ORG_SUBTREE` by real org paths,
 - Pure `ALL`, pure `ORG_UNIT`, and pure `ORG_SUBTREE` scopes are each tested on the D-11 roster query path.
 - Unsupported-only scope fragments return an empty page.
 - `grade` and `classes` filters are exact code/name matches.
-- A provided `grade` filter excludes classes without a grade parent row.
+- `grade` and `classes` together use intersection semantics.
+- A provided `grade` filter excludes classes without an active `GRADE` parent row.
 - Pagination order is deterministic and stable across pages.
+- Null grade rows sort after non-null grade rows.
+- ORG_SUBTREE path matching rejects similar-prefix non-child paths.
 - Duplicate dirty draft final records do not duplicate students in the result.
 - `lastUpdatedAt` is the draft aggregate `MAX(final_record.updated_at)` or `null`.
 - No data returns an empty page, not `404`.
