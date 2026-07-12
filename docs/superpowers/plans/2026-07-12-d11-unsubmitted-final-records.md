@@ -1046,7 +1046,7 @@ void shouldReturnEmptyWhenGradeFilterDoesNotMatchAnyActiveVisibleGrade() {
 }
 ```
 
-Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithAllScope()`, `accessContextWithUnsupportedCategoryOnly()`, `accessContextWithEmptyGrantedScopes()`, `accessContextWithoutScoreViewAssigned()`, `accessContextWithOrgUnitAndOrgSubtree(Long orgUnitId, Long orgSubtreeRootId)`, and `accessContextWithOrgSubtreeAndUnsupportedCategory(Long orgSubtreeRootId)` by following the existing `AuthorizationScope` test construction style.
+Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgSubtrees(Long... orgUnitIds)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithOrgUnits(Long... orgUnitIds)`, `accessContextWithAllScope()`, `accessContextWithUnsupportedCategoryOnly()`, `accessContextWithEmptyGrantedScopes()`, `accessContextWithoutScoreViewAssigned()`, `accessContextWithOrgUnitAndOrgSubtree(Long orgUnitId, Long orgSubtreeRootId)`, and `accessContextWithOrgSubtreeAndUnsupportedCategory(Long orgSubtreeRootId)` by following the existing `AuthorizationScope` test construction style. The varargs helpers must produce one scope rule per provided id while preserving input order; they must not collapse same-type scope rules before the production `rosterScopeFragment(...)` code sees them.
 
 - [ ] **Step 3: Write failing scope and filter tests**
 
@@ -1244,6 +1244,54 @@ void shouldUnionSameClassOrgUnitAndOrgSubtreeWithoutDuplicatingStudents() {
     assertThat(page.total()).isEqualTo(2);
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1001L, 1002L);
+}
+
+@Test
+void shouldUnionMultipleOrgSubtreeRootsWithoutDuplicatingStudents() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4003, 3002, 'CLASS', 'CS2301', '计算机2301班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1004, 'S004', 'Dora', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5004, 1004, 4003, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> disjointRoots = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtrees(3001L, 3002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    PageResult<UnsubmittedStudentRow> overlappingRoots = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtrees(2002L, 3001L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(disjointRoots.total()).isEqualTo(4);
+    assertThat(disjointRoots.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L, 1004L);
+    assertThat(overlappingRoots.total()).isEqualTo(4);
+    assertThat(overlappingRoots.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L, 1004L)
+            .doesNotHaveDuplicates();
+}
+
+@Test
+void shouldUnionMultipleOrgUnitRulesWithoutDuplicatingStudents() {
+    seedRoster();
+
+    PageResult<UnsubmittedStudentRow> disjointClasses = repository.pageUnsubmittedStudents(
+            accessContextWithOrgUnits(4001L, 4002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    PageResult<UnsubmittedStudentRow> repeatedClass = repository.pageUnsubmittedStudents(
+            accessContextWithOrgUnits(4001L, 4001L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(disjointClasses.total()).isEqualTo(3);
+    assertThat(disjointClasses.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L);
+    assertThat(repeatedClass.total()).isEqualTo(2);
+    assertThat(repeatedClass.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L)
+            .doesNotHaveDuplicates();
 }
 
 @Test
@@ -1966,6 +2014,12 @@ Then add helper methods. The provider builds indexed MyBatis placeholders and ne
 
 Before wiring the provider and repository, create `D11ScopeSqlShape` in `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/D11ScopeSqlShape.java`. This class is the single source for D-11 scope SQL shape: the repository uses it to generate ORG_UNIT/ORG_SUBTREE fragments, and the provider uses it to validate the whitelist. Do not duplicate subtree SQL or whitelist regex bodies in `FinalRecordQuerySqlProvider` or `MybatisPlusFinalRecordQueryRepository`. `scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. `rosterScopeFragment(...)` must wrap every dynamic non-static expression in one outer pair of parentheses, including a single ORG_UNIT fragment and a single ORG_SUBTREE fragment, so the provider whitelist sees one consistent shape. Provider validation must normalize whitespace and then use full-expression matching against this closed whitelist: deny-all, allow-all, ORG_UNIT only, ORG_SUBTREE only, ORG_UNIT OR ORG_SUBTREE, and ORG_SUBTREE OR ORG_UNIT. Prefix matching is not allowed. The `root_ou.path IS NOT NULL` and class-path `IS NOT NULL` checks are defensive-in-depth guards and remain part of the generated SQL and whitelist even though the frozen A schema declares `org_unit.path NOT NULL`; the empty, leading slash, trailing slash, and `LIKE` wildcard character checks cover malformed but schema-valid path strings. D-11 treats `%` and `_` in subtree root/class paths as malformed and non-matching by requiring `LOCATE('%', path) = 0` and `LOCATE('_', path) = 0` before executing the `LIKE CONCAT(root_ou.path, '/%')` subtree comparison.
 
+Provider helper contracts:
+
+- `scopeExpression(Map<String, Object> params, String classAlias)` reads only `params.get("scopeFragment")`, treats missing/null/blank expression as defensive `1 = 0`, validates the original expression with `D11ScopeSqlShape.isAllowedScopeExpression(...)`, and replaces only `D11ScopeSqlShape.CLASS_ALIAS_PLACEHOLDER` with the fixed alias passed by the provider (`class_ou` or `class_ou1`). It must not read query filters or request values, must not accept a caller-supplied alias from outside the provider, and must not append raw SQL around the validated fragment.
+- `classPredicate(Map<String, Object> params, String classAlias)` reads only `params.get("query")`; when the query is absent or `query.isClassesEmpty()` is true it returns the fixed predicate `TRUE`. Otherwise it returns one parenthesized predicate: `CAST(<alias>.unit_code AS BINARY) IN (...) OR CAST(<alias>.unit_name AS BINARY) IN (...)`, where each placeholder is generated as `CAST(#{query.classes[i]} AS BINARY)` from the normalized `UnsubmittedFinalRecordQuery.getClasses()` order.
+- `caseSensitiveEquals(...)` and `caseSensitiveIn(...)` accept only provider-chosen column names and MyBatis placeholders generated in this provider. They are not generic SQL helpers and must not receive request strings.
+
 ```java
 package edu.whut.eval.infra.security.sql;
 
@@ -2233,6 +2287,10 @@ void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
             Map.of("d11Subtree0", 2002L)
     ), "LOCATE('%', root_ou.path) = 0");
     assertProviderAccepts(provider, new SqlPredicateFragment(
+            "(" + D11ScopeSqlShape.orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}, #{scopeFragment.parameters.d11Subtree1}") + ")",
+            Map.of("d11Subtree0", 2002L, "d11Subtree1", 3001L)
+    ), "root_ou.id IN");
+    assertProviderAccepts(provider, new SqlPredicateFragment(
             "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}")
                     + " OR " + D11ScopeSqlShape.orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}") + ")",
             Map.of("d11OrgUnit0", 4001L, "d11Subtree0", 2002L)
@@ -2408,6 +2466,30 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
             .andExpect(status().isOk());
     verify(queryApplicationService).pageUnsubmittedStudents(captor.capture());
     assertThat(captor.getValue().getClasses()).containsExactly("CS2205", "CS2206", "CS2207");
+
+    reset(queryApplicationService);
+    when(queryApplicationService.pageUnsubmittedStudents(any()))
+            .thenReturn(new PageResult<>(0, List.of()));
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("classes", "B", " A ")
+                    .param("classes[]", "A", "C")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isOk());
+    verify(queryApplicationService).pageUnsubmittedStudents(captor.capture());
+    assertThat(captor.getValue().getClasses()).containsExactly("B", "A", "C");
+
+    reset(queryApplicationService);
+    when(queryApplicationService.pageUnsubmittedStudents(any()))
+            .thenReturn(new PageResult<>(0, List.of()));
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("classes", "A")
+                    .param("classes[]", "B")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isOk());
+    verify(queryApplicationService).pageUnsubmittedStudents(captor.capture());
+    assertThat(captor.getValue().getClasses()).containsExactly("A", "B");
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026", "2026-2027")
@@ -2782,6 +2864,14 @@ void shouldKeepAdminDetailOrgSubtreeAccessOnRealOrgPaths() {
 
 Keep these tests aligned with actual helper names and access-validation flow in the current test file. The detail regression must go through `FinalRecordQueryApplicationService.getAdminFinalRecordDetail(...)` or directly through `FinalRecordAccessValidator.requireAccess(...)`; `repository.findAdminFinalRecordDetail(...)` alone is an unscoped context fetch and is not sufficient. Do not relax existing `ORG_UNIT` exact-unit behavior.
 
+If `ApplicationScopeSqlTranslator`, `SqlPredicateFragment`, or any other shared scope-SQL translator code changes outside a D-11-only helper, also update and run the existing shared translator regression suite:
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=ScopeSqlTranslatorTest test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: PASS. This command is mandatory whenever Step 1 marks shared scope translation as changed; passing D-11/final-record tests alone is not enough in that case. Record the command and result in the execution notes.
+
 - [ ] **Step 3: Run focused D-11 tests**
 
 Run:
@@ -2800,7 +2890,7 @@ Run:
 mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: PASS.
+Expected: PASS. If Step 1 marked shared scope translation as changed, also run `mvn -pl whut-eval-app -am -Dtest=ScopeSqlTranslatorTest test -Dsurefire.failIfNoSpecifiedTests=false` here unless it was already run after Step 2 with the final shared-scope code. `ScopeSqlTranslatorTest` failures are in scope for D-11 when shared translator code changed.
 
 - [ ] **Step 5: Run full test suite and compare with the pre-implementation baseline**
 
@@ -2885,6 +2975,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `academicYear` validation returns `ValidationException("academicYear 不合法")`.
 - `classes` remains `List<String>` and accepts repeated `classes` plus array-style `classes[]`.
 - `classes` and `classes[]` are merged before `UnsubmittedFinalRecordQuery` performs trim, blank dropping, de-duplication, length checks, and the normalized `MAX_CLASSES = 500` check.
+- Controller tests prove raw `classes` values are merged before raw `classes[]` values, and de-duplication keeps the first normalized value after that merged order.
 - Commas inside `grade` and `classes` remain ordinary exact-match characters.
 - `PageResult<T>` remains only `total` and `records`.
 - Controller JSON tests lock `PageResult<T>` to exactly `total` and `records`.
@@ -2905,9 +2996,11 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - D-11 private `rosterScopeFragment(...)` is covered by mandatory parity tests against existing submitted/confirmed whole-record scope visibility for denied permission, `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths.
 - `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including GRADE and CLASS roots; a GRADE root exposes that grade's class descendants, and a CLASS root exposes that class only, not sibling classes.
 - If `ORG_UNIT` and `ORG_SUBTREE` both grant the same class, visible students are still counted and returned once.
+- Multiple same-type scope rules are covered: two `ORG_SUBTREE` roots and two `ORG_UNIT` rules both produce union visibility without duplicate students or whitelist rejection.
 - Inactive `ORG_SUBTREE` roots at COLLEGE, GRADE, or CLASS level return an empty page even when their path and descendants are otherwise valid.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
 - `D11ScopeSqlShape` is the single source for D-11 ORG_UNIT/ORG_SUBTREE SQL fragments and whitelist validation; repository/provider code and provider tests do not duplicate subtree SQL shape strings.
+- Provider helper contracts are explicit: `scopeExpression(...)` only reads `scopeFragment`, validates the whitelist, and replaces the fixed class-alias placeholder; `classPredicate(...)` only reads `query` and generates code/name case-sensitive `IN` predicates.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
 - Cross-grade duplicate memberships are filtered by `grade` before collapse, so count, row selection, and displayed grade/class all come from the visible membership set.
 - Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
@@ -2921,4 +3014,5 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - Baseline notes belong in the execution notes for this plan, directly under the Pre-Implementation Verification Baseline section; do not bury baseline failures only in terminal scrollback or a separate handoff summary.
 - A `PENDING` or `BLOCKED` Full Baseline blocks any full-suite "zero new failures" claim; it does not block reporting observed test results.
 - Any modified, added, or explicitly run final-record related test under `whut-eval-app` is in D-11 verification scope; failures in shared-scope regressions or `*FinalRecord*Test` cannot be waived as outside the D-11 test package. Unrelated pre-existing failures are judged only by the recorded baseline and zero-new-failure comparison.
+- If shared scope translation code changed, `ScopeSqlTranslatorTest` is mandatory verification and must pass; final-record-only regression commands are not sufficient.
 - No D-7, D-8, D-9, D-10, import, export, or frontend behavior is introduced.
