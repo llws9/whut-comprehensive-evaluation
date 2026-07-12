@@ -75,7 +75,7 @@ Request parameters:
 |---|---:|---|
 | `file` | yes | Non-empty Excel file. |
 | `title` | yes | Non-blank after trim, max 255 characters. Leading and trailing whitespace are removed; internal whitespace, case, and Unicode normalization form are preserved. |
-| `heldAt` | yes | ISO local date-time accepted by `LocalDateTime.parse`; normalized to whole seconds in the response and batch id. |
+| `heldAt` | yes | ISO local date-time accepted by `LocalDateTime.parse`; seconds may be omitted, fractional seconds are accepted and truncated, and timezone offsets are not accepted. The value is normalized to whole seconds in the response and batch id. |
 | `academicYear` | yes | Trimmed before validation; must match `^\d{4}-\d{4}$`, and the second year must equal first year + 1. |
 
 Successful response:
@@ -84,7 +84,7 @@ Successful response:
 {
   "success": true,
   "data": {
-    "lectureBatchId": "LECTURE-20252026-20260518143000-8F3A2B",
+    "lectureBatchId": "LECTURE-20252026-20260518143000-8F3A2B1C4D6E",
     "title": "学院学术讲座",
     "heldAt": "2026-05-18T14:30:00",
     "academicYear": "2025-2026",
@@ -107,9 +107,13 @@ Successful response:
 }
 ```
 
+`failedRows` are returned in ascending `rowNo` order. This keeps the response stable even if successful row mutations are executed in a different lock order internally.
+
 `failedRows` fields are frozen as:
 
 `rowNo`, `code`, `message`, `rawValue`
+
+`rawValue` is frozen as an object containing exactly `studentNo`, `scoreValue`, and `displayText`. Each value is the trimmed `DataFormatter` string read from the workbook before row-level normalization; blank strings are returned as `null`.
 
 Response count semantics:
 
@@ -145,7 +149,7 @@ Frozen row-level failure mapping:
 | `scoreValue` does not match strict decimal text | `SCORE_VALUE_INVALID` | `scoreValue 必须是数字` |
 | `scoreValue < 0` or `scoreValue > 99999999.99` | `SCORE_VALUE_OUT_OF_RANGE` | `scoreValue 必须在 0 到 99999999.99 之间` |
 | `scoreValue` has more than 2 decimal places | `SCORE_VALUE_SCALE_INVALID` | `scoreValue 最多保留 2 位小数` |
-| `displayText` longer than 1000 characters | `DISPLAY_TEXT_TOO_LONG` | `displayText 长度不能超过 1000` |
+| `displayText` longer than 1000 characters after trim | `DISPLAY_TEXT_TOO_LONG` | `displayText 长度不能超过 1000` |
 | duplicate field-valid `studentNo` in the same workbook | `DUPLICATE_STUDENT` | `同一讲座批次中学生重复` |
 | eligible student not found | `STUDENT_NOT_FOUND` | `studentNo 对应学生不存在或未启用` |
 | row target outside `score.import` scope | `OUT_OF_SCOPE` | `当前用户无权导入该学生讲座成绩` |
@@ -173,7 +177,7 @@ Blank data rows are ignored and do not count toward `totalCount`. A blank data r
 
 Cell values are read with `DataFormatter`, trimmed, and blank strings become null. The parser must not evaluate formulas beyond POI's formatted value behavior.
 
-The parser rejects files larger than 5 MB and workbooks with more than 5000 non-blank data rows using `ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB")`.
+The 5 MB limit applies to the uploaded file bytes before POI parsing. The parser rejects oversized byte arrays before opening the workbook, and rejects workbooks with more than 5000 non-blank data rows using `ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB")`.
 
 Header error messages:
 
@@ -242,6 +246,7 @@ Per-student final-record concurrency:
 - The totals update must include `WHERE id = ? AND status = 'DRAFT'`.
 - If the conditional totals update affects zero rows, record `FINAL_RECORD_LOCKED` for that row and do not count it as a success.
 - Under this model, a concurrent submit or confirm cannot commit between `SELECT ... FOR UPDATE` and the totals update for the same `final_record`; tests should verify the lock and conditional update behavior, not an impossible mid-lock state transition.
+- To reduce cross-batch deadlocks, field-valid, non-duplicate, eligible candidate rows that need final-record mutation must be locked and mutated in a deterministic order by target `student_user_id` ascending, then `rowNo` ascending. Duplicate-student detection and response counts still use workbook row order, and the final `failedRows` response is sorted by `rowNo`.
 
 Transaction scope:
 
@@ -400,7 +405,7 @@ Add tests proving:
 - `lectureBatchId` uses the 12-character SHA-256 prefix and fits `source_ref_id VARCHAR(64)`;
 - a duplicate existing `lectureBatchId` throws `ConflictException`;
 - a zero-success import leaves no persisted batch marker and allows a later retry;
-- a header-only workbook returns HTTP 200 with all counts zero and no batch marker;
+- a header-only workbook returns a result with all counts zero and no batch marker;
 - a valid row inserts a new draft record and lecture component;
 - a new final record starts at `version = 0` and reaches `version = 1` after the successful row mutation;
 - a row with blank `displayText` stores the normalized request title followed by ` 讲座签到`;
@@ -411,11 +416,13 @@ Add tests proving:
 - a row outside `score.import` scope appears in `failedRows`;
 - `SUBMITTED` and `CONFIRMED` targets appear in `failedRows` and are not mutated;
 - successful rows update totals and increment version;
-- mixed valid and invalid rows return HTTP 200 with accurate counts;
+- mixed valid and invalid rows return a result with accurate counts;
+- mixed failure scenarios return `failedRows` in ascending `rowNo` order;
 - expected row-level business failures are collected without rolling back other successful rows in the same request transaction;
 - an unexpected persistence failure rolls back the whole request transaction and commits no partial successful rows;
-- same-batch concurrent imports result in one successful import and one `ConflictException` mapped to `409 / BIZ-4090`;
-- final-record row locking prevents a concurrent submit/confirm transition from committing between row lock acquisition and totals update.
+- same-batch concurrent imports result in one successful import and one `ConflictException`;
+- final-record row locking prevents a concurrent submit/confirm transition from committing between row lock acquisition and totals update;
+- cross-batch imports that touch the same students acquire final-record locks in deterministic student id order.
 
 ### Repository Integration Tests
 
@@ -442,6 +449,7 @@ Add tests proving:
 - empty file returns `400 VAL-4001`;
 - missing title returns `400 VAL-4001`;
 - invalid heldAt returns `400 VAL-4001`;
+- a header-only workbook returns HTTP 200 with all counts zero;
 - service conflict returns `409 BIZ-4090`;
 - multipart read failure returns `503 EXT-5033`;
 - controller method declares `SCORE_IMPORT`.
