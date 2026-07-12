@@ -6,7 +6,17 @@
 
 **Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, repeated `classes`, `pageNo`, and `pageSize`; response pagination remains `PageResult<T>` with only `total` and `records`.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student-number nulls-last, student number, then user id; this plan intentionally extends the design SQL with student-number nulls-last ordering to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student-number nulls-last, student number, then user id; this plan intentionally extends the design SQL with student-number nulls-last ordering to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
+
+## Pre-Implementation Verification Baseline
+
+- [ ] Before creating D-11 code files or modifying production/test code, run:
+
+```bash
+mvn test
+```
+
+Record whether it passes. If it fails before D-11 implementation starts, record the failing test names and failure count in the execution notes. Task 5 may compare against this recorded pre-implementation baseline; if no pre-implementation baseline exists, do not claim "zero new failures" and report the final `mvn test` result as an observed state only.
 
 **Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -206,10 +216,22 @@ void shouldTreatBlankClassesAsEmptyFilter() {
 }
 
 @Test
-void shouldRejectMoreThanFiveHundredNormalizedClasses() {
+void shouldRejectMoreThanFiveHundredRawClasses() {
     List<String> classes = new ArrayList<>();
     for (int i = 0; i < 501; i++) {
         classes.add("CS" + i);
+    }
+
+    assertThatThrownBy(() -> new UnsubmittedFinalRecordQuery("2025-2026", null, classes, 1, 20))
+            .isInstanceOf(ValidationException.class)
+            .hasMessage("classes 不合法");
+}
+
+@Test
+void shouldRejectMoreThanFiveHundredRawClassesEvenWhenValuesRepeat() {
+    List<String> classes = new ArrayList<>();
+    for (int i = 0; i < 501; i++) {
+        classes.add("CS2201");
     }
 
     assertThatThrownBy(() -> new UnsubmittedFinalRecordQuery("2025-2026", null, classes, 1, 20))
@@ -234,7 +256,7 @@ void shouldRejectOverlongGradeAndClassValues() {
 
 Create `UnsubmittedFinalRecordQuery`:
 
-D-11 keeps `grade` and `classes` as exact-match filter strings without comma splitting or case folding. They are bound through MyBatis parameters and naturally produce no matches when no `org_unit.unit_code` or `org_unit.unit_name` equals the value. To cap request size, keep `MAX_CLASSES = 500` and reject any single normalized `grade` or `classes` value longer than 256 characters.
+D-11 keeps `grade` and `classes` as exact-match filter strings without comma splitting or case folding. They are bound through MyBatis parameters and naturally produce no matches when no `org_unit.unit_code` or `org_unit.unit_name` equals the value. To cap request size, reject more than `MAX_CLASSES = 500` raw `classes` parameters before de-duplication, and reject any single normalized `grade` or `classes` value longer than 256 characters.
 
 ```java
 package edu.whut.eval.domain.finalrecord.query;
@@ -312,15 +334,15 @@ public class UnsubmittedFinalRecordQuery {
         if (values == null || values.isEmpty()) {
             return List.of();
         }
+        if (values.size() > MAX_CLASSES) {
+            throw new ValidationException("classes 不合法");
+        }
         Set<String> normalized = new LinkedHashSet<>();
         for (String value : values) {
             String trimmed = normalizeFilterValue(value, "classes");
             if (trimmed != null) {
                 normalized.add(trimmed);
             }
-        }
-        if (normalized.size() > MAX_CLASSES) {
-            throw new ValidationException("classes 不合法");
         }
         return List.copyOf(new ArrayList<>(normalized));
     }
@@ -2045,7 +2067,7 @@ mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpe
 
 Expected: PASS.
 
-- [ ] **Step 5: Run full test suite with a baseline rule**
+- [ ] **Step 5: Run full test suite and compare with the pre-implementation baseline**
 
 Run:
 
@@ -2053,7 +2075,7 @@ Run:
 mvn test
 ```
 
-Expected: PASS. If unrelated pre-existing failures exist, do not skip this step: capture the failure count and failing test names, verify the focused D-11 tests in Step 3 and final-record regressions in Step 4 still pass, then rerun `mvn test` after the D-11 changes and confirm there are zero new failing tests compared with the recorded baseline. Any new failure in a D-11-touched module fails verification.
+Expected: PASS. If unrelated pre-existing failures were recorded in the Pre-Implementation Verification Baseline section, compare this run with that recorded baseline and confirm there are zero new failing tests. If no pre-implementation baseline was recorded, do not claim "zero new failures"; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4. Any failure in a D-11-touched module fails verification regardless of baseline availability.
 
 - [ ] **Step 6: Review diff for contract drift**
 
@@ -2061,7 +2083,8 @@ Run:
 
 ```bash
 git diff --check
-git diff --stat main...HEAD
+BASE_BRANCH=$(git show-ref --verify --quiet refs/heads/main && echo main || echo master)
+git diff --stat "$BASE_BRANCH"...HEAD
 rg -n "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 rg -n "status\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'CONFIRMED'\s*\)|status\s*=\s*'SUBMITTED'|status\s*=\s*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
