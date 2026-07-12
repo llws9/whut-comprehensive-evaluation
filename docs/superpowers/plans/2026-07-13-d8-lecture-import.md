@@ -1165,6 +1165,33 @@ void shouldCollectStudentScopeAndLockFailuresAndSortFailedRowsByRowNo() {
 }
 
 @Test
+void shouldApplyOrgUnitScopeAsExactMatchOnly() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(new UserAuthorizationContext(
+            1010L,
+            "T1010",
+            "Counselor",
+            "teacher",
+            Set.of("COUNSELOR"),
+            Set.of("score.import"),
+            List.of(new IamScopeRule(7011L, "score.import", "ORG_UNIT", 2201L, null, null, null, 80, "ACTIVE"))
+    ));
+    given(parser.parse(any())).willReturn(List.of(
+            new LectureImportRow(2L, "S1", "1.00", null),
+            new LectureImportRow(3L, "S2", "1.00", null)
+    ));
+    given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(new LectureImportStudentTarget(1001L, "S1", 2201L, "/WHUT/CS/CS2022/CS2201")));
+    given(repository.findTarget(eq("S2"), eq("2025-2026"))).willReturn(Optional.of(new LectureImportStudentTarget(1002L, "S2", 2202L, "/WHUT/CS/CS2022/CS2202")));
+    given(repository.insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components -> components.size() == 1 && components.get(0).studentNo().equals("S1"))))
+            .willReturn(List.of());
+
+    LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+    assertThat(result.successCount()).isEqualTo(1);
+    assertThat(result.failedRows()).extracting("rowNo").containsExactly(3L);
+    assertThat(result.failedRows()).extracting("code").containsExactly("OUT_OF_SCOPE");
+}
+
+@Test
 void shouldReleaseAcquiredLockOnDuplicateConflict() {
     given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
     given(parser.parse(any())).willReturn(List.of());
@@ -2380,14 +2407,14 @@ Add the focused tests below at the named layer:
 - Service: `displayText` with exactly 1000 Unicode code points is accepted and 1001 is rejected.
 - Service: `heldAt` rejects timezone offsets, accepts omitted seconds as `:00`, truncates fractional seconds, and feeds the same whole-second value into the response and `lectureBatchId`.
 - Service: `academicYear` rejects `2025-2027`, `2025-2024`, and `9999-0000`.
-- Service: unsupported-only scope set returns `OUT_OF_SCOPE`; `ALL` scope allows import; multiple scopes use union semantics.
+- Service: unsupported-only scope set returns `OUT_OF_SCOPE`; `ALL` scope allows import; `ORG_UNIT` allows exact `orgUnitId` matches only; multiple scopes use union semantics.
 - Service: failedRows are sorted ascending by `rowNo` when failures originate from field validation, duplicate, student lookup, and scope paths.
 - Service: header-only imports and all-failed zero-success imports acquire/release the batch lock, run the authoritative duplicate-batch check, do not call component persistence, and allow same-metadata retry.
 - Repository: two distinct `lectureBatchId` values for the same student/year create two `INTELLECTUAL_LECTURE` components.
 - Repository: duplicate-batch detection joins through `final_record.academic_year`.
 - Repository: total recalculation persists scale 2 with `RoundingMode.HALF_UP` and increments `version` once per successful lecture row mutation, not once per distinct `final_record_id`.
 - Repository: a returned `FINAL_RECORD_LOCKED` row-level failure does not roll back earlier successful DRAFT rows, but a thrown persistence failure such as `updateTotals == 0` rolls back the whole request transaction and leaves no inserted lecture component.
-- Service: H2/JVM test lock adapter serializes two same-`lectureBatchId` service calls; hold the first call at the fake lock boundary and assert the second call gets `ConflictException("同一讲座批次正在导入，请稍后重试")` before any repository mutation.
+- Service: add the same-batch concurrency test to `LectureImportApplicationServiceTest`; use a fake lock plus `CountDownLatch` to hold the first thread after `tryAcquire` and before repository mutation, start a second thread with the same deterministic `lectureBatchId`, assert it gets `ConflictException("同一讲座批次正在导入，请稍后重试")`, then release the first thread and assert no second-call repository mutation occurred.
 - Controller: empty lecture file maps to `400 / VAL-4001`, invalid `heldAt` maps to `400 / VAL-4001`, header-only result maps to `200` with zero counts, multipart `IOException` read failure maps to `503 / EXT-5033`, service conflict `同一讲座批次已导入` maps to `409 / BIZ-4090`, and the route is exactly `POST /api/admin/imports/lectures` with `multipart/form-data` consumes.
 
 - [ ] **Step 2: Run targeted D-8 suite**
