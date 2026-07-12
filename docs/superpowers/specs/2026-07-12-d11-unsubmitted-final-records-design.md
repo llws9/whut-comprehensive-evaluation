@@ -105,7 +105,7 @@ The full `academicYear` normalization and validation rules live in section 8.1.
 - `grade` filters the active parent grade unit with exact equality: `grade_ou.unit_code = grade OR grade_ou.unit_name = grade`;
 - blank values are ignored.
 
-No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. The parameter name remains `classes`, not `className`, to match the team-delivery contract; despite the plural name, this D-11 increment accepts a single class filter value.
+No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. The parameter name remains `classes`, not `className`, to match the team-delivery contract; despite the plural name, this D-11 increment accepts a single class filter value only. Comma-separated values, repeated query parameters, and array-style multi-value input are not supported by this increment. The `classes` request filter matches the same class organization whose name is returned as `className` in the response.
 
 If a filter value exactly matches one organization unit's `unit_code` and another organization unit's `unit_name`, both matching units are included because the filter uses OR semantics. If `grade` is provided, students whose selected class has no active parent grade row are excluded because there is no grade code/name to match. Without a `grade` filter, those students may still appear with `grade = null`.
 
@@ -149,7 +149,7 @@ D-11 does not reconstruct a historical roster for `academicYear`. The roster is 
 
 Future academic years use the same rule. If the year is syntactically valid but has no final records yet, D-11 still uses the current active roster and reports in-scope students as unsubmitted.
 
-A-group data is expected to have at most one active primary student membership per user. D-11 still guards against duplicated active primary rows: the query selects one deterministic membership per user using the lowest `org_membership.id`, and all class, grade, scope, and filter behavior is evaluated from that selected membership. This prevents duplicate rows and inflated pagination totals when dirty membership data exists.
+A-group data is expected to have at most one active primary student membership per user. D-11 still guards against duplicated active primary rows: scope checks and optional `grade` / `classes` filters are evaluated across all active primary student memberships first, then the query collapses matching rows to one visible row per student. If multiple memberships for the same student satisfy the caller's scope and filters, the selected display membership is the one with the lowest `org_membership.id`. This prevents duplicate rows and inflated pagination totals without hiding a student whose lower-id dirty membership is outside scope but another active primary membership is valid and visible.
 
 ### 5.2 Unsubmitted Definition
 
@@ -274,25 +274,115 @@ The same rule must be preserved for existing admin final-record list/detail acce
 
 D-11 should add a separate mapper/provider path rather than overloading the submitted-record list query.
 
-Recommended count query:
+Recommended count query shape:
 
 ```sql
 SELECT COUNT(1)
-FROM iam_user u
-JOIN (
-  SELECT om1.*
-  FROM org_membership om1
-  JOIN (
-    SELECT user_id, MIN(id) AS membership_id
-    FROM org_membership
-    WHERE membership_type = 'STUDENT'
-      AND is_primary = 1
-      AND status = 'ACTIVE'
-    GROUP BY user_id
-  ) picked_om
-    ON picked_om.membership_id = om1.id
-) om
-  ON om.user_id = u.id
+FROM (
+  SELECT u.id AS student_user_id
+  FROM iam_user u
+  JOIN org_membership om
+    ON om.user_id = u.id
+   AND om.membership_type = 'STUDENT'
+   AND om.is_primary = 1
+   AND om.status = 'ACTIVE'
+  JOIN org_unit class_ou
+    ON class_ou.id = om.org_unit_id
+   AND class_ou.unit_type = 'CLASS'
+   AND class_ou.status = 'ACTIVE'
+  LEFT JOIN org_unit grade_ou
+    ON grade_ou.id = class_ou.parent_id
+   AND grade_ou.unit_type = 'GRADE'
+   AND grade_ou.status = 'ACTIVE'
+  WHERE u.status = 'ACTIVE'
+    AND EXISTS (
+      SELECT 1
+      FROM org_unit root_ou
+      WHERE root_ou.id IN (/* one bound parameter per subtree root id */)
+        AND root_ou.status = 'ACTIVE'
+        AND root_ou.path IS NOT NULL
+        AND root_ou.path <> ''
+        AND root_ou.path LIKE '/%'
+        AND root_ou.path NOT LIKE '%/'
+        AND (
+          class_ou.path = root_ou.path
+          OR class_ou.path LIKE CONCAT(root_ou.path, '/%')
+        )
+    )
+    AND (#{query.grade} IS NULL OR grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})
+    AND (#{query.classes} IS NULL OR class_ou.unit_code = #{query.classes} OR class_ou.unit_name = #{query.classes})
+    AND NOT EXISTS (
+      SELECT 1
+      FROM final_record submitted_fr
+      WHERE submitted_fr.student_user_id = u.id
+        AND submitted_fr.academic_year = #{query.academicYear}
+        AND submitted_fr.status IN ('SUBMITTED', 'CONFIRMED')
+    )
+  GROUP BY u.id
+) visible_students
+```
+
+This shape intentionally evaluates scope and filters before grouping by student. A dirty lower-id membership outside scope, in another class, or without a matching grade must not hide another active primary membership that is visible and matches the request. The count query must not join draft records because draft data does not affect membership in the result set and a dirty duplicate draft row must never inflate `total`.
+
+Recommended select query uses the same roster, scope, filter, and submitted/confirmed exclusion predicates inside a visible-membership picker, then joins the selected visible membership back to display fields:
+
+```sql
+SELECT
+  u.id AS student_user_id,
+  u.user_no AS user_no,
+  u.user_name AS user_name,
+  grade_ou.unit_name AS grade,
+  class_ou.unit_name AS class_name,
+  draft_fr.last_updated_at AS last_updated_at
+FROM (
+  SELECT visible.user_id, MIN(visible.membership_id) AS membership_id
+  FROM (
+    SELECT om1.user_id, om1.id AS membership_id
+    FROM org_membership om1
+    JOIN iam_user u1
+      ON u1.id = om1.user_id
+     AND u1.status = 'ACTIVE'
+    JOIN org_unit class_ou1
+      ON class_ou1.id = om1.org_unit_id
+     AND class_ou1.unit_type = 'CLASS'
+     AND class_ou1.status = 'ACTIVE'
+    LEFT JOIN org_unit grade_ou1
+      ON grade_ou1.id = class_ou1.parent_id
+     AND grade_ou1.unit_type = 'GRADE'
+     AND grade_ou1.status = 'ACTIVE'
+    WHERE om1.membership_type = 'STUDENT'
+      AND om1.is_primary = 1
+      AND om1.status = 'ACTIVE'
+      AND EXISTS (
+        SELECT 1
+        FROM org_unit root_ou
+        WHERE root_ou.id IN (/* one bound parameter per subtree root id */)
+          AND root_ou.status = 'ACTIVE'
+          AND root_ou.path IS NOT NULL
+          AND root_ou.path <> ''
+          AND root_ou.path LIKE '/%'
+          AND root_ou.path NOT LIKE '%/'
+          AND (
+            class_ou1.path = root_ou.path
+            OR class_ou1.path LIKE CONCAT(root_ou.path, '/%')
+          )
+        )
+      AND (#{query.grade} IS NULL OR grade_ou1.unit_code = #{query.grade} OR grade_ou1.unit_name = #{query.grade})
+      AND (#{query.classes} IS NULL OR class_ou1.unit_code = #{query.classes} OR class_ou1.unit_name = #{query.classes})
+      AND NOT EXISTS (
+        SELECT 1
+        FROM final_record submitted_fr
+        WHERE submitted_fr.student_user_id = u1.id
+          AND submitted_fr.academic_year = #{query.academicYear}
+          AND submitted_fr.status IN ('SUBMITTED', 'CONFIRMED')
+      )
+  ) visible
+  GROUP BY visible.user_id
+) picked_visible_om
+JOIN iam_user u
+  ON u.id = picked_visible_om.user_id
+JOIN org_membership om
+  ON om.id = picked_visible_om.membership_id
 JOIN org_unit class_ou
   ON class_ou.id = om.org_unit_id
  AND class_ou.unit_type = 'CLASS'
@@ -301,46 +391,6 @@ LEFT JOIN org_unit grade_ou
   ON grade_ou.id = class_ou.parent_id
  AND grade_ou.unit_type = 'GRADE'
  AND grade_ou.status = 'ACTIVE'
-WHERE u.status = 'ACTIVE'
-  AND EXISTS (
-    SELECT 1
-    FROM org_unit root_ou
-    WHERE root_ou.id IN (/* one bound parameter per subtree root id */)
-      AND root_ou.status = 'ACTIVE'
-      AND root_ou.path IS NOT NULL
-      AND root_ou.path <> ''
-      AND root_ou.path LIKE '/%'
-      AND root_ou.path NOT LIKE '%/'
-      AND (
-        class_ou.path = root_ou.path
-        OR class_ou.path LIKE CONCAT(root_ou.path, '/%')
-      )
-  )
-  AND (#{query.grade} IS NULL OR grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})
-  AND (#{query.classes} IS NULL OR class_ou.unit_code = #{query.classes} OR class_ou.unit_name = #{query.classes})
-  AND NOT EXISTS (
-    SELECT 1
-    FROM final_record submitted_fr
-    WHERE submitted_fr.student_user_id = u.id
-      AND submitted_fr.academic_year = #{query.academicYear}
-      AND submitted_fr.status IN ('SUBMITTED', 'CONFIRMED')
-  )
-```
-
-The count query must not join draft records because draft data does not affect membership in the result set and a dirty duplicate draft row must never inflate `total`.
-
-The scope block above shows the `ORG_SUBTREE` branch. It is not a fixed two-parameter contract. The SQL provider must generate the exact supported scope expression from the evaluated scope set with bound parameters only:
-
-- `ALL`: emit `1 = 1` as the whole scope expression and omit `IN` fragments;
-- one or more `ORG_UNIT` rules: emit `class_ou.id IN (...)` with one bound parameter per org-unit id; non-class ids naturally match no roster rows;
-- one or more `ORG_SUBTREE` rules: emit the `EXISTS` fragment with one bound parameter per subtree root id;
-- combined `ORG_UNIT` and `ORG_SUBTREE`: OR the two supported fragments together;
-- no supported scope fragments: emit `1 = 0`;
-- never emit `IN ()` and never concatenate raw ids into SQL text.
-
-Recommended select query uses the same roster, scope, filter, and submitted/confirmed exclusion predicates, plus a one-row-per-student draft aggregate:
-
-```sql
 LEFT JOIN (
   SELECT student_user_id, MAX(updated_at) AS last_updated_at
   FROM final_record
@@ -351,16 +401,16 @@ LEFT JOIN (
   ON draft_fr.student_user_id = u.id
 ```
 
-Recommended select columns:
+Implementers may render the visible-membership picker as a nested derived table, reusable provider fragment, or equivalent SQL, but the selected membership must be the lowest `org_membership.id` among memberships that already passed scope and filters.
 
-```sql
-u.id AS student_user_id,
-u.user_no AS user_no,
-u.user_name AS user_name,
-grade_ou.unit_name AS grade,
-class_ou.unit_name AS class_name,
-draft_fr.last_updated_at AS last_updated_at
-```
+The scope blocks above show the `ORG_SUBTREE` branch. They are not a fixed two-parameter contract. The SQL provider must generate the exact supported scope expression from the evaluated scope set with bound parameters only:
+
+- `ALL`: emit `1 = 1` as the whole scope expression and omit `IN` fragments;
+- one or more `ORG_UNIT` rules: emit `class_ou.id IN (...)` with one bound parameter per org-unit id; non-class ids naturally match no roster rows;
+- one or more `ORG_SUBTREE` rules: emit the `EXISTS` fragment with one bound parameter per subtree root id;
+- combined `ORG_UNIT` and `ORG_SUBTREE`: OR the two supported fragments together;
+- no supported scope fragments: emit `1 = 0`;
+- never emit `IN ()` and never concatenate raw ids into SQL text.
 
 Recommended ordering:
 
@@ -390,9 +440,10 @@ Fields:
 
 Validation:
 
-- normalize `academicYear` by trimming before validation and storage;
+- if `academicYear` is `null`, throw `ValidationException("academicYear 不能为空")` before trimming;
+- normalize non-null `academicYear` by trimming before validation and storage;
+- throw `ValidationException("academicYear 不能为空")` when the trimmed academic year is blank;
 - validate the trimmed value with `^\\d{4}-\\d{4}$`, then parse both years as integers;
-- throw `ValidationException("academicYear 不能为空")` for a missing or blank academic year after trim;
 - throw `ValidationException("academicYear 不合法")` when the trimmed value does not match `YYYY-YYYY` or the second year is not the first year plus 1;
 - normalize optional filters by trimming blank to `null`;
 - normalize pagination like existing `FinalRecordPageQuery`.
@@ -552,7 +603,8 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - excludes inactive users;
 - excludes inactive memberships;
 - excludes non-primary student memberships;
-- de-duplicates duplicate active primary memberships for the same student by selecting the lowest `org_membership.id`;
+- de-duplicates duplicate active primary memberships after scope and filters are applied, selecting the lowest visible `org_membership.id`;
+- includes a student whose lower-id dirty active primary membership is outside scope when another active primary membership for the same student is inside scope;
 - filters by `grade`;
 - filters by `classes`;
 - filters by `grade` and `classes` together using intersection semantics;
