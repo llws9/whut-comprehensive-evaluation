@@ -31,7 +31,7 @@ Current implementation patterns:
 In scope:
 
 - Add `POST /api/admin/imports/lectures`.
-- Parse lecture attendance score Excel files synchronously.
+- Parse `.xlsx` or `.xls` lecture attendance score Excel files synchronously.
 - Validate `file`, `title`, `heldAt`, and `academicYear`.
 - Return `lectureBatchId`, `title`, `heldAt`, `academicYear`, `totalCount`, `successCount`, `failedCount`, and `failedRows`.
 - Write successful rows into `DRAFT` final records and `source_type = 'IMPORT'` final components.
@@ -80,8 +80,8 @@ Request parameters:
 
 | Parameter | Required | Rule |
 |---|---:|---|
-| `file` | yes | Non-empty Excel file. |
-| `title` | yes | Non-blank after trim, max 255 characters. Leading and trailing whitespace are removed; internal whitespace, control characters, zero-width characters, case, and Unicode normalization form are otherwise preserved. |
+| `file` | yes | Non-empty `.xlsx` or `.xls` Excel file. Other workbook formats such as `.xlsm`, `.csv`, or text files are not supported and fail as unreadable workbook/template errors. |
+| `title` | yes | Non-blank after trim, max 255 Unicode code points. Leading and trailing whitespace are removed; internal whitespace, control characters, zero-width characters, case, and Unicode normalization form are otherwise preserved. |
 | `heldAt` | yes | ISO local date-time parsed with `LocalDateTime.parse(heldAt)`, which uses `DateTimeFormatter.ISO_LOCAL_DATE_TIME`. Accepted examples include `2026-05-18T14:30`, `2026-05-18T14:30:00`, and `2026-05-18T14:30:00.123`; omitted seconds default to `00`, fractional seconds are truncated, and timezone offsets are not accepted. The value is normalized to whole seconds in the response and batch id. |
 | `academicYear` | yes | Trimmed before validation; must match `^\d{4}-\d{4}$`, and the second year must equal first year + 1. |
 
@@ -159,13 +159,13 @@ Frozen row-level failure mapping:
 | `scoreValue` does not match strict decimal text | `SCORE_VALUE_INVALID` | `scoreValue 必须是数字` |
 | `scoreValue > 99999999.99` | `SCORE_VALUE_OUT_OF_RANGE` | `scoreValue 必须在 0 到 99999999.99 之间` |
 | `scoreValue` has more than 2 decimal places | `SCORE_VALUE_SCALE_INVALID` | `scoreValue 最多保留 2 位小数` |
-| `displayText` longer than 1000 characters after trim | `DISPLAY_TEXT_TOO_LONG` | `displayText 长度不能超过 1000` |
+| `displayText` longer than 1000 Unicode code points after trim | `DISPLAY_TEXT_TOO_LONG` | `displayText 长度不能超过 1000` |
 | duplicate field-valid `studentNo` in the same workbook | `DUPLICATE_STUDENT` | `同一讲座批次中学生重复` |
 | eligible student not found | `STUDENT_NOT_FOUND` | `studentNo 对应学生不存在或未启用` |
 | row target outside `score.import` scope | `OUT_OF_SCOPE` | `当前用户无权导入该学生讲座成绩` |
 | existing final record is `SUBMITTED` or `CONFIRMED` | `FINAL_RECORD_LOCKED` | `已提交或已确认的最终成绩不允许导入覆盖` |
 
-When more than one row-level condition applies, use the first matching condition in the table above. The strict decimal-text validation excludes negative numbers, so `-1` fails with `SCORE_VALUE_INVALID`; `SCORE_VALUE_OUT_OF_RANGE` only handles numeric text above the upper bound. `0`, `0.0`, and `0.00` are valid values and are not out of range. Duplicate-student detection runs only after the row passes `studentNo`, `scoreValue`, and `displayText` field validation, so field-invalid rows do not consume the duplicate key. A field-valid row consumes its normalized `studentNo` duplicate key even if it later fails student lookup, scope, or final-record lock checks.
+When more than one row-level condition applies, use the first matching condition in the table above. The strict decimal-text validation excludes negative numbers, so `-1` fails with `SCORE_VALUE_INVALID`; `SCORE_VALUE_OUT_OF_RANGE` only handles numeric text above the upper bound. `0`, `0.0`, and `0.00` are valid values and are not out of range. The table order is frozen, so numeric text such as `99999999.999` fails with `SCORE_VALUE_OUT_OF_RANGE` before scale validation. Duplicate-student detection runs only after the row passes `studentNo`, `scoreValue`, and `displayText` field validation, so field-invalid rows do not consume the duplicate key. A field-valid row consumes its normalized `studentNo` duplicate key even if it later fails student lookup, scope, or final-record lock checks.
 
 ## Excel Template
 
@@ -177,7 +177,7 @@ Header row is row 1. Header names are case-sensitive and must appear in this exa
 |---:|---|---:|---|
 | A | `studentNo` | yes | Existing active `iam_user.user_no`. |
 | B | `scoreValue` | yes | Strict decimal text matching `^[0-9]+(\.[0-9]+)?$`, `0 <= value <= 99999999.99`, at most 2 decimal places. Thousand separators, percentages, currency symbols, and scientific notation are invalid. Leading zeroes are accepted and do not change the parsed numeric value, so `00` is equivalent to `0` and `00.50` is equivalent to `0.50`. The upper bound follows `DECIMAL(10,2)`. |
-| C | `displayText` | no | Max 1000 characters after trim. When blank, the normalized row display text is the normalized request title followed by the fixed system suffix ` 讲座签到`. The suffix is a frozen Chinese constant for this backend scope and is not locale-derived. |
+| C | `displayText` | no | Max 1000 Unicode code points after trim. When blank, the normalized row display text is the normalized request title followed by the fixed system suffix ` 讲座签到`. The suffix is a frozen Chinese constant for this backend scope and is not locale-derived. |
 
 Extra columns after column C are ignored.
 
@@ -189,7 +189,9 @@ Cell values are read with `DataFormatter`, trimmed, and blank strings become nul
 
 `normalizedStudentNo` is the trimmed `DataFormatter` string from column A. D-8 does not apply case folding, zero-width/control-character stripping, Unicode normalization, or leading-zero normalization.
 
-The 5 MB limit applies to the uploaded file bytes before POI parsing. The parser rejects oversized byte arrays before opening the workbook, and rejects workbooks with more than 5000 non-blank data rows using `ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB")`.
+D-8 accepts `.xlsx` and `.xls` workbook content, matching the D-7 import parser contract. Other uploaded formats are treated as unreadable workbooks unless POI can open them as one of those two formats.
+
+The 5 MB limit means 5 * 1024 * 1024 bytes and applies to the uploaded file bytes before POI parsing. The parser rejects oversized byte arrays before opening the workbook, and rejects workbooks with more than 5000 non-blank data rows using `ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB")`. Exactly 5000 non-blank data rows are allowed.
 
 Header error messages:
 
@@ -446,8 +448,10 @@ Add tests proving:
 - valid workbook rows parse with correct `rowNo`;
 - blank rows are skipped and not counted;
 - extra columns after `displayText` are ignored;
-- byte arrays larger than 5 MB fail before POI opens the workbook with the frozen size message;
+- byte arrays larger than 5 * 1024 * 1024 bytes fail before POI opens the workbook with the frozen size message;
+- `.xlsx` and `.xls` workbook content is accepted, while unsupported formats such as `.xlsm`, `.csv`, or text files fail as unreadable workbook/template errors;
 - workbooks over 5000 non-blank data rows fail with the frozen size message;
+- workbooks with exactly 5000 non-blank data rows are accepted;
 - missing header fails with `ValidationException`;
 - mismatched header fails with the expected column message;
 - workbooks with no sheets fail with `导入模板错误：缺少工作表`;
@@ -456,7 +460,8 @@ Add tests proving:
 - `99999999.99` is accepted as a valid score value;
 - numeric text above `99999999.99` fails with `SCORE_VALUE_OUT_OF_RANGE`;
 - numeric text with more than 2 decimal places fails with `SCORE_VALUE_SCALE_INVALID`;
-- `displayText` with exactly 1000 characters after trim is accepted;
+- numeric text such as `99999999.999` follows the frozen row-level table order and fails with `SCORE_VALUE_OUT_OF_RANGE`;
+- `displayText` with exactly 1000 Unicode code points after trim is accepted;
 - unreadable bytes fail with `导入模板错误：文件不可解析`.
 
 ### Application Tests
@@ -466,7 +471,7 @@ Add tests proving:
 - invalid `academicYear` fails with `academicYear 不合法`;
 - `academicYear` accepts only the concrete `^\d{4}-\d{4}$` format with the second year equal to first year + 1, and rejects boundary examples such as `2025-2027`, `2025-2024`, and `9999-0000`;
 - blank or overlong `title` fails with the frozen message;
-- `title` with exactly 255 characters after trim is accepted;
+- `title` with exactly 255 Unicode code points after trim is accepted;
 - invalid `heldAt` fails with `heldAt 格式非法`;
 - `heldAt` accepts omitted seconds, truncates fractional seconds, and rejects timezone offsets;
 - deterministic `lectureBatchId` is returned for the same normalized title, heldAt, and academicYear;
