@@ -253,6 +253,20 @@ class MinimumBusinessLoopHttpSmokeIntegrationTest {
                         .andReturn()
         );
 
+        stage("reject student token from admin final record reads", () ->
+                mockMvc.perform(get("/api/admin/final-records")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + studentToken)
+                                .param("academicYear", ACADEMIC_YEAR))
+                        .andExpect(status().isForbidden())
+                        .andExpect(jsonPath("$.code").value("AUTH-4030"))
+                        .andReturn()
+        );
+
+        stage("seed out-of-scope confirmed final record", () -> {
+            seedOutOfScopeConfirmedFinalRecord();
+            return null;
+        });
+
         stage("list confirmed final records as counselor", () ->
                 mockMvc.perform(get("/api/admin/final-records")
                                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + counselorToken)
@@ -269,6 +283,14 @@ class MinimumBusinessLoopHttpSmokeIntegrationTest {
                         .andExpect(jsonPath("$.data.records[0].status").value("CONFIRMED"))
                         .andExpect(jsonPath("$.data.records[0].grandTotal").value(2.00))
                         .andExpect(jsonPath("$.data.records[0].confirmedAt").isNotEmpty())
+                        .andReturn()
+        );
+
+        stage("reject out-of-scope final record detail as counselor", () ->
+                mockMvc.perform(get("/api/admin/final-records/{recordId}", 90001)
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + counselorToken))
+                        .andExpect(status().isForbidden())
+                        .andExpect(jsonPath("$.code").value("AUTH-4030"))
                         .andReturn()
         );
 
@@ -387,6 +409,25 @@ class MinimumBusinessLoopHttpSmokeIntegrationTest {
 
     private int countRows(String tableName, String condition) {
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM " + tableName + " WHERE " + condition, Integer.class);
+    }
+
+    private void seedOutOfScopeConfirmedFinalRecord() {
+        jdbcTemplate.update("""
+                INSERT INTO final_record
+                    (id, student_user_id, academic_year, status, moral_total, intellectual_total, physical_total,
+                     labor_total, grand_total, submitted_at, confirmed_at, confirm_comment, version, created_at, updated_at)
+                VALUES
+                    (90001, 1007, ?, 'CONFIRMED', 0.00, 3.00, 0.00,
+                     0.00, 3.00, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), '范围外确认记录', 1, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())
+                """, ACADEMIC_YEAR);
+        jdbcTemplate.update("""
+                INSERT INTO final_component_score
+                    (id, final_record_id, category_code, item_code, score_value, display_text,
+                     source_type, source_ref_id, created_at)
+                VALUES
+                    (90001, 90001, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', 3.00, '范围外论文已确认',
+                     'APPLICATION_FACT', '90001', CURRENT_TIMESTAMP())
+                """);
     }
 
     private void executeStatements(String sql) {
