@@ -6,7 +6,7 @@
 
 **Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`. D-11 deliberately defines dirty `user_no = NULL` rows as sorting after non-null student numbers, then by `user_id ASC`, so pagination is stable across H2 and MySQL.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student-number nulls-last, student number, then user id; `user_id ASC` is the final tie-breaker and is part of the pagination contract for duplicate or null student numbers. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade-code nulls-last, grade code, class-code nulls-last, class code, student-number nulls-last, student number, then user id; `user_id ASC` is the final tie-breaker and is part of the pagination contract for duplicate or null student numbers. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
 
 ## Pre-Implementation Verification Baseline
 
@@ -1075,6 +1075,7 @@ void shouldUnionCodeAndNameMatchesWithoutDuplicatingStudents() {
 
     assertThat(crossUnit.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1001L, 1002L, 1005L);
+    assertThat(crossUnit.total()).isEqualTo(3);
 
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4006, 3001, 'CLASS', 'DUP2201', 'DUP2201', '/WHUT/CS/CS2022/DUP2201', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S006', 'SameUnitBothSides', 'STUDENT', 'ACTIVE')");
@@ -1087,6 +1088,7 @@ void shouldUnionCodeAndNameMatchesWithoutDuplicatingStudents() {
 
     assertThat(sameUnit.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1006L);
+    assertThat(sameUnit.total()).isEqualTo(1);
 }
 
 @Test
@@ -1185,6 +1187,20 @@ void shouldUnionOrgUnitAndOrgSubtreeWithoutDuplicatingStudents() {
     assertThat(page.total()).isEqualTo(3);
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .containsExactly(1001L, 1002L, 1003L);
+}
+
+@Test
+void shouldUnionSameClassOrgUnitAndOrgSubtreeWithoutDuplicatingStudents() {
+    seedRoster();
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgUnitAndOrgSubtree(4001L, 4001L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(2);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L);
 }
 
 @Test
@@ -1889,6 +1905,12 @@ Before committing, run this local contract scan and inspect every hit:
 rg -n "scopeExpression" whut-eval-infra whut-eval-application whut-eval-domain whut-eval-interfaces whut-eval-app/src/test
 ```
 
+If `rg` is unavailable, run the fallback command:
+
+```bash
+grep -RInE "scopeExpression" whut-eval-infra whut-eval-application whut-eval-domain whut-eval-interfaces whut-eval-app/src/test
+```
+
 Expected: hits are limited to `FinalRecordQueryMapper`, `FinalRecordQuerySqlProvider`, `MybatisPlusFinalRecordQueryRepository`, and D-11 tests/plan references. There must be no public controller/service/repository-interface/query-object path that accepts caller-provided raw SQL for `scopeExpression`.
 
 - [ ] **Step 10: Commit**
@@ -2383,7 +2405,7 @@ Run:
 mvn test
 ```
 
-Expected: PASS. If unrelated pre-existing failures were recorded in the Pre-Implementation Verification Baseline section, compare this run with that recorded baseline and confirm there are zero new failing tests. If no pre-implementation baseline was recorded, do not claim "zero new failures"; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4. D-11 added or modified tests must pass regardless of baseline availability. Existing failures that were already present in `whut-eval-domain`, `whut-eval-application`, `whut-eval-infra`, `whut-eval-interfaces`, or unrelated `whut-eval-app` tests may be treated as pre-existing only when they are named in the recorded baseline and the final run shows zero new failing tests. In `whut-eval-app`, every final-record related test that was modified, added, or explicitly run by this plan is D-11-touched for verification purposes, including Step 2 shared-scope regressions, Step 3 focused D-11 tests, and Step 4 `*FinalRecord*Test` regressions; a failure in any of these D-11-touched tests fails D-11 verification even if the same run also contains unrelated pre-existing failures.
+Expected: PASS. Before comparing failures, check the Pre-Implementation Verification Baseline entry. If it still says `PENDING`, do not claim "zero new failures"; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4. If unrelated pre-existing failures were recorded in the Pre-Implementation Verification Baseline section, compare this run with that recorded baseline and confirm there are zero new failing tests. D-11 added or modified tests must pass regardless of baseline availability. Existing failures that were already present in `whut-eval-domain`, `whut-eval-application`, `whut-eval-infra`, `whut-eval-interfaces`, or unrelated `whut-eval-app` tests may be treated as pre-existing only when they are named in the recorded baseline and the final run shows zero new failing tests. In `whut-eval-app`, every final-record related test that was modified, added, or explicitly run by this plan is D-11-touched for verification purposes, including Step 2 shared-scope regressions, Step 3 focused D-11 tests, and Step 4 `*FinalRecord*Test` regressions; a failure in any of these D-11-touched tests fails D-11 verification even if the same run also contains unrelated pre-existing failures.
 
 - [ ] **Step 6: Review diff for contract drift**
 
@@ -2399,9 +2421,9 @@ else
 fi
 rg -n "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
-rg -n "status\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'CONFIRMED'\s*\)|status\s*=\s*'SUBMITTED'|status\s*=\s*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
+rg -n "status[[:space:]]+IN[[:space:]]*\([[:space:]]*'SUBMITTED'[[:space:]]*,[[:space:]]*'CONFIRMED'[[:space:]]*\)|status[[:space:]]*=[[:space:]]*'SUBMITTED'|status[[:space:]]*=[[:space:]]*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
-rg -n "LIKE\s+'%{1,2}/[0-9]|LIKE\s+CONCAT\('%{1,2}/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
+rg -n "LIKE[[:space:]]+'%{1,2}/[0-9]|LIKE[[:space:]]+CONCAT\('%{1,2}/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 rg -n "scopeExpression" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
@@ -2471,11 +2493,12 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `lastUpdatedAt` is a UTC `Instant` at the mapper/service boundary and is rendered with `Instant.toString()` actual precision, or empty string.
 - DRAFT rows with `updated_at = NULL` keep the student unsubmitted, expose raw `lastUpdatedAt = null`, and render API `lastUpdatedAt` as an empty string.
 - Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
-- Rows without an active `GRADE` parent sort after rows with active grades.
+- Rows with non-null active grade codes sort before rows whose active grade code is null or whose selected class has no active grade parent.
 - When the lowest numeric visible membership's class has no active grade parent, display `grade = null` for that selected class even if a higher visible membership has an active grade.
 - `ORG_UNIT` is exact class id only and does not depend on `org_unit.path` being non-null.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
 - `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including a CLASS root; a CLASS root exposes that class only, not sibling classes.
+- If `ORG_UNIT` and `ORG_SUBTREE` both grant the same class, visible students are still counted and returned once.
 - Inactive `ORG_SUBTREE` roots return an empty page even when their path and descendants are otherwise valid.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
@@ -2489,5 +2512,6 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `pageNo` offset overflow is rejected.
 - `pageNo` and `pageSize` intentionally remain `long` in `UnsubmittedFinalRecordQuery` so offset multiplication can detect overflow before mapper execution.
 - Baseline notes belong in the execution notes for this plan, directly under the Pre-Implementation Verification Baseline section or in the task-run handoff summary; do not bury baseline failures only in terminal scrollback.
+- A `PENDING` baseline blocks any "zero new failures" claim; it does not block reporting observed test results.
 - Any modified, added, or explicitly run final-record related test under `whut-eval-app` is in D-11 verification scope; failures in shared-scope regressions or `*FinalRecord*Test` cannot be waived as outside the D-11 test package. Unrelated pre-existing failures are judged only by the recorded baseline and zero-new-failure comparison.
 - No D-7, D-8, D-9, D-10, import, export, or frontend behavior is introduced.
