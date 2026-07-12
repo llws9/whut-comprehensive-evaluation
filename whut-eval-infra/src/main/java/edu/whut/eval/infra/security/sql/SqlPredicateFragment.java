@@ -18,6 +18,10 @@ public class SqlPredicateFragment {
         return new SqlPredicateFragment("", Map.of());
     }
 
+    public static SqlPredicateFragment alwaysTrue() {
+        return new SqlPredicateFragment("1 = 1", Map.of());
+    }
+
     public static SqlPredicateFragment denyAll() {
         return new SqlPredicateFragment("1 = 0", Map.of());
     }

@@ -2,7 +2,10 @@ package edu.whut.eval.infra.persistence.mapper;
 
 import edu.whut.eval.application.finalrecord.query.FinalComponentScoreRow;
 import edu.whut.eval.application.finalrecord.query.FinalRecordQueryRow;
+import edu.whut.eval.application.finalrecord.query.UnsubmittedStudentRow;
 import edu.whut.eval.domain.finalrecord.query.FinalRecordPageQuery;
+import edu.whut.eval.domain.finalrecord.query.UnsubmittedFinalRecordQuery;
+import edu.whut.eval.infra.security.sql.SqlPredicateFragment;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -28,6 +31,14 @@ public interface FinalRecordQueryMapper {
 
     @SelectProvider(type = FinalRecordQuerySqlProvider.class, method = "buildSelectAdminFinalRecordDetail")
     FinalRecordQueryRow selectAdminFinalRecordDetail(@Param("recordId") Long recordId);
+
+    @SelectProvider(type = FinalRecordQuerySqlProvider.class, method = "buildCountUnsubmittedStudents")
+    long countUnsubmittedStudents(@Param("scopeFragment") SqlPredicateFragment scopeFragment,
+                                  @Param("query") UnsubmittedFinalRecordQuery query);
+
+    @SelectProvider(type = FinalRecordQuerySqlProvider.class, method = "buildSelectUnsubmittedStudents")
+    List<UnsubmittedStudentRow> selectUnsubmittedStudents(@Param("scopeFragment") SqlPredicateFragment scopeFragment,
+                                                          @Param("query") UnsubmittedFinalRecordQuery query);
 
     @SelectProvider(type = FinalRecordQuerySqlProvider.class, method = "buildSelectStudentFinalRecord")
     FinalRecordQueryRow selectStudentFinalRecord(@Param("studentUserId") Long studentUserId,

@@ -63,8 +63,8 @@ Comparison rule: only a recorded full `mvn test` baseline allows a full-suite "z
 Update these fields as the implementation proceeds. Every field starts as `PENDING`, `NOT_RUN`, or `NOT_REQUIRED`; replace it with the observed command, result, and short evidence before using it for a completion or zero-new-failure claim.
 
 - Baseline Source: `Pre-Implementation Verification Baseline` fields above; module check `mvn -pl whut-eval-app -am help:evaluate -Dexpression=project.artifactId -q -DforceStdout` exited 0 and printed the reactor root artifactId, while focused `mvn -pl whut-eval-app help:evaluate -Dexpression=project.artifactId -q -DforceStdout` printed `whut-eval-app`, confirming the module exists.
-- Task 3 `rg` Availability: `PENDING`.
-- Task 3 Scope/Provider Verification Command and Result: `PENDING`.
+- Task 3 `rg` Availability: `AVAILABLE` at `/Users/bytedance/.local/bin/rg`.
+- Task 3 Scope/Provider Verification Command and Result: `PASS`; command `mvn -pl whut-eval-app -am -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest,ScopeSqlTranslatorTest test -Dsurefire.failIfNoSpecifiedTests=false` reported `Tests run: 26, Failures: 0, Errors: 0, Skipped: 0`. Contract scan command `rg -n "scopeExpression" whut-eval-infra whut-eval-application whut-eval-domain whut-eval-interfaces whut-eval-app/src/test docs/superpowers/plans/2026-07-12-d11-unsubmitted-final-records.md` completed; accepted hits were limited to the plan, `FinalRecordQuerySqlProvider`, existing admin-list provider helper, D-11 mapper/repository plumbing, and D-11 tests, with no controller/service/query DTO accepting caller-provided raw SQL.
 - Task 5 Shared-Scope Diff Classification: `PENDING`; record which scope-related files changed and whether Step 2 regressions are required.
 - Task 5 Step 2 Shared-Scope Regression Command and Result: `NOT_REQUIRED` unless Step 1 marks shared scope as changed.
 - Task 5 Step 3 Focused D-11 Command and Result: `PENDING`.
