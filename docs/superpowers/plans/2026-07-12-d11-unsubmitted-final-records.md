@@ -6,7 +6,7 @@
 
 **Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, repeated `classes`, `pageNo`, and `pageSize`; response pagination remains `PageResult<T>` with only `total` and `records`.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student number, then user id; this plan intentionally extends the design SQL with student-number nulls-last before `student number` to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student-number nulls-last, student number, then user id; this plan intentionally extends the design SQL with student-number nulls-last ordering to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership.
 
 **Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -1371,7 +1371,7 @@ List<UnsubmittedStudentRow> selectUnsubmittedStudents(@Param("scopeExpression") 
 
 In `FinalRecordQuerySqlProvider`, add:
 
-Count and select SQL must keep the same eligibility predicates: active user, `u.identity = 'STUDENT'`, active primary STUDENT membership, active class, scope expression, grade/classes filters, and the submitted/confirmed `NOT EXISTS` exclusion. This is a hard invariant: the count query's grouped visible-student subquery and the select query's inner `visible` subquery must be isomorphic in FROM/JOIN/WHERE shape for all eligibility predicates, including scope, grade, classes, final-record exclusion, membership status, user status, and user identity. They may differ only in projected columns (`u.id` for count versus `user_id` and `membership_id` for select picking). Do not add display-only joins, HAVING clauses, ordering, or row-shaping predicates to either visible subquery. If you add, delete, or change one predicate in either SQL, update the other SQL in the same task and add or adjust a count/select alignment assertion. Prefer extracting a small helper that renders the shared visible roster subquery from a small alias descriptor if the final implementation starts to drift from the snippets below.
+Count and select SQL must keep the same eligibility predicates: active user, `u.identity = 'STUDENT'`, active primary STUDENT membership, active class, scope expression, grade/classes filters, and the submitted/confirmed `NOT EXISTS` exclusion. This is a hard invariant: the count query's grouped visible-student subquery and the select query's inner `visible` subquery must keep equivalent FROM/JOIN/WHERE eligibility semantics for scope, grade, classes, final-record exclusion, membership status, user status, and user identity. They may use different projection and grouping wrapper layers, as shown below, because count only needs one row per visible student while select first picks the lowest visible membership id. Do not add display-only joins, HAVING clauses, ordering, or row-shaping predicates to either eligibility subquery. If you add, delete, or change one eligibility predicate in either SQL, update the other SQL in the same task and add or adjust a count/select alignment assertion. Prefer extracting a small helper that renders the shared eligibility predicates from a small alias descriptor if the final implementation starts to drift from the snippets below.
 
 The select `ORDER BY` intentionally adds `CASE WHEN u.user_no IS NULL THEN 1 ELSE 0 END` before `u.user_no ASC`; this extends the design SQL to make dirty `user_no = NULL` data sort after numbered students consistently on H2 and MySQL. The outer `class_ou` / `grade_ou` type and status predicates duplicate inner eligibility checks defensively so future edits to the inner visible subquery cannot silently display inactive or wrong-type org units.
 
@@ -1570,7 +1570,7 @@ private SqlPredicateFragment rosterScopeFragment(FinalRecordAccessContext access
         return SqlPredicateFragment.denyAll();
     }
     if (predicate.isAllowAll()) {
-        return new SqlPredicateFragment("1 = 1", Map.of());
+        return SqlPredicateFragment.allowAll();
     }
     Map<String, Object> parameters = new LinkedHashMap<>();
     List<String> fragments = new ArrayList<>();
@@ -1636,7 +1636,7 @@ private String bindList(Map<String, Object> parameters, String prefix, List<Long
 }
 ```
 
-Use imports for `ApplicationScopeClause`, `ArrayList`, `LinkedHashMap`, `Map`, and `Objects`. `SqlPredicateFragment` already has a public constructor plus `allowAll()` and `denyAll()`, so use the calls shown above directly.
+Use imports for `ApplicationScopeClause`, `ArrayList`, `LinkedHashMap`, `Map`, and `Objects`. Prefer `SqlPredicateFragment.allowAll()` and `SqlPredicateFragment.denyAll()` for the static allow/deny branches; use the public constructor only for dynamic D-11 fragments that carry generated SQL and parameters.
 
 - [ ] **Step 9: Run repository integration tests**
 
@@ -1791,6 +1791,13 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
             .andExpect(jsonPath("$.code").value("VAL-4001"));
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("grade", "CS2022")
+                    .param("pageNo", "1")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2027")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
@@ -1895,10 +1902,10 @@ public ApiResponse<PageResult<UnsubmittedStudentView>> pageUnsubmittedFinalRecor
         @RequestParam(defaultValue = "1") String pageNo,
         @RequestParam(defaultValue = "20") String pageSize,
         HttpServletRequest request) {
-    rejectUnsupportedSingleValueParameterShape(request, "academicYear");
-    rejectUnsupportedSingleValueParameterShape(request, "grade");
-    rejectUnsupportedSingleValueParameterShape(request, "pageNo");
-    rejectUnsupportedSingleValueParameterShape(request, "pageSize");
+    rejectMultiValueOrArrayStyleParameter(request, "academicYear");
+    rejectMultiValueOrArrayStyleParameter(request, "grade");
+    rejectMultiValueOrArrayStyleParameter(request, "pageNo");
+    rejectMultiValueOrArrayStyleParameter(request, "pageSize");
     List<String> classFilters = mergeClassFilters(classes, arrayStyleClasses);
     return ApiResponse.success(queryApplicationService.pageUnsubmittedStudents(
             new UnsubmittedFinalRecordQuery(academicYear, grade, classFilters,
@@ -1911,7 +1918,7 @@ public ApiResponse<PageResult<UnsubmittedStudentView>> pageUnsubmittedFinalRecor
 Add helpers:
 
 ```java
-private void rejectUnsupportedSingleValueParameterShape(HttpServletRequest request, String name) {
+private void rejectMultiValueOrArrayStyleParameter(HttpServletRequest request, String name) {
     String[] values = request.getParameterValues(name);
     if (values != null && values.length > 1) {
         throw new ValidationException(name + " 不合法");
@@ -1973,7 +1980,14 @@ git commit -m "feat: expose unsubmitted final record endpoint"
 
 - [ ] **Step 1: Inspect shared-scope impact**
 
-Review the actual final diff, not only file names. If D-11 changed `ApplicationScopeSqlTranslator`, `FinalRecordScopePredicateBuilder`, existing `pageAdminFinalRecords(...)` SQL, existing `findAdminFinalRecordDetail(...)` data needed by access validation, or any shared helper used by submitted/confirmed admin list/detail, add the regression tests in Step 2 before continuing. If D-11 used only new D-11 provider methods and a D-11-only roster scope fragment, document that no shared-scope files or methods changed and continue to Step 3.
+Review the actual final diff, not only file names. Record the result of each check in the execution notes before continuing:
+
+- `ApplicationScopeSqlTranslator` changed: add Step 2 regressions.
+- `FinalRecordScopePredicateBuilder` output structure or clause mapping changed: add Step 2 regressions.
+- Any public/shared method named with `scope`, `Scope`, `predicate`, `Predicate`, or org-path matching changed outside a D-11-only private helper: add Step 2 regressions.
+- Existing `pageAdminFinalRecords(...)`, `buildSelectAdminFinalRecords(...)`, `buildCountAdminFinalRecords(...)`, `findAdminFinalRecordDetail(...)`, or submitted/confirmed list/detail SQL changed: add Step 2 regressions.
+- Existing submitted/confirmed admin list/detail data needed by `FinalRecordAccessValidator` changed: add Step 2 regressions.
+- Only new D-11 provider methods and a D-11-only private `rosterScopeFragment(...)` changed: document that no shared-scope files or methods changed and continue to Step 3.
 
 - [ ] **Step 2: Add shared-scope regression tests if required**
 
@@ -2031,7 +2045,7 @@ mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpe
 
 Expected: PASS.
 
-- [ ] **Step 5: Run full test suite**
+- [ ] **Step 5: Run full test suite with a baseline rule**
 
 Run:
 
@@ -2039,7 +2053,7 @@ Run:
 mvn test
 ```
 
-Expected: PASS.
+Expected: PASS. If unrelated pre-existing failures exist, do not skip this step: capture the failure count and failing test names, verify the focused D-11 tests in Step 3 and final-record regressions in Step 4 still pass, then rerun `mvn test` after the D-11 changes and confirm there are zero new failing tests compared with the recorded baseline. Any new failure in a D-11-touched module fails verification.
 
 - [ ] **Step 6: Review diff for contract drift**
 
