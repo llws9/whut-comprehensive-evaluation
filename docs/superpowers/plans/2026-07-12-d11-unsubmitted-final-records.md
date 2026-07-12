@@ -16,6 +16,8 @@
 
 ## Pre-Implementation Verification Baseline
 
+All Maven commands in this plan must be run from the repository root, the directory containing the top-level `pom.xml`.
+
 - [ ] Before creating D-11 code files or modifying production/test code, run:
 
 ```bash
@@ -741,6 +743,7 @@ git commit -m "feat: map unsubmitted final record views"
 - Modify: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/FinalRecordQuerySqlProvider.java`
 - Modify: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusFinalRecordQueryRepository.java`
 - Modify: `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/SqlPredicateFragment.java`
+- Create: `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/D11ScopeSqlShape.java`
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java`
 
 - [ ] **Step 1: Expand the integration-test schema**
@@ -1488,8 +1491,10 @@ void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSema
 
     assertScopeParity(accessContextWithAllScope());
     assertScopeParity(accessContextWithOrgUnit(4001L));
+    assertScopeParity(accessContextWithOrgUnits(4001L, 4002L));
     assertScopeParity(accessContextWithOrgSubtree(2002L));
     assertScopeParity(accessContextWithOrgSubtree(3001L));
+    assertScopeParity(accessContextWithOrgSubtrees(3001L, 3002L));
     assertScopeParity(accessContextWithOrgSubtree(4001L));
     assertScopeParity(accessContextWithOrgUnitAndOrgSubtree(4001L, 2002L));
     assertScopeParity(accessContextWithUnsupportedCategoryOnly());
@@ -2101,11 +2106,21 @@ public final class D11ScopeSqlShape {
     }
 
     public static void assertGeneratedFragmentsSelfValidateForD11() {
+        String singleOrgUnit = "(" + orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}") + ")";
+        String multiOrgUnit = "(" + orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}, #{scopeFragment.parameters.d11OrgUnit1}") + ")";
         String singleSubtree = "(" + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}") + ")";
         String multiSubtree = "(" + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}, #{scopeFragment.parameters.d11Subtree1}") + ")";
-        if (!isAllowedScopeExpression(normalize(singleSubtree))
-                || !isAllowedScopeExpression(normalize(multiSubtree))) {
-            throw new IllegalStateException("Generated D-11 ORG_SUBTREE SQL must match whitelist");
+        String orgThenSubtree = "(" + orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}")
+                + " OR " + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}") + ")";
+        String subtreeThenOrg = "(" + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}")
+                + " OR " + orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}") + ")";
+        if (!isAllowedScopeExpression(normalize(singleOrgUnit))
+                || !isAllowedScopeExpression(normalize(multiOrgUnit))
+                || !isAllowedScopeExpression(normalize(singleSubtree))
+                || !isAllowedScopeExpression(normalize(multiSubtree))
+                || !isAllowedScopeExpression(normalize(orgThenSubtree))
+                || !isAllowedScopeExpression(normalize(subtreeThenOrg))) {
+            throw new IllegalStateException("Generated D-11 scope SQL must match whitelist");
         }
     }
 
@@ -2287,11 +2302,11 @@ void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
     assertProviderAccepts(provider, new SqlPredicateFragment(
             "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}") + ")",
             Map.of("d11OrgUnit0", 4001L)
-    ), "class_ou.id IN");
+    ), "class_ou.id IN", "class_ou1.id IN");
     assertProviderAccepts(provider, new SqlPredicateFragment(
             "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}, #{scopeFragment.parameters.d11OrgUnit1}") + ")",
             Map.of("d11OrgUnit0", 4001L, "d11OrgUnit1", 4002L)
-    ), "class_ou.id IN");
+    ), "class_ou.id IN", "class_ou1.id IN");
     assertProviderAccepts(provider, new SqlPredicateFragment(
             "(" + D11ScopeSqlShape.orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}") + ")",
             Map.of("d11Subtree0", 2002L)
@@ -2315,9 +2330,16 @@ void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
 private void assertProviderAccepts(FinalRecordQuerySqlProvider provider,
                                    SqlPredicateFragment fragment,
                                    String expectedSql) {
+    assertProviderAccepts(provider, fragment, expectedSql, expectedSql);
+}
+
+private void assertProviderAccepts(FinalRecordQuerySqlProvider provider,
+                                   SqlPredicateFragment fragment,
+                                   String expectedCountSql,
+                                   String expectedSelectSql) {
     Map<String, Object> params = providerParams(fragment);
-    assertThat(provider.buildCountUnsubmittedStudents(params)).contains(expectedSql);
-    assertThat(provider.buildSelectUnsubmittedStudents(params)).contains(expectedSql);
+    assertThat(provider.buildCountUnsubmittedStudents(params)).contains(expectedCountSql);
+    assertThat(provider.buildSelectUnsubmittedStudents(params)).contains(expectedSelectSql);
 }
 
 private Map<String, Object> providerParams(SqlPredicateFragment fragment) {
