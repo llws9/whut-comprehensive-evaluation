@@ -947,6 +947,21 @@ void shouldKeepCurrentYearDraftVisibleWhenOtherYearSubmittedExists() {
 }
 
 @Test
+void shouldTreatOtherYearDraftAsMissingRecordForQueriedYear() {
+    seedRoster();
+    insertFinalRecord(30L, 1001L, "2024-2025", "DRAFT", "2026-07-12 10:15:30");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .contains(1001L);
+    assertThat(findRow(page, 1001L).getLastUpdatedAt()).isNull();
+}
+
+@Test
 void shouldExcludeCurrentYearSubmittedStudentsEvenWhenPreviousYearDraftExists() {
     seedRoster();
     insertFinalRecord(24L, 1001L, "2024-2025", "DRAFT", "2026-07-12 10:15:30");
@@ -1054,7 +1069,7 @@ void shouldReturnEmptyWhenGradeFilterDoesNotMatchAnyActiveVisibleGrade() {
 }
 ```
 
-Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgSubtrees(Long... orgUnitIds)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithOrgUnits(Long... orgUnitIds)`, `accessContextWithAllScope()`, `accessContextWithUnsupportedCategoryOnly()`, `accessContextWithEmptyGrantedScopes()`, `accessContextWithoutScoreViewAssigned()`, `accessContextWithOrgUnitAndOrgSubtree(Long orgUnitId, Long orgSubtreeRootId)`, and `accessContextWithOrgSubtreeAndUnsupportedCategory(Long orgSubtreeRootId)` by following the existing `AuthorizationScope` test construction style. The varargs helpers must produce one scope rule per provided id while preserving input order; they must not collapse same-type scope rules before the production `rosterScopeFragment(...)` code sees them.
+Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgSubtrees(Long... orgUnitIds)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithOrgUnits(Long... orgUnitIds)`, `accessContextWithAllScope()`, `accessContextWithUnsupportedCategoryOnly()`, `accessContextWithEmptyGrantedScopes()`, `accessContextWithoutScoreViewAssigned()`, `accessContextWithOrgUnitAndOrgSubtree(Long orgUnitId, Long orgSubtreeRootId)`, `accessContextWithOrgUnitAndUnsupportedCategory(Long orgUnitId)`, and `accessContextWithOrgSubtreeAndUnsupportedCategory(Long orgSubtreeRootId)` by following the existing `AuthorizationScope` test construction style. The mixed unsupported+supported helpers must add a `CATEGORY` rule plus the named supported whole-record rule; they prove D-11 ignores score-only `CATEGORY` rules instead of treating them as deny-all when a valid `ORG_UNIT` or `ORG_SUBTREE` rule is also present. The varargs helpers must produce one scope rule per provided id while preserving input order; they must not collapse same-type scope rules before the production `rosterScopeFragment(...)` code sees them.
 
 - [ ] **Step 3: Write failing scope and filter tests**
 
@@ -1530,6 +1545,8 @@ void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSema
     assertScopeParity(accessContextWithOrgSubtrees(3001L, 3002L));
     assertScopeParity(accessContextWithOrgSubtree(4001L));
     assertScopeParity(accessContextWithOrgUnitAndOrgSubtree(4001L, 2002L));
+    assertScopeParity(accessContextWithOrgUnitAndUnsupportedCategory(4001L));
+    assertScopeParity(accessContextWithOrgSubtreeAndUnsupportedCategory(2002L));
     assertScopeParity(accessContextWithUnsupportedCategoryOnly());
     assertScopeParity(accessContextWithEmptyGrantedScopes());
     assertScopeParity(accessContextWithoutScoreViewAssigned());
@@ -1575,6 +1592,8 @@ private void assertScopeParity(FinalRecordAccessContext accessContext) {
     assertThat(d11Visible).containsExactlyInAnyOrderElementsOf(submittedVisible);
 }
 ```
+
+The parity fixture intentionally keeps one submitted/confirmed final record per active roster student because the frozen D schema has a unique key on `(student_user_id, academic_year)` and final records do not carry category dimensions. Do not create duplicate same-year final records to simulate category-specific visibility. Mixed unsupported+supported parity must instead be verified by `accessContextWithOrgUnitAndUnsupportedCategory(...)` and `accessContextWithOrgSubtreeAndUnsupportedCategory(...)`: both existing submitted/confirmed scope and D-11 roster scope must ignore the unsupported `CATEGORY` clause and produce the same visible student set as the supported whole-record clause.
 
 Add tests:
 
@@ -2459,10 +2478,10 @@ Add imports for `FinalRecordQuerySqlProvider`, `D11ScopeSqlShape`, `SqlPredicate
 Run:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest,ScopeSqlTranslatorTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: PASS. The provider must use `CAST(... AS BINARY)` for exact `grade` and `classes` comparisons so the same SQL path is deterministic on H2 MySQL-mode and MySQL. The ORG_SUBTREE path tests above also verify the `CONCAT(root_ou.path, '/%')` subtree predicate on the H2 MySQL-mode integration path used by this repository.
+Expected: PASS. `ScopeSqlTranslatorTest` is part of the Task 3 commit gate because this task adds `SqlPredicateFragment.alwaysTrue()` in shared scope-SQL infrastructure; Task 5 repeats it in the focused regression command, but Task 3 must catch shared translator regressions before the repository implementation commit is made. The provider must use `CAST(... AS BINARY)` for exact `grade` and `classes` comparisons so the same SQL path is deterministic on H2 MySQL-mode and MySQL. The ORG_SUBTREE path tests above also verify the `CONCAT(root_ou.path, '/%')` subtree predicate on the H2 MySQL-mode integration path used by this repository.
 
 Before committing, run this local contract scan and inspect every hit:
 
@@ -2595,11 +2614,11 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
             .thenReturn(new PageResult<>(0, List.of()));
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
-                    .param("classes[]", "CS2203", "CS2204")
+                    .param("classes[]", "CS2203", "Class,With,Comma", "CS2204")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isOk());
     verify(queryApplicationService).pageUnsubmittedStudents(captor.capture());
-    assertThat(captor.getValue().getClasses()).containsExactly("CS2203", "CS2204");
+    assertThat(captor.getValue().getClasses()).containsExactly("CS2203", "Class,With,Comma", "CS2204");
 
     reset(queryApplicationService);
     when(queryApplicationService.pageUnsubmittedStudents(any()))
@@ -3087,8 +3106,13 @@ BASE_BRANCH="${BASE_BRANCH:-$(git show-ref --verify --quiet refs/heads/main && e
 if [ -n "$BASE_BRANCH" ]; then
   git diff --stat "$BASE_BRANCH"...HEAD
 else
-  echo "BASE_BRANCH not found; skipping informational diff stat"
-  echo "Optional: run git diff --stat HEAD~<D-11-commit-count>..HEAD if this checkout lacks main/master"
+  D11_COMMIT_COUNT="${D11_COMMIT_COUNT:-5}"
+  if git rev-parse --verify "HEAD~${D11_COMMIT_COUNT}" >/dev/null 2>&1; then
+    git diff --stat "HEAD~${D11_COMMIT_COUNT}"..HEAD
+  else
+    echo "BASE_BRANCH not found and HEAD~${D11_COMMIT_COUNT} is unavailable; record the exact commit range used for D-11 diff review"
+    exit 1
+  fi
 fi
 rg -n "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
