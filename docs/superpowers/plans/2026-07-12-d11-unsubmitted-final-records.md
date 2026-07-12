@@ -28,10 +28,17 @@ This focused baseline is only a fallback for pre-implementation comparison. It d
 
 Execution notes placeholder:
 
-- Baseline Result: `PENDING` before implementation; replace with `PASS` or `FAIL`.
-- Baseline Command: `mvn test`
-- Baseline Failure Count: `0` when PASS; otherwise record the exact count.
-- Baseline Failing Tests: `none` when PASS; otherwise list test class and method names.
+- Full Baseline Result: `PENDING` before implementation; replace with `PASS`, `FAIL`, or `BLOCKED`.
+- Full Baseline Command: `mvn test`
+- Full Baseline Failure Count: `0` when PASS; otherwise record the exact count.
+- Full Baseline Failing Tests: `none` when PASS; otherwise list test class and method names.
+- Full Baseline Blocker: `none` unless the full baseline is `BLOCKED`; otherwise record the concrete runtime blocker.
+- Focused Fallback Baseline Result: `NOT_RUN` by default; replace with `PASS` or `FAIL` only if the full baseline is temporarily blocked.
+- Focused Fallback Baseline Command: `mvn -pl whut-eval-app -am -Dtest='*FinalRecord*Test' test -Dsurefire.failIfNoSpecifiedTests=false`
+- Focused Fallback Baseline Failure Count: `0` when PASS; otherwise record the exact count.
+- Focused Fallback Baseline Failing Tests: `none` when PASS; otherwise list test class and method names.
+
+Comparison rule: only a recorded full `mvn test` baseline allows a full-suite "zero new failures" comparison. If the full baseline is `BLOCKED` or still `PENDING` and only the focused fallback baseline exists, compare only D-11 and final-record related tests against the focused fallback; any later full-suite failures outside that focused set must be reported as observed state, not classified as new or pre-existing. D-11 added/modified tests and final-record tests explicitly run by this plan must pass in all cases.
 
 **Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -48,11 +55,32 @@ Execution notes placeholder:
 - Existing repository implementation: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusFinalRecordQueryRepository.java`
 - Existing global exception handler: `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/exception/GlobalExceptionHandler.java`
   - `ValidationException` extends the common app-exception path handled by `handleBaseAppException(...)`, so controller-bound validation failures must return `VAL-4001`.
+- Scope/predicate contracts reused by D-11:
+  - `whut-eval-domain/src/main/java/edu/whut/eval/domain/auth/service/AuthorizationScopeEvaluator.java`
+    - `AuthorizationScopeSet evaluate(UserAuthorizationContext authorizationContext, String permissionCode)` first checks authority and then normalizes active scope rules for the permission.
+  - `whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/service/FinalRecordScopePredicateBuilder.java`
+    - `ApplicationScopePredicate buildForFinalRecord(UserAuthorizationContext authorizationContext, AuthorizationScopeSet scopeSet)` converts only whole-record `ORG_UNIT` and `ORG_SUBTREE` rules into final-record predicates. `CATEGORY`, `ITEM`, and other score-only rules must not grant D-11 roster visibility.
+  - `whut-eval-domain/src/main/java/edu/whut/eval/domain/auth/model/ApplicationScopePredicate.java`
+    - `isGranted() == false` means deny all.
+    - `isAllowAll() == true` means the caller can see all active roster candidates.
+    - `isEmptyResult() == true` means the caller had the permission but no whole-record scope clauses survived filtering.
+    - `getClauses()` returns immutable `ApplicationScopeClause` values for supported restricted scopes.
+  - `whut-eval-domain/src/main/java/edu/whut/eval/domain/auth/model/ApplicationScopeClause.java`
+    - D-11 reads `getScopeType()`, `getOrgUnitId()`, and `getOrgSubtreeRootId()` only. `getCategoryCode()`, `getItemCode()`, and `getExpressionJson()` are ignored for whole-record final-record roster access.
+  - `whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/query/FinalRecordAccessContext.java`
+    - D-11 converts this context into `UserAuthorizationContext` using user id/no/name, identity, roles, authorities, and scope rules; `getPermissionCode()` must remain `score.view.assigned` for the unsubmitted route.
+  - `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/SqlPredicateFragment.java`
+    - Existing `allowAll()` returns a blank expression and `isAllowAll() == true` for existing translators. D-11 must add `alwaysTrue()` returning expression `1 = 1` with an empty parameter map because the D-11 provider treats blank `scopeExpression` as defensive deny-all.
+    - `denyAll()` returns expression `1 = 0`.
+  - `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/ApplicationScopeSqlTranslator.java`
+    - Existing submitted/confirmed paths can keep using this translator, but D-11 roster SQL must not pass through it because it emits predicates for pre-projected `org_path`/`org_unit_id` fields rather than live roster class aliases.
 - Existing final-record query tests:
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordQueryApplicationServiceTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java`
+  - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordScopePredicateBuilderTest.java`
+  - `whut-eval-app/src/test/java/edu/whut/eval/app/security/ScopeSqlTranslatorTest.java`
 
 ## File Structure
 
@@ -83,6 +111,8 @@ Execution notes placeholder:
   - Leaves existing submitted/confirmed `baseSelect(...)` behavior untouched unless regression tests are added in the same task.
 - Modify `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusFinalRecordQueryRepository.java`
   - Adds D-11 repository implementation and path-scope fragment construction for roster aliases.
+- Modify `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/SqlPredicateFragment.java`
+  - Adds `alwaysTrue()` for D-11's non-blank allow-all SQL predicate while preserving existing `allowAll()` behavior.
 
 ### Interfaces
 
@@ -676,6 +706,7 @@ git commit -m "feat: map unsubmitted final record views"
 - Modify: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/FinalRecordQueryMapper.java`
 - Modify: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/FinalRecordQuerySqlProvider.java`
 - Modify: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusFinalRecordQueryRepository.java`
+- Modify: `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/SqlPredicateFragment.java`
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java`
 
 - [ ] **Step 1: Expand the integration-test schema**
@@ -711,7 +742,23 @@ CREATE TABLE org_membership (
 );
 ```
 
-Also ensure the test `final_record.status` and `final_record.updated_at` columns accept `NULL`, because D-11 explicitly covers legacy dirty rows with null status and DRAFT rows whose `updated_at` is null. Keep all existing Minimal D columns needed by submitted/confirmed list/detail tests. If the current fixture uses simplified `org_unit` or `org_membership` tables, replace only the test fixture setup and update old inserts to populate the new columns.
+Also ensure the test `final_record.status` and `final_record.updated_at` columns accept `NULL`, because D-11 explicitly covers legacy dirty rows with null status and DRAFT rows whose `updated_at` is null. Keep all existing Minimal D columns needed by submitted/confirmed list/detail tests. If the current fixture uses simplified `iam_user`, `org_unit`, or `org_membership` tables, replace only the test fixture setup and update old inserts to populate the new columns.
+
+Fixture migration rules for existing tests:
+
+- Existing `iam_user` inserts must populate `identity = 'STUDENT'` for seeded student rows. If a test intentionally seeds a teacher/admin user, set that row's identity explicitly to the intended non-student value and assert it is excluded from D-11.
+- Existing `org_unit` college roots must set `parent_id = NULL`, `unit_type = 'COLLEGE'`, a deterministic `unit_code`, the existing `unit_name`, the existing `path`, and `status = 'ACTIVE'`.
+- Existing class `org_unit` rows used by old Minimal D submitted/confirmed tests must set `unit_type = 'CLASS'`, `status = 'ACTIVE'`, preserve the old `path`, and set `unit_code` to the last path segment or another explicit deterministic fixture code. If the old helper did not create grade rows, `parent_id` may remain `NULL` for those old rows; D-11-specific `seedRoster()` must create explicit grade parents.
+- D-11 `seedRoster()` must create active `COLLEGE -> GRADE -> CLASS` paths with non-null `unit_code`, `unit_name`, `path`, and `status` so grade/classes filters and sort order are deterministic.
+- Existing `org_membership` inserts must populate `membership_type = 'STUDENT'`, `is_primary = 1`, and `status = 'ACTIVE'` unless the test is explicitly about inactive, non-primary, or non-student membership exclusion.
+- Existing `final_record` rows for submitted/confirmed tests must keep non-null status and `updated_at`; only D-11 dirty-data tests should insert null `status` or null `updated_at`.
+- After changing the fixture schema and old insert helpers, immediately run the existing repository integration test class before adding D-11 SQL so schema backfills do not silently weaken Minimal D coverage:
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected at this point: existing Minimal D tests still PASS, or fail only because newly planned D-11 methods/tests have not been added yet. Do not proceed if old submitted/confirmed list/detail tests regress because of fixture migration.
 
 - [ ] **Step 2: Write failing no-record, draft, and submitted/confirmed tests**
 
@@ -1326,7 +1373,51 @@ void shouldRejectMalformedClassPathsForOrgSubtreeMatching() {
 }
 ```
 
-- [ ] **Step 4: Write failing duplicate-membership and pagination tests**
+- [ ] **Step 4: Write mandatory scope-parity, duplicate-membership, and pagination tests**
+
+D-11 has a private `rosterScopeFragment(...)` translator. This is a mandatory verification point, not conditional on shared scope code changing: add tests proving D-11 roster visibility stays aligned with the existing whole-record final-record scope semantics for `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths. Use the same `FinalRecordAccessContext` helpers to query both the existing submitted/confirmed admin list and the new unsubmitted roster path against equivalent student/class fixtures.
+
+Add the scope-parity test before the duplicate-membership tests:
+
+```java
+@Test
+void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSemantics() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2999, NULL, 'COLLEGE', 'CS2', '相似学院', '/WHUT/CS2', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4999, 2999, 'CLASS', 'CS2X', '相似班', '/WHUT/CS2/CS2201', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1099, 'S099', 'Similar', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5099, 1099, 4999, 'STUDENT', 1, 'ACTIVE')");
+    insertFinalRecord(9101L, 1001L, "2024-2025", "SUBMITTED", "2026-07-12 10:00:00");
+    insertFinalRecord(9102L, 1002L, "2024-2025", "SUBMITTED", "2026-07-12 10:01:00");
+    insertFinalRecord(9103L, 1003L, "2024-2025", "SUBMITTED", "2026-07-12 10:02:00");
+    insertFinalRecord(9199L, 1099L, "2024-2025", "SUBMITTED", "2026-07-12 10:03:00");
+
+    assertScopeParity(accessContextWithAllScope());
+    assertScopeParity(accessContextWithOrgUnit(4001L));
+    assertScopeParity(accessContextWithOrgSubtree(2002L));
+    assertScopeParity(accessContextWithOrgSubtree(4001L));
+    assertScopeParity(accessContextWithOrgUnitAndOrgSubtree(4001L, 2002L));
+    assertScopeParity(accessContextWithUnsupportedCategoryOnly());
+    assertScopeParity(accessContextWithEmptyGrantedScopes());
+}
+
+private void assertScopeParity(FinalRecordAccessContext accessContext) {
+    List<Long> submittedVisible = repository.pageAdminFinalRecords(
+                    accessContext,
+                    new FinalRecordPageQuery("2024-2025", null, null, null, 1, 100))
+            .records().stream()
+            .map(FinalRecordQueryRow::getStudentUserId)
+            .toList();
+    List<Long> d11Visible = repository.pageUnsubmittedStudents(
+                    accessContext,
+                    new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 100))
+            .records().stream()
+            .map(UnsubmittedStudentRow::getStudentUserId)
+            .toList();
+
+    assertThat(d11Visible).containsExactlyInAnyOrderElementsOf(submittedVisible);
+}
+```
 
 Add tests:
 
@@ -1435,6 +1526,39 @@ void shouldKeepCountAndRowsConsistentWhenFiltersLeaveMultipleVisibleMembershipsF
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .doesNotHaveDuplicates();
     assertThat(findRow(page, 1001L).getClassName()).isEqualTo("计算机2200班");
+}
+
+@Test
+void shouldApplyGradeFilterBeforeCollapsingCrossGradeMembershipsForOneStudent() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4004, 3002, 'CLASS', 'CS2301', '计算机2301班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1001, 4004, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> noGradeFilter = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    PageResult<UnsubmittedStudentRow> cs2023Only = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2023", null, 1, 20)
+    );
+    PageResult<UnsubmittedStudentRow> cs2022Only = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", null, 1, 20)
+    );
+
+    assertThat(noGradeFilter.total()).isEqualTo(3);
+    assertThat(findRow(noGradeFilter, 1001L).getGrade()).isEqualTo("计算机2023级");
+    assertThat(findRow(noGradeFilter, 1001L).getClassName()).isEqualTo("计算机2301班");
+    assertThat(cs2023Only.total()).isEqualTo(1);
+    assertThat(cs2023Only.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L);
+    assertThat(findRow(cs2023Only, 1001L).getGrade()).isEqualTo("计算机2023级");
+    assertThat(findRow(cs2023Only, 1001L).getClassName()).isEqualTo("计算机2301班");
+    assertThat(cs2022Only.total()).isEqualTo(3);
+    assertThat(findRow(cs2022Only, 1001L).getGrade()).isEqualTo("计算机2022级");
+    assertThat(findRow(cs2022Only, 1001L).getClassName()).isEqualTo("计算机2201班");
 }
 
 @Test
@@ -1787,6 +1911,14 @@ private String scopeExpression(Map<String, Object> params, String classAlias) {
 
 Add imports for `UnsubmittedFinalRecordQuery`, `ArrayList`, and `List` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value.
 
+In `SqlPredicateFragment`, add a D-11-specific explicit true fragment while preserving the existing blank-expression `allowAll()` behavior used by existing translators:
+
+```java
+public static SqlPredicateFragment alwaysTrue() {
+    return new SqlPredicateFragment("1 = 1", Map.of());
+}
+```
+
 - [ ] **Step 8: Add D-11 scope-fragment builder in repository implementation**
 
 In `MybatisPlusFinalRecordQueryRepository`, implement:
@@ -1919,6 +2051,7 @@ Expected: hits are limited to `FinalRecordQueryMapper`, `FinalRecordQuerySqlProv
 git add whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/FinalRecordQueryMapper.java \
   whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/FinalRecordQuerySqlProvider.java \
   whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusFinalRecordQueryRepository.java \
+  whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/SqlPredicateFragment.java \
   whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java
 git commit -m "feat: query unsubmitted final record roster"
 ```
@@ -1959,6 +2092,14 @@ void shouldReturnUnsubmittedFinalRecordPage() throws Exception {
             .andExpect(jsonPath("$.data.pageNum").doesNotExist())
             .andExpect(jsonPath("$.data.pageNo").doesNotExist())
             .andExpect(jsonPath("$.data.pageSize").doesNotExist());
+
+    ArgumentCaptor<UnsubmittedFinalRecordQuery> captor = ArgumentCaptor.forClass(UnsubmittedFinalRecordQuery.class);
+    verify(queryApplicationService).pageUnsubmittedStudents(captor.capture());
+    assertThat(captor.getValue().getAcademicYear()).isEqualTo("2025-2026");
+    assertThat(captor.getValue().getGrade()).isNull();
+    assertThat(captor.getValue().getClasses()).isEmpty();
+    assertThat(captor.getValue().getPageNo()).isEqualTo(1);
+    assertThat(captor.getValue().getPageSize()).isEqualTo(20);
 }
 
 @Test
@@ -1976,7 +2117,11 @@ void shouldRouteStaticUnsubmittedPathBeforeRecordIdDetailPath() throws Exception
             .andExpect(jsonPath("$.data.record").doesNotExist())
             .andExpect(jsonPath("$.data.student").doesNotExist());
 
-    verify(queryApplicationService).pageUnsubmittedStudents(any());
+    ArgumentCaptor<UnsubmittedFinalRecordQuery> captor = ArgumentCaptor.forClass(UnsubmittedFinalRecordQuery.class);
+    verify(queryApplicationService).pageUnsubmittedStudents(captor.capture());
+    assertThat(captor.getValue().getAcademicYear()).isEqualTo("2025-2026");
+    assertThat(captor.getValue().getPageNo()).isEqualTo(1);
+    assertThat(captor.getValue().getPageSize()).isEqualTo(20);
     verify(queryApplicationService, never()).getAdminFinalRecordDetail(anyLong());
 }
 
@@ -2405,7 +2550,7 @@ Run:
 mvn test
 ```
 
-Expected: PASS. Before comparing failures, check the Pre-Implementation Verification Baseline entry. If it still says `PENDING`, do not claim "zero new failures"; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4. If unrelated pre-existing failures were recorded in the Pre-Implementation Verification Baseline section, compare this run with that recorded baseline and confirm there are zero new failing tests. D-11 added or modified tests must pass regardless of baseline availability. Existing failures that were already present in `whut-eval-domain`, `whut-eval-application`, `whut-eval-infra`, `whut-eval-interfaces`, or unrelated `whut-eval-app` tests may be treated as pre-existing only when they are named in the recorded baseline and the final run shows zero new failing tests. In `whut-eval-app`, every final-record related test that was modified, added, or explicitly run by this plan is D-11-touched for verification purposes, including Step 2 shared-scope regressions, Step 3 focused D-11 tests, and Step 4 `*FinalRecord*Test` regressions; a failure in any of these D-11-touched tests fails D-11 verification even if the same run also contains unrelated pre-existing failures.
+Expected: PASS. Before comparing failures, check the Pre-Implementation Verification Baseline entry. If `Full Baseline Result` still says `PENDING` or `BLOCKED`, do not claim "zero new failures" for the full suite; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4 as observed evidence. If a full baseline exists, compare this run with that recorded full baseline and confirm there are zero new failing tests. If only the focused fallback baseline exists, compare only D-11/final-record tests against that fallback; failures outside the focused set are observed state and must not be labeled new or pre-existing. D-11 added or modified tests must pass regardless of baseline availability. Existing failures that were already present in `whut-eval-domain`, `whut-eval-application`, `whut-eval-infra`, `whut-eval-interfaces`, or unrelated `whut-eval-app` tests may be treated as pre-existing only when they are named in the recorded full baseline and the final run shows zero new failing tests. In `whut-eval-app`, every final-record related test that was modified, added, or explicitly run by this plan is D-11-touched for verification purposes, including Task 3 mandatory D-11 private scope-parity tests, Step 2 shared-scope regressions, Step 3 focused D-11 tests, and Step 4 `*FinalRecord*Test` regressions; a failure in any of these D-11-touched tests fails D-11 verification even if the same run also contains unrelated pre-existing failures.
 
 - [ ] **Step 6: Review diff for contract drift**
 
@@ -2497,11 +2642,13 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - When the lowest numeric visible membership's class has no active grade parent, display `grade = null` for that selected class even if a higher visible membership has an active grade.
 - `ORG_UNIT` is exact class id only and does not depend on `org_unit.path` being non-null.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
+- D-11 private `rosterScopeFragment(...)` is covered by mandatory parity tests against existing submitted/confirmed whole-record scope visibility for `ALLOW_ALL`, `ORG_UNIT`, `ORG_SUBTREE`, unsupported/empty scopes, and similar-prefix paths.
 - `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including a CLASS root; a CLASS root exposes that class only, not sibling classes.
 - If `ORG_UNIT` and `ORG_SUBTREE` both grant the same class, visible students are still counted and returned once.
 - Inactive `ORG_SUBTREE` roots return an empty page even when their path and descendants are otherwise valid.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
+- Cross-grade duplicate memberships are filtered by `grade` before collapse, so count, row selection, and displayed grade/class all come from the visible membership set.
 - Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
 - Count and select SQL keep eligibility predicates aligned: identity, membership, scope, grade/classes, and submitted/confirmed exclusion must change together.
 - Grade/classes exact filters are case-sensitive, use code-or-name OR semantics, include distinct code/name matches, and do not duplicate a student when both sides match the same org unit.
@@ -2512,6 +2659,6 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `pageNo` offset overflow is rejected.
 - `pageNo` and `pageSize` intentionally remain `long` in `UnsubmittedFinalRecordQuery` so offset multiplication can detect overflow before mapper execution.
 - Baseline notes belong in the execution notes for this plan, directly under the Pre-Implementation Verification Baseline section or in the task-run handoff summary; do not bury baseline failures only in terminal scrollback.
-- A `PENDING` baseline blocks any "zero new failures" claim; it does not block reporting observed test results.
+- A `PENDING` or `BLOCKED` Full Baseline blocks any full-suite "zero new failures" claim; it does not block reporting observed test results.
 - Any modified, added, or explicitly run final-record related test under `whut-eval-app` is in D-11 verification scope; failures in shared-scope regressions or `*FinalRecord*Test` cannot be waived as outside the D-11 test package. Unrelated pre-existing failures are judged only by the recorded baseline and zero-new-failure comparison.
 - No D-7, D-8, D-9, D-10, import, export, or frontend behavior is introduced.
