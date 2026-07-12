@@ -4,7 +4,9 @@
 
 Implement D-11: `GET /api/admin/final-records/unsubmitted`.
 
-The endpoint lets an authorized counselor or college reviewer page through students in their assigned organization scope who are expected to submit a final record for an academic year but have not yet reached `SUBMITTED` or `CONFIRMED`.
+The endpoint lets an authorized counselor or college reviewer page through current active students in their assigned organization scope who have not yet reached `SUBMITTED` or `CONFIRMED` for the requested academic year.
+
+For D-11, "expected to submit" is deliberately defined as the current active student roster in scope. It is not derived from application activity, approved score facts, historical enrollment snapshots, or import/export rows.
 
 This is the first deferred D-group function after Minimal D. It must reuse the Minimal D final-record authorization model and must not introduce import/export behavior.
 
@@ -87,10 +89,10 @@ The application service must also check the same authority before querying. Miss
 ### 4.3 Query Parameters
 
 | Parameter | Type | Required | Default | Rule |
-|---|---|---:|---|---|
-| `academicYear` | string | yes | - | trim; blank is invalid |
-| `grade` | string | no | - | trim; matched against grade organization code or name |
-| `classes` | string | no | - | trim; matched against class organization code or name |
+|---|---|---|---|---|
+| `academicYear` | string | yes | - | trim; must match `YYYY-YYYY` and the second year must equal the first year plus 1 |
+| `grade` | string | no | - | trim; exact match against grade organization code or name |
+| `classes` | string | no | - | trim; exact match against class organization code or name |
 | `pageNo` | long | no | `1` | values `<= 0` normalize to `1` |
 | `pageSize` | long | no | `20` | values `<= 0` normalize to `20`; values `> 100` cap at `100` |
 
@@ -98,11 +100,11 @@ Invalid `academicYear` returns `400 / VAL-4001`.
 
 `grade` and `classes` are filter names from the target D-group contract. The implementation maps them to organization metadata:
 
-- `classes` filters the active primary student class unit (`class_ou.unit_code` or `class_ou.unit_name`);
-- `grade` filters the parent grade unit of that class (`grade_ou.unit_code` or `grade_ou.unit_name`);
+- `classes` filters the active primary student class unit with exact equality: `class_ou.unit_code = classes OR class_ou.unit_name = classes`;
+- `grade` filters the parent grade unit with exact equality: `grade_ou.unit_code = grade OR grade_ou.unit_name = grade`;
 - blank values are ignored.
 
-The parameter name remains `classes`, not `className`, to match the team-delivery contract.
+No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. The parameter name remains `classes`, not `className`, to match the team-delivery contract; despite the plural name, this D-11 increment accepts a single class filter value.
 
 ### 4.4 Success Response
 
@@ -126,7 +128,7 @@ When no data matches, return `200` with `total = 0` and `records = []`.
 
 ### 5.1 Candidate Student Set
 
-A candidate student is a user row that satisfies all of the following:
+A candidate student is a user row in the current roster view that satisfies all of the following:
 
 - `iam_user.status = 'ACTIVE'`;
 - has an active primary organization membership:
@@ -139,6 +141,10 @@ A candidate student is a user row that satisfies all of the following:
 - the class is within the caller's `score.view.assigned` organization scope.
 
 This means disabled users, inactive memberships, non-primary memberships, and teacher/admin memberships are not candidates.
+
+D-11 does not reconstruct a historical roster for `academicYear`. The roster is based on current active IAM and organization membership data at query time. If the school later needs historical enrollment semantics, that must be introduced as a separate roster source and is outside this increment.
+
+A-group data is expected to have at most one active primary student membership per user. D-11 still guards against duplicated active primary rows: the query selects one deterministic membership per user using the lowest `org_membership.id`, and all class, grade, scope, and filter behavior is evaluated from that selected membership. This prevents duplicate rows and inflated pagination totals when dirty membership data exists.
 
 ### 5.2 Unsubmitted Definition
 
@@ -196,7 +202,14 @@ For D-11, the scope predicate applies to the student's active primary class memb
 - `applicant_user_id` maps to `u.id`;
 - `org_unit_id` maps to `class_ou.id`;
 - `org_path` maps to `class_ou.path`;
-- category/item scope fragments remain unsupported for whole-record student roster visibility and should produce an empty page through the existing `FinalRecordScopePredicateBuilder` behavior.
+- category/item scope fragments remain unsupported for whole-record student roster visibility.
+
+Scope merging rule:
+
+- supported fragments are `ALL`, `ORG_UNIT`, and `ORG_SUBTREE`;
+- unsupported `CATEGORY`, `ITEM`, `ORG_UNIT_ITEM`, and custom expression fragments are ignored when at least one supported fragment exists;
+- if every granted fragment for `score.view.assigned` is unsupported, the result is an empty page;
+- mixed scopes therefore behave like existing `FinalRecordScopePredicateBuilder`: an `ORG_SUBTREE` plus a category fragment returns the organization-scoped roster, while category-only returns no rows.
 
 ### 6.3 ORG_SUBTREE Path Rule
 
@@ -215,10 +228,24 @@ class_ou.path = root.path
 OR class_ou.path LIKE CONCAT(root.path, '/%')
 ```
 
-The current translator may emit path predicates from ids. D-11's implementation must either:
+Chosen implementation approach: add a final-record roster/list scope SQL path that translates `ORG_SUBTREE` into an `EXISTS` predicate against `org_unit root_ou`.
 
-- use a final-record-specific translator that resolves root org ids to path strings before SQL generation; or
-- translate `ORG_SUBTREE` into an `EXISTS` predicate against `org_unit root_ou` so the comparison uses real code paths.
+Example fragment:
+
+```sql
+EXISTS (
+  SELECT 1
+  FROM org_unit root_ou
+  WHERE root_ou.id = #{scopeParam}
+    AND root_ou.status = 'ACTIVE'
+    AND (
+      class_ou.path = root_ou.path
+      OR class_ou.path LIKE CONCAT(root_ou.path, '/%')
+    )
+)
+```
+
+This keeps the comparison in SQL, uses the real code-path values stored by A-group data, and avoids resolving org paths in Java before query execution. `ORG_UNIT` remains a direct equality check on `class_ou.id`. `ALL` produces no additional predicate.
 
 The same rule must be preserved for existing admin final-record list/detail access if the implementation touches shared scope translation. A D-11 fix must not regress Minimal D admin list visibility.
 
@@ -231,11 +258,20 @@ Recommended count query:
 ```sql
 SELECT COUNT(1)
 FROM iam_user u
-JOIN org_membership om
+JOIN (
+  SELECT om1.*
+  FROM org_membership om1
+  JOIN (
+    SELECT user_id, MIN(id) AS membership_id
+    FROM org_membership
+    WHERE membership_type = 'STUDENT'
+      AND is_primary = 1
+      AND status = 'ACTIVE'
+    GROUP BY user_id
+  ) picked_om
+    ON picked_om.membership_id = om1.id
+) om
   ON om.user_id = u.id
- AND om.membership_type = 'STUDENT'
- AND om.is_primary = 1
- AND om.status = 'ACTIVE'
 JOIN org_unit class_ou
   ON class_ou.id = om.org_unit_id
  AND class_ou.unit_type = 'CLASS'
@@ -247,8 +283,22 @@ LEFT JOIN final_record draft_fr
  AND draft_fr.academic_year = #{query.academicYear}
  AND draft_fr.status = 'DRAFT'
 WHERE u.status = 'ACTIVE'
-  AND <scope predicate>
-  AND <optional grade/classes filters>
+  AND (
+    #{scopeAllowsAll} = TRUE
+    OR class_ou.id IN (#{orgUnitScopeId1}, #{orgUnitScopeId2})
+    OR EXISTS (
+      SELECT 1
+      FROM org_unit root_ou
+      WHERE root_ou.id IN (#{orgSubtreeRootId1}, #{orgSubtreeRootId2})
+        AND root_ou.status = 'ACTIVE'
+        AND (
+          class_ou.path = root_ou.path
+          OR class_ou.path LIKE CONCAT(root_ou.path, '/%')
+        )
+    )
+  )
+  AND (#{query.grade} IS NULL OR grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})
+  AND (#{query.classes} IS NULL OR class_ou.unit_code = #{query.classes} OR class_ou.unit_name = #{query.classes})
   AND NOT EXISTS (
     SELECT 1
     FROM final_record submitted_fr
@@ -257,6 +307,14 @@ WHERE u.status = 'ACTIVE'
       AND submitted_fr.status IN ('SUBMITTED', 'CONFIRMED')
   )
 ```
+
+The SQL provider must generate the scope block from the evaluated scope set:
+
+- when `ALL` is granted, set `scopeAllowsAll = TRUE` and omit empty `IN` fragments;
+- when one or more `ORG_UNIT` rules exist, add the `class_ou.id IN (...)` fragment with bound parameters;
+- when one or more `ORG_SUBTREE` rules exist, add the `root_ou.id IN (...)` fragment with bound parameters;
+- when no supported scope fragments exist, return a deny-all predicate such as `1 = 0`;
+- never emit `IN ()`.
 
 Recommended select columns:
 
@@ -298,6 +356,7 @@ Fields:
 Validation:
 
 - throw `ValidationException("academicYear 不能为空")` for blank academic year;
+- throw `ValidationException("academicYear 不合法")` when the value does not match `YYYY-YYYY` or the second year is not the first year plus 1;
 - normalize optional filters by trimming blank to `null`;
 - normalize pagination like existing `FinalRecordPageQuery`.
 
@@ -395,6 +454,7 @@ Route order must keep `/unsubmitted` from being captured by `/{recordId}`. In Sp
 | Scenario | HTTP | Code | Source |
 |---|---:|---|---|
 | blank `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
+| malformed `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
 | no `score.view.assigned` authority | `403` | `AUTH-4030` | `AccessDeniedAppException` or method security |
 | valid request with no matches | `200` | - | empty page |
 
@@ -407,7 +467,10 @@ D-11 does not return `404` for no data.
 Add tests that prove:
 
 - blank academic year throws `ValidationException`;
+- malformed academic years such as `abc`, `2025`, and `2025-2027` throw `ValidationException`;
+- `2025-2026` is accepted;
 - blank `grade` and `classes` normalize to `null`;
+- nonblank `grade` and `classes` are trimmed but not case-normalized;
 - `pageNo <= 0` becomes `1`;
 - `pageSize <= 0` becomes `20`;
 - `pageSize > 100` becomes `100`.
@@ -423,6 +486,7 @@ Extend `FinalRecordQueryApplicationServiceTest`:
 - denies callers without `score.view.assigned`;
 - preserves `lastUpdatedAt` from a draft row;
 - returns an empty page without throwing.
+- maps every row to `status = "UNSUBMITTED"` without trusting mapper data for that value.
 
 ### 11.3 Repository Integration Tests
 
@@ -435,12 +499,20 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - excludes inactive users;
 - excludes inactive memberships;
 - excludes non-primary student memberships;
+- de-duplicates duplicate active primary memberships for the same student by selecting the lowest `org_membership.id`;
 - filters by `grade`;
 - filters by `classes`;
+- proves `grade` and `classes` filters match organization code and organization name by exact equality;
+- proves a partial name such as `计算机` does not match `计算机 2022 级`;
+- verifies stable ordering by grade code, class code, user no, and user id;
+- verifies two-page pagination has no duplicated student ids and the combined rows match the same stable order;
 - returns empty page for unsupported category-only scopes;
+- returns organization-scoped rows for a mixed scope containing one supported `ORG_SUBTREE` rule and one unsupported category rule;
 - resolves `ORG_SUBTREE` against real `org_unit.path` code paths, proving a scope rooted at org id `2002` can see classes whose path starts with `/WHUT/CS`.
 
 The last test is mandatory because a numeric-id path comparison such as `LIKE '%/2002/%'` would return zero rows against the seeded organization path format.
+
+The repository integration test schema must include the real A-group columns used by the D-11 SQL path: `org_unit.parent_id`, `org_unit.unit_type`, `org_unit.unit_code`, `org_unit.unit_name`, `org_unit.path`, `org_unit.status`, and `org_membership.id`. Do not keep the older Minimal D simplified `org_unit` test fixture if it hides these contract fields.
 
 ### 11.4 Controller Tests
 
@@ -448,6 +520,8 @@ Add or extend admin final-record controller tests to prove:
 
 - `GET /api/admin/final-records/unsubmitted?academicYear=2025-2026` returns the page shape;
 - blank `academicYear` returns `400 / VAL-4001`;
+- malformed `academicYear` returns `400 / VAL-4001`;
+- `grade` and `classes` are forwarded as single exact-match filter values;
 - a caller without `score.view.assigned` receives `403 / AUTH-4030`;
 - the `/unsubmitted` route is not captured by `/{recordId}`.
 
@@ -473,6 +547,12 @@ If shared scope translation is fixed to resolve `ORG_SUBTREE` by real org paths,
 - `SUBMITTED` and `CONFIRMED` rows exclude the student.
 - Students with no `final_record` are included when otherwise in scope.
 - The roster starts from active primary student membership, not final records.
+- The roster is current active membership, not a historical roster for the requested academic year.
+- Duplicate active primary membership rows do not duplicate students in the result.
+- Mixed supported and unsupported scope fragments return rows for the supported organization scope.
+- Unsupported-only scope fragments return an empty page.
+- `grade` and `classes` filters are exact code/name matches.
+- Pagination order is deterministic and stable across pages.
 - `lastUpdatedAt` is draft `final_record.updated_at` or `null`.
 - No data returns an empty page, not `404`.
 - `ORG_SUBTREE` matches the real code-path format in `org_unit.path`.
