@@ -2,7 +2,11 @@
 
 > 当前状态：`PARTIAL_IMPLEMENTED`
 >
-> 当前代码已提供学生/管理端成绩查询入口；最终成绩提交、确认、导入、导出、未提交名单仍属于目标态设计。
+> 当前 Minimal D 已落地范围：`D-1 / D-2 / D-3 / D-4 / D-5 / D-6 / D-12`。
+>
+> `D-7 / D-8 / D-9 / D-10 / D-11` 当前状态为 `DEFERRED_AFTER_MINIMAL_D`。这些接口仍是 D 组目标态契约，不属于当前 Minimal D smoke gate 的通过范围。
+>
+> 当前 Java Controller 暴露学生已审核成绩查询、学生最终成绩表头/明细/提交、教师最终成绩列表/详情/确认；暂未暴露 `/api/admin/imports/**`、`/api/admin/exports/**` 或 `/api/admin/final-records/unsubmitted`。自动 smoke gate 不覆盖 D-7 至 D-11。
 
 ## 1. 模块背景
 
@@ -97,20 +101,20 @@ flowchart LR
 
 ## 5. 接口清单总表
 
-| 编号 | 方法 | 路由 | 用途 |
-|---|---|---|---|
-| D-1 | `GET` | `/api/student/query/scores` | 查询学生已审核成绩列表 |
-| D-2 | `GET` | `/api/student/final-records/{academicYear}` | 查询学生最终成绩表头 |
-| D-3 | `GET` | `/api/student/final-records/{academicYear}/components` | 查询学生最终成绩分项明细 |
-| D-4 | `POST` | `/api/student/final-records/submit` | 学生提交最终成绩 |
-| D-5 | `GET` | `/api/admin/final-records` | 教师端分页查询最终成绩 |
-| D-6 | `GET` | `/api/admin/final-records/{recordId}` | 教师端查询最终成绩详情 |
-| D-12 | `POST` | `/api/admin/final-records/{recordId}/confirm` | 教师确认最终成绩 |
-| D-7 | `POST` | `/api/admin/imports/mentor-scores` | 导入导师/固定成绩 |
-| D-8 | `POST` | `/api/admin/imports/lectures` | 导入讲座 |
-| D-9 | `POST` | `/api/admin/imports/cas-activities` | 导入文体活动 |
-| D-10 | `GET` | `/api/admin/exports/final-scores` | 导出成绩 |
-| D-11 | `GET` | `/api/admin/final-records/unsubmitted` | 查询未提交学生名单 |
+| 编号 | 方法 | 路由 | 用途 | 当前状态 |
+|---|---|---|---|---|
+| D-1 | `GET` | `/api/student/query/scores` | 查询学生已审核成绩列表 | `CURRENT_IMPLEMENTED` |
+| D-2 | `GET` | `/api/student/final-records/{academicYear}` | 查询学生最终成绩表头 | `CURRENT_IMPLEMENTED` |
+| D-3 | `GET` | `/api/student/final-records/{academicYear}/components` | 查询学生最终成绩分项明细 | `CURRENT_IMPLEMENTED` |
+| D-4 | `POST` | `/api/student/final-records/submit` | 学生提交最终成绩 | `CURRENT_IMPLEMENTED` |
+| D-5 | `GET` | `/api/admin/final-records` | 教师端分页查询最终成绩 | `CURRENT_IMPLEMENTED` |
+| D-6 | `GET` | `/api/admin/final-records/{recordId}` | 教师端查询最终成绩详情 | `CURRENT_IMPLEMENTED` |
+| D-12 | `POST` | `/api/admin/final-records/{recordId}/confirm` | 教师确认最终成绩 | `CURRENT_IMPLEMENTED` |
+| D-7 | `POST` | `/api/admin/imports/mentor-scores` | 导入导师/固定成绩 | `DEFERRED_AFTER_MINIMAL_D` |
+| D-8 | `POST` | `/api/admin/imports/lectures` | 导入讲座 | `DEFERRED_AFTER_MINIMAL_D` |
+| D-9 | `POST` | `/api/admin/imports/cas-activities` | 导入文体活动 | `DEFERRED_AFTER_MINIMAL_D` |
+| D-10 | `GET` | `/api/admin/exports/final-scores` | 导出成绩 | `DEFERRED_AFTER_MINIMAL_D` |
+| D-11 | `GET` | `/api/admin/final-records/unsubmitted` | 查询未提交学生名单 | `DEFERRED_AFTER_MINIMAL_D` |
 
 ## 6. 详细接口定义
 

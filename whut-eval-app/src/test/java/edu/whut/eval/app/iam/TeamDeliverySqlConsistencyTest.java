@@ -274,6 +274,19 @@ class TeamDeliverySqlConsistencyTest {
     }
 
     @Test
+    void shouldKeepDGroupDocExplicitAboutMinimalDImportExportBoundary() throws Exception {
+        String doc = Files.readString(TEAM_DELIVERY.resolve("group-d-score-finalization-import-export.md"));
+        String readme = Files.readString(TEAM_DELIVERY.resolve("README.md"));
+
+        assertThat(doc).contains("当前 Minimal D 已落地范围");
+        assertThat(doc).contains("D-1 / D-2 / D-3 / D-4 / D-5 / D-6 / D-12");
+        assertThat(doc).contains("DEFERRED_AFTER_MINIMAL_D");
+        assertThat(doc).contains("D-7 / D-8 / D-9 / D-10 / D-11");
+        assertThat(doc).contains("自动 smoke gate 不覆盖 D-7 至 D-11");
+        assertThat(readme).contains("DEFERRED_AFTER_MINIMAL_D");
+    }
+
+    @Test
     void shouldProvideNonDestructiveDGroupSafeInitSql() throws Exception {
         String sql = Files.readString(D_GROUP_SAFE_INIT_SQL);
 

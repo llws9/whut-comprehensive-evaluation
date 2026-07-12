@@ -26,6 +26,7 @@
 
 - `CURRENT_IMPLEMENTED`：已与当前 Java Controller / Mapper / Service 对齐，可作为当前联调契约。
 - `PARTIAL_IMPLEMENTED`：已有部分接口或表结构落地，但文档仍包含目标态内容，未实现部分不得直接作为联调契约。
+- `DEFERRED_AFTER_MINIMAL_D`：目标态接口已冻结在文档中，但不属于当前 Minimal D 实现和 smoke gate 覆盖范围。
 - `TARGET_BLUEPRINT`：交付设计目标，不代表当前代码已经实现。
 - `SQL_NEEDS_SYNC`：脚本曾发现与运行代码不一致，使用前必须先跑一致性校验。
 
