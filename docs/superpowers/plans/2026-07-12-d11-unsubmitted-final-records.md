@@ -4,7 +4,7 @@
 
 **Goal:** Build `GET /api/admin/final-records/unsubmitted` so authorized admins can page current active in-scope students who have not submitted or confirmed final records for an academic year.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, excludes `SUBMITTED` and `CONFIRMED` records, and maps `lastUpdatedAt` from `MAX(updated_at)` across that student/year's `DRAFT` final records. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student number, then user id so pagination is stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class/grade from the lowest numeric visible membership id.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, excludes `SUBMITTED` and `CONFIRMED` records, and maps `lastUpdatedAt` from `MAX(updated_at)` across that student/year's `DRAFT` final records. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student number nulls-last, student number, then user id so pagination is stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class/grade from the lowest numeric visible membership id.
 
 **Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -98,11 +98,14 @@ class UnsubmittedFinalRecordQueryTest {
     @Test
     void shouldNormalizeValidAcademicYearAndPagination() {
         UnsubmittedFinalRecordQuery query = new UnsubmittedFinalRecordQuery(" 2025-2026 ", null, null, -1, 200);
+        UnsubmittedFinalRecordQuery zeroPage = new UnsubmittedFinalRecordQuery("2025-2026", null, null, 0, 20);
 
         assertThat(query.getAcademicYear()).isEqualTo("2025-2026");
         assertThat(query.getPageNo()).isEqualTo(1);
         assertThat(query.getPageSize()).isEqualTo(100);
         assertThat(query.getOffset()).isZero();
+        assertThat(zeroPage.getPageNo()).isEqualTo(1);
+        assertThat(zeroPage.getOffset()).isZero();
     }
 
     @Test
@@ -184,6 +187,16 @@ void shouldTreatBlankClassesAsEmptyFilter() {
     assertThat(query.getGrade()).isNull();
     assertThat(query.getClasses()).isEmpty();
     assertThat(query.isClassesEmpty()).isTrue();
+
+    UnsubmittedFinalRecordQuery nullClasses = new UnsubmittedFinalRecordQuery(
+            "2025-2026",
+            null,
+            null,
+            1,
+            20
+    );
+    assertThat(nullClasses.getClasses()).isEmpty();
+    assertThat(nullClasses.isClassesEmpty()).isTrue();
 }
 
 @Test
@@ -985,20 +998,20 @@ Add tests:
 @Test
 void shouldChooseLowestNumericVisibleMembershipIdAfterScopeAndFilters() {
     seedRoster();
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2998, NULL, 'COLLEGE', 'MATH', '数学学院', '/WHUT/MATH', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4998, 2998, 'CLASS', 'MATH2201', '数学2201班', '/WHUT/MATH/MATH2201', 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1001, 4998, 'STUDENT', 1, 'ACTIVE')");
-    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6000, 1001, 4002, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4003, 3001, 'CLASS', 'CS2200', '计算机2200班', '/WHUT/CS/CS2022/CS2200', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1001, 4003, 'STUDENT', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
-            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("CS2202"), 1, 20)
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
     );
 
     UnsubmittedStudentRow alice = findRow(page, 1001L);
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
-            .contains(1001L);
-    assertThat(alice.getClassName()).isEqualTo("计算机2202班");
+            .containsExactly(1001L, 1002L, 1003L);
+    assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1001L)
+            .hasSize(1);
+    assertThat(alice.getClassName()).isEqualTo("计算机2200班");
 }
 
 @Test
@@ -1036,8 +1049,10 @@ void shouldSortNullUnitCodesAfterNonNullCodesWithStableTieBreakers() {
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4006, 3005, 'CLASS', 'NC2201', '无代码年级一班', '/WHUT/CS/NO_CODE_GRADE/NC2201', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, 'S005', 'NullClassCode', 'STUDENT', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S006', 'NullGradeCode', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1007, NULL, 'NullUserNo', 'STUDENT', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4005, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4006, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5007, 1007, 4001, 'STUDENT', 1, 'ACTIVE')");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -1045,7 +1060,7 @@ void shouldSortNullUnitCodesAfterNonNullCodesWithStableTieBreakers() {
     );
 
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
-            .containsExactly(1001L, 1002L, 1003L, 1005L, 1006L);
+            .containsExactly(1001L, 1002L, 1007L, 1003L, 1005L, 1006L);
 }
 ```
 
@@ -1195,6 +1210,7 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
                      grade_ou.unit_code ASC,
                      CASE WHEN class_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
                      class_ou.unit_code ASC,
+                     CASE WHEN u.user_no IS NULL THEN 1 ELSE 0 END ASC,
                      u.user_no ASC,
                      u.id ASC
             LIMIT #{query.pageSize} OFFSET #{query.offset}
@@ -1206,7 +1222,7 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
 }
 ```
 
-Then add helper methods. The helper must never output `IN ()`; when classes are empty it outputs `NULL` because the `classesEmpty` branch disables the `IN` predicate. The provider builds indexed MyBatis placeholders and never concatenates raw class values. Use `CAST(... AS BINARY)` for case-sensitive comparisons because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`:
+Then add helper methods. The helper must never output `IN ()`; when classes are empty it outputs `NULL` because the `classesEmpty` branch disables the `IN` predicate. The provider builds indexed MyBatis placeholders and never concatenates raw class values. `scopeExpression`, `caseSensitiveEquals(...)`, and `caseSensitiveIn(...)` may be injected into SQL strings only when they are built from fixed alias names plus MyBatis placeholders generated in this provider/repository; never pass raw request values, grade values, class values, or caller-provided SQL through these helpers. Use `CAST(... AS BINARY)` for case-sensitive comparisons because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`:
 
 ```java
 private String castClassPlaceholders(Map<String, Object> params) {
@@ -1234,7 +1250,7 @@ private String scopeExpression(Map<String, Object> params, String classAlias) {
     if (expression == null || expression.isBlank()) {
         return "1 = 0";
     }
-    return expression.replace("{classAlias}", classAlias);
+    return expression.replace("__D11_CLASS_ALIAS__", classAlias);
 }
 ```
 
@@ -1285,7 +1301,7 @@ private SqlPredicateFragment rosterScopeFragment(FinalRecordAccessContext access
             .toList();
     if (!orgUnitIds.isEmpty()) {
         String inSql = bindList(parameters, "d11OrgUnit", orgUnitIds);
-        fragments.add("{classAlias}.id IN (" + inSql + ")");
+        fragments.add("__D11_CLASS_ALIAS__.id IN (" + inSql + ")");
     }
     List<Long> subtreeIds = predicate.getClauses().stream()
             .filter(clause -> "ORG_SUBTREE".equals(clause.getScopeType()))
@@ -1305,13 +1321,13 @@ private SqlPredicateFragment rosterScopeFragment(FinalRecordAccessContext access
                     AND root_ou.path <> ''
                     AND root_ou.path LIKE '/%%'
                     AND root_ou.path NOT LIKE '%%/'
-                    AND {classAlias}.path IS NOT NULL
-                    AND {classAlias}.path <> ''
-                    AND {classAlias}.path LIKE '/%%'
-                    AND {classAlias}.path NOT LIKE '%%/'
+                    AND __D11_CLASS_ALIAS__.path IS NOT NULL
+                    AND __D11_CLASS_ALIAS__.path <> ''
+                    AND __D11_CLASS_ALIAS__.path LIKE '/%%'
+                    AND __D11_CLASS_ALIAS__.path NOT LIKE '%%/'
                     AND (
-                      {classAlias}.path = root_ou.path
-                      OR {classAlias}.path LIKE CONCAT(root_ou.path, '/%%')
+                      __D11_CLASS_ALIAS__.path = root_ou.path
+                      OR __D11_CLASS_ALIAS__.path LIKE CONCAT(root_ou.path, '/%%')
                     )
                 )
                 """.formatted(inSql));
@@ -1662,6 +1678,8 @@ rg -n "pageNum|pages|className.*List|academicYear 不能为空|LIKE '%/|SUBMITTE
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 ```
 
+If `rg` is unavailable in the execution environment, run the same pattern with `grep -RInE` over the listed directories and review the same hits.
+
 Expected:
 
 - `git diff --check` prints no whitespace errors.
@@ -1676,6 +1694,7 @@ If Task 5 added regression tests or fixes:
 
 ```bash
 git add whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java \
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordQueryApplicationServiceTest.java \
   whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordScopePredicateBuilderTest.java
 git commit -m "test: cover final record scope regressions"
 ```
