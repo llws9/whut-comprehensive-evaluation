@@ -18,6 +18,14 @@
 
 All Maven commands in this plan must be run from the repository root, the directory containing the top-level `pom.xml`.
 
+- [ ] Before running any baseline or task test command, verify the expected Maven module exists:
+
+```bash
+mvn -pl whut-eval-app -am help:evaluate -Dexpression=project.artifactId -q -DforceStdout
+```
+
+Expected output includes `whut-eval-app`. If this command fails because the module is missing or the current directory is not the repository root, record `BLOCKED` in the baseline fields below and stop before implementation; do not discover the module mismatch during Task 1 or later test commands.
+
 - [ ] Before creating D-11 code files or modifying production/test code, run:
 
 ```bash
@@ -2285,6 +2293,9 @@ private void validateD11ScopeExpression(String expression, Map<String, Object> p
     if (!referencedScopeParameterNames(normalized).equals(parameters.keySet())) {
         throw new IllegalArgumentException("Unsafe D-11 scope expression");
     }
+    if (!parameters.values().stream().allMatch(Long.class::isInstance)) {
+        throw new IllegalArgumentException("Unsafe D-11 scope expression");
+    }
 }
 
 private Set<String> referencedScopeParameterNames(String normalizedExpression) {
@@ -2298,7 +2309,7 @@ private Set<String> referencedScopeParameterNames(String normalizedExpression) {
 }
 ```
 
-Build the classes predicate outside the SQL template: when `query.isClassesEmpty()` is true, render the fixed predicate `TRUE`; otherwise render the two case-sensitive class code/name membership predicates. Add imports for `UnsubmittedFinalRecordQuery`, `D11ScopeSqlShape`, `SqlPredicateFragment`, `ArrayList`, `LinkedHashSet`, `List`, `Map`, `Set`, `Matcher`, and `Pattern` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value. Scope-fragment validation must reject both non-whitelisted SQL shapes and fragments whose expression placeholder names do not exactly match `SqlPredicateFragment.getParameters().keySet()`. Add a provider unit/integration test that passes a `SqlPredicateFragment` with expression `(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0})) OR 1 = 1` and asserts `buildCountUnsubmittedStudents(...)` throws `IllegalArgumentException`.
+Build the classes predicate outside the SQL template: when `query.isClassesEmpty()` is true, render the fixed predicate `TRUE`; otherwise render the two case-sensitive class code/name membership predicates. Add imports for `UnsubmittedFinalRecordQuery`, `D11ScopeSqlShape`, `SqlPredicateFragment`, `ArrayList`, `LinkedHashSet`, `List`, `Map`, `Set`, `Matcher`, and `Pattern` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value. Scope-fragment validation must reject non-whitelisted SQL shapes, fragments whose expression placeholder names do not exactly match `SqlPredicateFragment.getParameters().keySet()`, and fragments whose parameter values are not `Long` instances. Add provider unit/integration tests that pass a `SqlPredicateFragment` with expression `(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0})) OR 1 = 1`, a fragment with mismatched parameter names, and a fragment with a legal shape but String-valued `d11OrgUnit0`; each must assert `buildCountUnsubmittedStudents(...)` and `buildSelectUnsubmittedStudents(...)` throw `IllegalArgumentException`.
 
 In `SqlPredicateFragment`, add a D-11-specific explicit true fragment while preserving the existing blank-expression `allowAll()` behavior used by existing translators:
 
@@ -2419,6 +2430,24 @@ void shouldRejectD11ScopeFragmentsWhenExpressionAndParameterMapDisagree() {
     params.put("scopeFragment", new SqlPredicateFragment(
             "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}") + ")",
             Map.of("d11Typo0", 4001L)
+    ));
+    params.put("query", new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20));
+
+    assertThatThrownBy(() -> provider.buildCountUnsubmittedStudents(params))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessage("Unsafe D-11 scope expression");
+    assertThatThrownBy(() -> provider.buildSelectUnsubmittedStudents(params))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessage("Unsafe D-11 scope expression");
+}
+
+@Test
+void shouldRejectD11ScopeFragmentsWithNonLongParameterValues() {
+    FinalRecordQuerySqlProvider provider = new FinalRecordQuerySqlProvider();
+    Map<String, Object> params = new HashMap<>();
+    params.put("scopeFragment", new SqlPredicateFragment(
+            "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}") + ")",
+            Map.of("d11OrgUnit0", "4001")
     ));
     params.put("query", new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20));
 
@@ -3187,6 +3216,9 @@ Expected:
 - [ ] **Step 7: Commit final fixes if any**
 
 If Task 5 added regression tests or fixes:
+
+1. Re-run the verification that matches the final Task 5 diff before committing. At minimum, re-run Step 3 focused D-11 tests and Step 6 diff/contract-drift scan after the last edit. If the final diff touches shared scope translation, existing submitted/confirmed final-record behavior, or final-record regression tests, also re-run the corresponding Step 2, Step 4, and/or Step 5 commands. Record the final commands and results in execution notes.
+2. Only commit the exact working tree that was covered by the last successful verification. If any file changes after the final verification, return to item 1 before committing.
 
 ```bash
 git status --short
