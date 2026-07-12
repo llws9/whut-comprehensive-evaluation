@@ -75,7 +75,7 @@ Request parameters:
 |---|---:|---|
 | `file` | yes | Non-empty Excel file. |
 | `title` | yes | Non-blank after trim, max 255 characters. Leading and trailing whitespace are removed; internal whitespace, case, and Unicode normalization form are preserved. |
-| `heldAt` | yes | ISO local date-time parsed with `LocalDateTime.parse(heldAt)` / `DateTimeFormatter.ISO_LOCAL_DATE_TIME`. Accepted examples include `2026-05-18T14:30`, `2026-05-18T14:30:00`, and `2026-05-18T14:30:00.123`; omitted seconds default to `00`, fractional seconds are truncated, and timezone offsets are not accepted. The value is normalized to whole seconds in the response and batch id. |
+| `heldAt` | yes | ISO local date-time parsed with `LocalDateTime.parse(heldAt)`, which uses `DateTimeFormatter.ISO_LOCAL_DATE_TIME`. Accepted examples include `2026-05-18T14:30`, `2026-05-18T14:30:00`, and `2026-05-18T14:30:00.123`; omitted seconds default to `00`, fractional seconds are truncated, and timezone offsets are not accepted. The value is normalized to whole seconds in the response and batch id. |
 | `academicYear` | yes | Trimmed before validation; must match `^\d{4}-\d{4}$`, and the second year must equal first year + 1. |
 
 Successful response:
@@ -135,6 +135,7 @@ Request-level failures:
 | File too large or too many data rows | `400` | `VAL-4001` | `讲座导入文件最多支持 5000 行且不超过 5MB` |
 | Missing required header, header mismatch, no sheet, unreadable workbook | `400` | `VAL-4001` | Starts with `导入模板错误：` |
 | Missing authority | `403` | `AUTH-4030` | Existing security handler response. |
+| Same lecture batch currently running | `409` | `BIZ-4090` | `同一讲座批次正在导入，请稍后重试` |
 | Same lecture batch already imported | `409` | `BIZ-4090` | `同一讲座批次已导入` |
 | Multipart bytes cannot be read | `503` | `EXT-5033` | `文件处理失败，请稍后重试` |
 
@@ -155,7 +156,7 @@ Frozen row-level failure mapping:
 | row target outside `score.import` scope | `OUT_OF_SCOPE` | `当前用户无权导入该学生讲座成绩` |
 | existing final record is `SUBMITTED` or `CONFIRMED` | `FINAL_RECORD_LOCKED` | `已提交或已确认的最终成绩不允许导入覆盖` |
 
-When more than one row-level condition applies, use the first matching condition in the table above. Duplicate-student detection runs only after the row passes `studentNo`, `scoreValue`, and `displayText` field validation, so field-invalid rows do not consume the duplicate key. A field-valid row consumes its normalized `studentNo` duplicate key even if it later fails student lookup, scope, or final-record lock checks.
+When more than one row-level condition applies, use the first matching condition in the table above. The strict decimal-text validation excludes negative numbers, so `-1` fails with `SCORE_VALUE_INVALID`; `SCORE_VALUE_OUT_OF_RANGE` only handles numeric text above the upper bound. Duplicate-student detection runs only after the row passes `studentNo`, `scoreValue`, and `displayText` field validation, so field-invalid rows do not consume the duplicate key. A field-valid row consumes its normalized `studentNo` duplicate key even if it later fails student lookup, scope, or final-record lock checks.
 
 ## Excel Template
 
@@ -237,7 +238,8 @@ Batch-level concurrency:
 - The lock must be exposed behind a narrow `LectureImportBatchLock` port. Production wiring must use the MySQL connection-bound named-lock implementation. H2 tests must wire an explicit test implementation, such as a keyed JVM `ReentrantLock`, so service-level same-batch serialization is testable even though H2 has no `GET_LOCK`; that test implementation must not be used in production profiles.
 - The batch lock must be acquired and released on the same database connection that owns the request transaction, so the lock lifetime covers the whole import transaction.
 - An implementation may use an equivalent durable claim or unique-key strategy, but it must not add a general import batch table in this D-8 scope.
-- If the lock cannot be acquired because the same batch is already running or has just been persisted by another transaction, the request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
+- If the lock cannot be acquired because the same batch is already running, the request fails with `409 / BIZ-4090` and message `同一讲座批次正在导入，请稍后重试`. This is an in-flight conflict, not a persisted imported marker; callers may retry after the running request finishes.
+- If the lock is acquired but the duplicate-batch check finds persisted components for the same `lectureBatchId`, the request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
 - While holding the batch lock, the service performs the existing-component duplicate check again inside the transaction before any row mutation.
 
 Per-student final-record concurrency:
@@ -256,7 +258,7 @@ Transaction scope:
 - Duplicate-batch locking, duplicate-batch pre-check, student eligibility lookup, active primary organization resolution, `score.import` scope matching, component inserts, and total updates all occur inside that one transaction and on the same database connection when the chosen lock implementation is connection-bound.
 - Expected row-level business failures, including missing student, out-of-scope target, locked final record, and duplicate student, are collected in `failedRows` and must not be thrown as transaction-rolling exceptions.
 - Unexpected infrastructure or persistence failures roll back the whole request transaction. In that case the HTTP response is a request-level failure and no partial successful rows are committed.
-- `final_record.version` is an optimistic-change counter for final-record consumers. D-8 increments it on every successful row mutation. D-8 does not require the caller to provide an expected version, but the conditional `status = 'DRAFT'` update protects against concurrent submit/confirm transitions.
+- `final_record.version` is a monotonic change counter for final-record consumers. D-8 increments it on every successful row mutation. It does not participate in D-8 concurrency control; D-8 relies on `SELECT ... FOR UPDATE` plus the conditional `status = 'DRAFT'` update to protect against concurrent submit/confirm transitions.
 
 ### Student Eligibility
 
@@ -307,6 +309,19 @@ For each successful row:
 
 D-8 never submits or confirms a final record.
 
+New `final_record` rows must populate these fields:
+
+| Field | Value |
+|---|---|
+| `id` | Database-generated id. |
+| `student_user_id` | Eligible target `iam_user.id`. |
+| `academic_year` | Normalized request academic year. |
+| `status` | `DRAFT`. |
+| `moral_total`, `intellectual_total`, `physical_total`, `labor_total`, `grand_total` | `0.00` before component insertion; recalculated after the successful component insert. |
+| `submitted_at`, `confirmed_at`, `confirm_comment` | `NULL`. |
+| `version` | `0` at insert time; the successful component insertion and totals update increments it to `1`. |
+| `created_at`, `updated_at` | The request transaction timestamp. `updated_at` is refreshed on every successful mutation. |
+
 ### Component Mutation
 
 D-8 is insert-only for successful rows:
@@ -317,6 +332,20 @@ D-8 is insert-only for successful rows:
 - Preserve existing imported and application components.
 - Do not update existing D-7 mentor/fixed-score components.
 - Do not update prior lecture-batch components.
+
+New `final_component_score` rows must populate these fields:
+
+| Field | Value |
+|---|---|
+| `id` | Database-generated id. |
+| `final_record_id` | Locked target `final_record.id`. |
+| `category_code` | `INTELLECTUAL`. |
+| `item_code` | `INTELLECTUAL_LECTURE`. |
+| `score_value` | Parsed `scoreValue` persisted at scale 2. |
+| `display_text` | Normalized row display text. |
+| `source_type` | `IMPORT`. |
+| `source_ref_id` | Request-derived `lectureBatchId`. |
+| `created_at` | The request transaction timestamp. |
 
 Duplicate non-blank `studentNo` values inside the same workbook are deterministic row-level failures:
 
@@ -395,6 +424,8 @@ Add tests proving:
 - mismatched header fails with the expected column message;
 - workbooks with no sheets fail with `导入模板错误：缺少工作表`;
 - formatted values that are not strict decimal text, such as `-1`, `1,234.56`, `50%`, or `5E-1`, fail with `SCORE_VALUE_INVALID`;
+- numeric text above `99999999.99` fails with `SCORE_VALUE_OUT_OF_RANGE`;
+- numeric text with more than 2 decimal places fails with `SCORE_VALUE_SCALE_INVALID`;
 - unreadable bytes fail with `导入模板错误：文件不可解析`.
 
 ### Application Tests
@@ -410,6 +441,7 @@ Add tests proving:
 - title trimming and whole-second heldAt normalization feed both `lectureBatchId` and response `heldAt`;
 - `lectureBatchId` uses the 12-character SHA-256 prefix and fits `source_ref_id VARCHAR(64)`;
 - a duplicate existing `lectureBatchId` throws `ConflictException`;
+- a same-batch in-flight lock conflict throws `ConflictException` with `同一讲座批次正在导入，请稍后重试`;
 - a zero-success import leaves no persisted batch marker and allows a later retry;
 - a header-only workbook returns a result with all counts zero and no batch marker;
 - a valid row inserts a new draft record and lecture component;
