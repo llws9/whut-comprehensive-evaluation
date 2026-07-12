@@ -1069,7 +1069,7 @@ void shouldReturnEmptyWhenGradeFilterDoesNotMatchAnyActiveVisibleGrade() {
 }
 ```
 
-Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgSubtrees(Long... orgUnitIds)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithOrgUnits(Long... orgUnitIds)`, `accessContextWithAllScope()`, `accessContextWithUnsupportedCategoryOnly()`, `accessContextWithEmptyGrantedScopes()`, `accessContextWithoutScoreViewAssigned()`, `accessContextWithOrgUnitAndOrgSubtree(Long orgUnitId, Long orgSubtreeRootId)`, `accessContextWithOrgUnitAndUnsupportedCategory(Long orgUnitId)`, and `accessContextWithOrgSubtreeAndUnsupportedCategory(Long orgSubtreeRootId)` by following the existing `AuthorizationScope` test construction style. The mixed unsupported+supported helpers must add a `CATEGORY` rule plus the named supported whole-record rule; they prove D-11 ignores score-only `CATEGORY` rules instead of treating them as deny-all when a valid `ORG_UNIT` or `ORG_SUBTREE` rule is also present. The varargs helpers must produce one scope rule per provided id while preserving input order; they must not collapse same-type scope rules before the production `rosterScopeFragment(...)` code sees them.
+Use helpers already present in the integration test for creating authorization contexts. If missing, create `accessContextWithOrgSubtree(Long orgUnitId)`, `accessContextWithOrgSubtrees(Long... orgUnitIds)`, `accessContextWithOrgUnit(Long orgUnitId)`, `accessContextWithOrgUnits(Long... orgUnitIds)`, `accessContextWithOrgUnitsAndOrgSubtrees(List<Long> orgUnitIds, List<Long> orgSubtreeRootIds)`, `accessContextWithAllScope()`, `accessContextWithUnsupportedCategoryOnly()`, `accessContextWithEmptyGrantedScopes()`, `accessContextWithoutScoreViewAssigned()`, `accessContextWithOrgUnitAndOrgSubtree(Long orgUnitId, Long orgSubtreeRootId)`, `accessContextWithOrgUnitAndUnsupportedCategory(Long orgUnitId)`, and `accessContextWithOrgSubtreeAndUnsupportedCategory(Long orgSubtreeRootId)` by following the existing `AuthorizationScope` test construction style. The mixed unsupported+supported helpers must add a `CATEGORY` rule plus the named supported whole-record rule; they prove D-11 ignores score-only `CATEGORY` rules instead of treating them as deny-all when a valid `ORG_UNIT` or `ORG_SUBTREE` rule is also present. The varargs and list helpers must produce one scope rule per provided id while preserving input order; they must not collapse same-type scope rules before the production `rosterScopeFragment(...)` code sees them.
 
 - [ ] **Step 3: Write failing scope and filter tests**
 
@@ -1543,6 +1543,7 @@ void shouldKeepD11PrivateScopeTranslatorAlignedWithSubmittedWholeRecordScopeSema
     assertScopeParity(accessContextWithOrgSubtree(3001L));
     assertScopeParity(accessContextWithOrgSubtree(3002L));
     assertScopeParity(accessContextWithOrgSubtrees(3001L, 3002L));
+    assertScopeParity(accessContextWithOrgUnitsAndOrgSubtrees(List.of(4001L, 4002L), List.of(3001L, 3002L)));
     assertScopeParity(accessContextWithOrgSubtree(4001L));
     assertScopeParity(accessContextWithOrgUnitAndOrgSubtree(4001L, 2002L));
     assertScopeParity(accessContextWithOrgUnitAndUnsupportedCategory(4001L));
@@ -1733,6 +1734,29 @@ void shouldApplyGradeFilterBeforeCollapsingCrossGradeMembershipsForOneStudent() 
     assertThat(findRow(cs2023Only, 1001L).getGrade()).isEqualTo("计算机2023级");
     assertThat(findRow(cs2023Only, 1001L).getClassName()).isEqualTo("计算机2301班");
     assertThat(cs2022Only.total()).isEqualTo(3);
+    assertThat(findRow(cs2022Only, 1001L).getGrade()).isEqualTo("计算机2022级");
+    assertThat(findRow(cs2022Only, 1001L).getClassName()).isEqualTo("计算机2201班");
+}
+
+@Test
+void shouldApplyGradeFilterBeforeChoosingDisplayMembershipWhenLowestMembershipHasNoActiveGrade() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3998, 2002, 'COLLEGE', 'CSNOGRADE', '非年级节点', '/WHUT/CS/NOGRADE', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3999, 3998, 'CLASS', 'CSNO01', '无年级班', '/WHUT/CS/NOGRADE/CSNO01', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (3000, 1001, 3999, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1001, 4001, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> noGradeFilter = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+    PageResult<UnsubmittedStudentRow> cs2022Only = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", null, 1, 20)
+    );
+
+    assertThat(findRow(noGradeFilter, 1001L).getGrade()).isNull();
+    assertThat(findRow(noGradeFilter, 1001L).getClassName()).isEqualTo("无年级班");
     assertThat(findRow(cs2022Only, 1001L).getGrade()).isEqualTo("计算机2022级");
     assertThat(findRow(cs2022Only, 1001L).getClassName()).isEqualTo("计算机2201班");
 }
@@ -2193,6 +2217,8 @@ public final class D11ScopeSqlShape {
                 + " OR " + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}") + ")";
         String singleOrgThenMultiSubtree = "(" + orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}")
                 + " OR " + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}, #{scopeFragment.parameters.d11Subtree1}") + ")";
+        String multiOrgThenMultiSubtree = "(" + orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}, #{scopeFragment.parameters.d11OrgUnit1}")
+                + " OR " + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}, #{scopeFragment.parameters.d11Subtree1}") + ")";
         if (!isAllowedScopeExpression(normalize(singleOrgUnit))
                 || !isAllowedScopeExpression(normalize(multiOrgUnit))
                 || !isAllowedScopeExpression(normalize(singleSubtree))
@@ -2200,7 +2226,8 @@ public final class D11ScopeSqlShape {
                 || !isAllowedScopeExpression(normalize(orgThenSubtree))
                 || !isAllowedScopeExpression(normalize(subtreeThenOrg))
                 || !isAllowedScopeExpression(normalize(multiOrgThenSingleSubtree))
-                || !isAllowedScopeExpression(normalize(singleOrgThenMultiSubtree))) {
+                || !isAllowedScopeExpression(normalize(singleOrgThenMultiSubtree))
+                || !isAllowedScopeExpression(normalize(multiOrgThenMultiSubtree))) {
             throw new IllegalStateException("Generated D-11 scope SQL must match whitelist");
         }
     }
@@ -2445,6 +2472,11 @@ void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
             "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}")
                     + " OR " + D11ScopeSqlShape.orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}, #{scopeFragment.parameters.d11Subtree1}") + ")",
             Map.of("d11OrgUnit0", 4001L, "d11Subtree0", 2002L, "d11Subtree1", 3001L)
+    ), " OR ");
+    assertProviderAccepts(provider, new SqlPredicateFragment(
+            "(" + D11ScopeSqlShape.orgUnitFragment("#{scopeFragment.parameters.d11OrgUnit0}, #{scopeFragment.parameters.d11OrgUnit1}")
+                    + " OR " + D11ScopeSqlShape.orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}, #{scopeFragment.parameters.d11Subtree1}") + ")",
+            Map.of("d11OrgUnit0", 4001L, "d11OrgUnit1", 4002L, "d11Subtree0", 2002L, "d11Subtree1", 3001L)
     ), " OR ");
 }
 
@@ -3106,7 +3138,7 @@ BASE_BRANCH="${BASE_BRANCH:-$(git show-ref --verify --quiet refs/heads/main && e
 if [ -n "$BASE_BRANCH" ]; then
   git diff --stat "$BASE_BRANCH"...HEAD
 else
-  D11_COMMIT_COUNT="${D11_COMMIT_COUNT:-5}"
+  D11_COMMIT_COUNT="${D11_COMMIT_COUNT:-4}"
   if git rev-parse --verify "HEAD~${D11_COMMIT_COUNT}" >/dev/null 2>&1; then
     git diff --stat "HEAD~${D11_COMMIT_COUNT}"..HEAD
   else
