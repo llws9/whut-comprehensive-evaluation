@@ -99,13 +99,13 @@ Request:
 
 | Field | Type | Required | Constraint |
 | --- | --- | --- | --- |
-| `academicYear` | `String` | yes | Trimmed `yyyy-yyyy`, where end year is start year + 1; invalid or repeated values return `VAL-4001` with message `academicYear 不合法`. |
-| `grade` | `String` | no | Trimmed exact code-or-name filter; blank becomes no filter; a normalized value longer than 256 characters returns `VAL-4001`; repeated values or `grade[]` return `VAL-4001`. |
-| `classes` / `classes[]` | `List<String>` | no | Controller concatenates raw `classes` values first, then raw `classes[]` values. `UnsubmittedFinalRecordQuery` trims, drops blanks, de-duplicates in that merged-list order, rejects more than 500 normalized values, rejects any normalized value longer than 256 characters, and treats commas as ordinary exact-match characters. |
-| `pageNo` | `long` | no | Defaults to `1`; non-numeric values return `VAL-4001`; values `<= 0` normalize to `1`; offset overflow returns `pageNo 不合法`. |
-| `pageSize` | `long` | no | Defaults to `20`; non-numeric values return `VAL-4001`; values `<= 0` normalize to `20`; values `> 100` normalize to `100`. |
+| `academicYear` | `String` | yes | Exactly one raw `academicYear` value is allowed; repeated values or `academicYear[]` return `VAL-4001` with message `academicYear 不合法`. The value is trimmed `yyyy-yyyy`, where end year is start year + 1; invalid format or year range returns the same code/message. |
+| `grade` | `String` | no | Exactly one raw `grade` value is allowed; repeated values or `grade[]` return `VAL-4001` with message `grade 不合法`. The value is a trimmed exact code-or-name filter; blank becomes no filter; a normalized value longer than 256 characters returns the same code/message. |
+| `classes` / `classes[]` | `List<String>` | no | Controller reads raw `classes` and `classes[]` values from `HttpServletRequest.getParameterValues(...)`, concatenating raw `classes` values first, then raw `classes[]` values. It must not use `@RequestParam List<String>` for these fields because Spring MVC may split a single comma-containing value. `UnsubmittedFinalRecordQuery` trims, drops blanks, de-duplicates in that merged-list order, rejects more than 500 normalized values, rejects any normalized value longer than 256 characters, and treats commas as ordinary exact-match characters. |
+| `pageNo` | `long` | no | Exactly one raw `pageNo` value is allowed; repeated values, `pageNo[]`, non-numeric values, or offset overflow return `VAL-4001` with message `pageNo 不合法`. Missing defaults to `1`; values `<= 0` normalize to `1`. |
+| `pageSize` | `long` | no | Exactly one raw `pageSize` value is allowed; repeated values, `pageSize[]`, or non-numeric values return `VAL-4001` with message `pageSize 不合法`. Missing defaults to `20`; values `<= 0` normalize to `20`; values `> 100` normalize to `100`. |
 
-Response `data` remains `PageResult<UnsubmittedStudentView>` with exactly `total` and `records`. Each record has `studentUserId`, `userNo`, `userName`, `grade`, `className`, fixed `status = "UNSUBMITTED"`, and `lastUpdatedAt`. Nullable projection values are rendered as empty strings; `lastUpdatedAt` uses `Instant.toString()` when a DRAFT final record exists and is empty when no DRAFT final record exists.
+Response `data` remains `PageResult<UnsubmittedStudentView>` with exactly `total` and `records`. Each record has `studentUserId`, `userNo`, `userName`, `grade`, `className`, fixed `status = "UNSUBMITTED"`, and `lastUpdatedAt`. Optional projection values are rendered as empty strings: `grade` is empty when no active grade parent exists, and `lastUpdatedAt` is empty when no DRAFT final record exists. `lastUpdatedAt` uses `Instant.toString()` when a DRAFT final record exists.
 
 Field naming map:
 
@@ -529,7 +529,7 @@ void shouldPageUnsubmittedStudentsWithFixedStatusAndStringFallbacks() {
     when(finalRecordQueryRepository.pageUnsubmittedStudents(any(), same(query)))
             .thenReturn(new PageResult<>(2, List.of(
                     unsubmittedRow(1001L, "S001", "Alice", "2022级", "CS2201", Instant.parse("2026-07-12T10:15:30.123Z")),
-                    unsubmittedRow(1002L, null, null, null, null, null)
+                    unsubmittedRow(1002L, "S002", "Bob", null, "CS2202", null)
             )));
 
     PageResult<UnsubmittedStudentView> page = service.pageUnsubmittedStudents(query);
@@ -537,7 +537,7 @@ void shouldPageUnsubmittedStudentsWithFixedStatusAndStringFallbacks() {
     assertThat(page.total()).isEqualTo(2);
     assertThat(page.records()).containsExactly(
             new UnsubmittedStudentView(1001L, "S001", "Alice", "2022级", "CS2201", "UNSUBMITTED", "2026-07-12T10:15:30.123Z"),
-            new UnsubmittedStudentView(1002L, "", "", "", "", "UNSUBMITTED", "")
+            new UnsubmittedStudentView(1002L, "S002", "Bob", "", "CS2202", "UNSUBMITTED", "")
     );
     ArgumentCaptor<FinalRecordAccessContext> captor = ArgumentCaptor.forClass(FinalRecordAccessContext.class);
     verify(finalRecordQueryRepository).pageUnsubmittedStudents(captor.capture(), same(query));
@@ -2490,6 +2490,17 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
             .thenReturn(new PageResult<>(0, List.of()));
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
+                    .param("classes", "Class,With,Comma")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isOk());
+    verify(queryApplicationService).pageUnsubmittedStudents(captor.capture());
+    assertThat(captor.getValue().getClasses()).containsExactly("Class,With,Comma");
+
+    reset(queryApplicationService);
+    when(queryApplicationService.pageUnsubmittedStudents(any()))
+            .thenReturn(new PageResult<>(0, List.of()));
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
                     .param("classes[]", "CS2203", "CS2204")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isOk());
@@ -2781,8 +2792,6 @@ Add this route before `@GetMapping("/{recordId}")`:
 public ApiResponse<PageResult<UnsubmittedStudentView>> pageUnsubmittedFinalRecords(
         @RequestParam(required = false) String academicYear,
         @RequestParam(required = false) String grade,
-        @RequestParam(required = false, name = "classes") List<String> classes,
-        @RequestParam(required = false, name = "classes[]") List<String> arrayStyleClasses,
         @RequestParam(defaultValue = "1") String pageNo,
         @RequestParam(defaultValue = "20") String pageSize,
         HttpServletRequest request) {
@@ -2790,7 +2799,7 @@ public ApiResponse<PageResult<UnsubmittedStudentView>> pageUnsubmittedFinalRecor
     rejectMultiValueOrArrayStyleParameter(request, "grade");
     rejectMultiValueOrArrayStyleParameter(request, "pageNo");
     rejectMultiValueOrArrayStyleParameter(request, "pageSize");
-    List<String> classFilters = mergeClassFilters(classes, arrayStyleClasses);
+    List<String> classFilters = mergeClassFilters(request);
     return ApiResponse.success(queryApplicationService.pageUnsubmittedStudents(
             new UnsubmittedFinalRecordQuery(academicYear, grade, classFilters,
                     parseLongParameter("pageNo", pageNo),
@@ -2812,15 +2821,17 @@ private void rejectMultiValueOrArrayStyleParameter(HttpServletRequest request, S
     }
 }
 
-private List<String> mergeClassFilters(List<String> classes, List<String> arrayStyleClasses) {
+private List<String> mergeClassFilters(HttpServletRequest request) {
     List<String> merged = new ArrayList<>();
-    if (classes != null) {
-        merged.addAll(classes);
-    }
-    if (arrayStyleClasses != null) {
-        merged.addAll(arrayStyleClasses);
-    }
+    addParameterValues(merged, request.getParameterValues("classes"));
+    addParameterValues(merged, request.getParameterValues("classes[]"));
     return merged;
+}
+
+private void addParameterValues(List<String> target, String[] values) {
+    if (values != null) {
+        target.addAll(List.of(values));
+    }
 }
 
 private long parseLongParameter(String name, String value) {
@@ -2832,7 +2843,7 @@ private long parseLongParameter(String name, String value) {
 }
 ```
 
-`mergeClassFilters(...)` only collects raw parameter values from both supported encodings. It must not trim, drop blanks, de-duplicate, enforce length, or enforce `MAX_CLASSES`; the merged list is immediately passed into `UnsubmittedFinalRecordQuery`, which performs the single source-of-truth normalization and validation after both `classes` and `classes[]` have been combined.
+`mergeClassFilters(...)` only collects raw parameter values from both supported encodings by using `HttpServletRequest.getParameterValues(...)`. It must not use `@RequestParam List<String>` for `classes` or `classes[]`, because Spring MVC can split a single comma-containing value while converting to a collection. It must not trim, drop blanks, de-duplicate, enforce length, or enforce `MAX_CLASSES`; the merged list is immediately passed into `UnsubmittedFinalRecordQuery`, which performs the single source-of-truth normalization and validation after both `classes` and `classes[]` have been combined.
 
 - [ ] **Step 4: Run controller and earlier tests**
 
