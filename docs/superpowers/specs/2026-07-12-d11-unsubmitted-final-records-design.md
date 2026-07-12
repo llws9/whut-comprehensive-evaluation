@@ -92,7 +92,7 @@ The application service must also check the same authority before querying. Miss
 |---|---|---|---|---|
 | `academicYear` | string | yes | - | trim; must match `YYYY-YYYY` and the second year must equal the first year plus 1 |
 | `grade` | string | no | - | trim; blank normalizes to `null` and is ignored; exact match against grade organization code or name |
-| `classes` | string[] | no | - | class collection; trim each value; blank entries are ignored; exact match against class organization code or name; if every supplied value is blank after trimming, the normalized collection is empty and the class filter is ignored |
+| `classes` | string[] | no | - | class collection, maximum 500 normalized values; trim each value; blank entries are ignored; exact match against class organization code or name; if every supplied value is blank after trimming, the normalized collection is empty and the class filter is ignored |
 | `pageNo` | long | no | `1` | values `<= 0` normalize to `1` |
 | `pageSize` | long | no | `20` | values `<= 0` normalize to `20`; values `> 100` cap at `100` |
 
@@ -105,7 +105,7 @@ The full `academicYear` normalization and validation rules live in section 8.1.
 - `grade` filters the active parent grade unit with exact equality: `grade_ou.unit_code = grade OR grade_ou.unit_name = grade`;
 - blank values are ignored.
 
-No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. `academicYear` and `grade` are single-value parameters; repeated or array-style input for either returns `400 / VAL-4001`. `classes` accepts array-style input as required by the frozen contract: repeated `classes=a&classes=b`, comma-separated `classes=a,b`, array-style `classes[]=a&classes[]=b`, and array-style comma values such as `classes[]=a,b` all normalize to the same class collection. Every class input item is comma-split before trimming, blank removal, and de-duplication. If the normalized class collection is empty, the class filter is ignored. The `classes` request filter matches the same class organizations whose names are returned as `className` in the response.
+No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. `academicYear` and `grade` are single-value parameters; repeated or array-style input for either returns `400 / VAL-4001`. Commas are ordinary characters inside exact-match values, not multi-value separators. `classes` accepts array-style input as required by the frozen contract: repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` both normalize to the same class collection. Normalization trims each item, removes blanks, then de-duplicates while preserving first-seen order. If the normalized class collection is empty, the class filter is ignored. If it contains more than 500 values after de-duplication, return `400 / VAL-4001` with `ValidationException("classes 不合法")`. The `classes` request filter matches the same class organizations whose names are returned as `className` in the response.
 
 If a filter value exactly matches one organization unit's `unit_code` and another organization unit's `unit_name`, both matching units are included because the filter uses OR semantics. If `grade` is provided, students whose selected class has no active parent grade row are excluded because there is no grade code/name to match. Without a `grade` filter, those students may still appear with `grade = ""`.
 
@@ -118,12 +118,12 @@ If a filter value exactly matches one organization unit's `unit_code` and anothe
 | Field | Type | Rule |
 |---|---|---|
 | `studentUserId` | number | `iam_user.id` |
-| `userNo` | string | `iam_user.user_no` |
-| `userName` | string | `iam_user.user_name` |
+| `userNo` | string | `iam_user.user_no`; active student rows are expected to be non-null, and dirty null values map to empty string in the view |
+| `userName` | string | `iam_user.user_name`; active student rows are expected to be non-null, and dirty null values map to empty string in the view |
 | `grade` | string | active parent grade `org_unit.unit_name`; empty string if the class has no active `GRADE` parent |
 | `className` | string | active primary class `org_unit.unit_name` |
 | `status` | string | fixed `UNSUBMITTED` |
-| `lastUpdatedAt` | string | ISO-8601 UTC string serialized from `MAX(final_record.updated_at)` across `DRAFT` rows for the academic year; empty string when the student has no `DRAFT` final record |
+| `lastUpdatedAt` | string | ISO-8601 UTC string serialized from `MAX(final_record.updated_at)` across `DRAFT` rows for the academic year; empty string when the student has no `DRAFT` final record or dirty `DRAFT` rows have only null `updated_at` values |
 
 When no data matches, return `200` with `total = 0` and `records = []`.
 
@@ -336,7 +336,7 @@ FROM (
    AND grade_ou.unit_type = 'GRADE'
    AND grade_ou.status = 'ACTIVE'
   WHERE u.status = 'ACTIVE'
-    AND (/* scopePredicate: ALL => 1 = 1; ORG_UNIT => class_ou.id IN (...); ORG_SUBTREE => EXISTS(root path match); combined supported fragments are ORed */)
+    AND (/* scopePredicate: ALL => (1 = 1); ORG_UNIT => (class_ou.id IN (...)); ORG_SUBTREE => (EXISTS(root path match)); combined supported fragments are ORed */)
     AND (#{query.grade} IS NULL OR grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})
     AND (#{query.classesEmpty} = TRUE OR class_ou.unit_code IN (/* one bound parameter per normalized class value */) OR class_ou.unit_name IN (/* same class parameters */))
     AND NOT EXISTS (
@@ -381,7 +381,7 @@ FROM (
     WHERE om1.membership_type = 'STUDENT'
       AND om1.is_primary = 1
       AND om1.status = 'ACTIVE'
-      AND (/* scopePredicate: ALL => 1 = 1; ORG_UNIT => class_ou1.id IN (...); ORG_SUBTREE => EXISTS(root path match); combined supported fragments are ORed */)
+      AND (/* scopePredicate: ALL => (1 = 1); ORG_UNIT => (class_ou1.id IN (...)); ORG_SUBTREE => (EXISTS(root path match)); combined supported fragments are ORed */)
       AND (#{query.grade} IS NULL OR grade_ou1.unit_code = #{query.grade} OR grade_ou1.unit_name = #{query.grade})
       AND (#{query.classesEmpty} = TRUE OR class_ou1.unit_code IN (/* one bound parameter per normalized class value */) OR class_ou1.unit_name IN (/* same class parameters */))
       AND NOT EXISTS (
@@ -447,7 +447,7 @@ ORDER BY CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
          u.id ASC
 ```
 
-This order is stable for pagination and matches the existing organization code ordering used by management views. The response still displays grade and class names, but sorting intentionally uses `unit_code` because codes are designed to be stable and unique; switching to `unit_name` sorting would require a separate product decision about display-name uniqueness and rename behavior. Rows with no active grade parent sort after rows with a grade.
+This order is stable for pagination and matches the existing organization code ordering used by management views. The response still displays grade and class names, but sorting intentionally uses `unit_code` because codes are designed to be stable and unique; switching to `unit_name` sorting would require a separate product decision about display-name uniqueness and rename behavior. Rows with no active grade parent sort after rows with a grade. The class-code null guard is only defensive ordering for dirty class rows with a null `unit_code`; it does not imply a student can be returned without an active class row.
 
 Pagination is applied only in the outermost select query after visible membership selection, draft aggregation, display joins, and the stable `ORDER BY`. The count query uses the same roster/scope/filter/exclusion predicates without `LIMIT` or `OFFSET`, so `total` remains the full matching row count while `records` contains only the requested page.
 
@@ -465,15 +465,17 @@ Fields:
 - `long pageNo`;
 - `long pageSize`.
 - derived `boolean classesEmpty`, true when the normalized `classes` list is empty; SQL uses this getter to skip class filtering and avoid `IN ()`.
+- derived `long offset`, calculated as `(pageNo - 1) * pageSize` after pagination normalization.
 
 Validation:
 
 - validate and normalize `academicYear` in this order: null check, trim, blank check, regex match with `^\\d{4}-\\d{4}$`, parse both years as integers, then verify the second year equals the first year plus 1;
 - any failed `academicYear` step throws `ValidationException("academicYear 不合法")`;
 - normalize optional `grade` by trimming blank to `null`;
-- normalize `classes` by accepting repeated values, comma-separated values, and array-style values, trimming each entry, removing blanks, and de-duplicating while preserving first-seen order;
+- normalize the raw `List<String> classes` supplied by the controller by trimming each entry, removing blanks, and de-duplicating while preserving first-seen order; commas remain part of the exact-match value;
 - expose an empty normalized `classes` list as no class filter; never emit `IN ()`;
-- reject repeated, comma-separated, or array-style `academicYear` and `grade` parameter shapes before query object construction;
+- reject more than 500 normalized class values with `ValidationException("classes 不合法")`;
+- reject repeated or array-style `academicYear` and `grade` parameter shapes before query object construction;
 - normalize pagination like existing `FinalRecordPageQuery`.
 
 `UnsubmittedFinalRecordQuery` validates and normalizes in its constructor. Controller and service code must not rely on a later explicit `validate()` call.
@@ -578,9 +580,9 @@ Route order must keep `/unsubmitted` from being captured by `/{recordId}`. In Sp
 
 The controller `defaultValue` settings only handle missing pagination parameters. All pagination normalization, including `pageNo <= 0` and `pageSize` capping, is centralized in `UnsubmittedFinalRecordQuery` so behavior stays aligned with `FinalRecordPageQuery`.
 
-Because `academicYear` and `grade` are single-value parameters, the controller must inspect raw request parameter names and values before constructing `UnsubmittedFinalRecordQuery`. `rejectUnsupportedSingleValueParameterShape(HttpServletRequest request, String name)` is a private controller helper returning `void`; it rejects `request.getParameterValues(name).length > 1`, unsupported parameter names such as `name + "[]"`, and any value containing a comma character such as `grade=a,b`, `grade=a,`, or `grade=,b` by throwing `ValidationException(name + " 不合法")`.
+Because `academicYear` and `grade` are single-value parameters, the controller must inspect raw request parameter names before constructing `UnsubmittedFinalRecordQuery`. `rejectUnsupportedSingleValueParameterShape(HttpServletRequest request, String name)` is a private controller helper returning `void`; it rejects `request.getParameterValues(name).length > 1` and unsupported parameter names such as `name + "[]"` by throwing `ValidationException(name + " 不合法")`. A comma inside a single `academicYear` or `grade` value is not a request-shape error; normal value validation or exact-match filtering handles it.
 
-`mergeClassFilters(List<String> classes, List<String> arrayStyleClasses)` is a private controller helper that combines repeated `classes` and array-style `classes[]` values into one raw list. The merge order is deterministic: append `classes` values first in request order, then append `classes[]` values in request order. The query object then performs comma-splitting, trimming, blank removal, and de-duplication while preserving the first-seen order from that merged raw list.
+`mergeClassFilters(List<String> classes, List<String> arrayStyleClasses)` is a private controller helper that combines repeated `classes` and array-style `classes[]` values into one raw list. The merge order is deterministic: append `classes` values first in request order, then append `classes[]` values in request order. The query object then trims, removes blank values, and de-duplicates while preserving the first-seen order from that merged raw list.
 
 Helper contracts:
 
@@ -614,7 +616,9 @@ Add tests that prove:
 - unparsable numeric boundaries, if any appear after regex validation changes, are still wrapped as `ValidationException`;
 - `2025-2026` is accepted;
 - blank `grade` normalizes to `null`;
-- blank, repeated, comma-separated, and array-style `classes` inputs normalize to a de-duplicated list;
+- blank and duplicate raw class values normalize to a de-duplicated list;
+- class values containing commas are preserved as single exact-match values;
+- more than 500 normalized class values throw `ValidationException("classes 不合法")`;
 - nonblank `grade` and class values are trimmed but not case-normalized;
 - `pageNo <= 0` becomes `1`;
 - `pageSize <= 0` becomes `20`;
@@ -632,7 +636,9 @@ Extend `FinalRecordQueryApplicationServiceTest`:
 - denies callers without `score.view.assigned`;
 - preserves `lastUpdatedAt` from a draft row;
 - returns `lastUpdatedAt = ""` for an unsubmitted student with no `final_record`;
+- returns `lastUpdatedAt = ""` when draft rows exist but the aggregate timestamp is null;
 - maps raw row `grade = null` to view `grade = ""`;
+- maps raw row `userNo = null` or `userName = null` to empty strings;
 - returns an empty page without throwing;
 - maps every row to `status = "UNSUBMITTED"` without trusting mapper data for that value.
 
@@ -692,8 +698,10 @@ Add or extend admin final-record controller tests to prove:
 - a draft `lastUpdatedAt` value is rendered as an ISO-8601 UTC JSON string, not a numeric timestamp;
 - a draft `lastUpdatedAt` value with fractional seconds preserves the serialized fractional precision instead of truncating to whole seconds;
 - repeated or array-style `academicYear` input returns `400 / VAL-4001`;
-- repeated, comma-separated, or array-style `grade` input returns `400 / VAL-4001`;
-- repeated, comma-separated, and array-style `classes` input is accepted and forwarded as the normalized class collection;
+- repeated or array-style `grade` input returns `400 / VAL-4001`;
+- `grade` values containing commas are forwarded as one exact-match value rather than rejected as request-shape errors;
+- repeated and array-style `classes` input is accepted and forwarded as the normalized class collection;
+- `classes` values containing commas are forwarded as exact-match values rather than split;
 - missing `academicYear` returns `400 / VAL-4001`;
 - blank `academicYear` returns `400 / VAL-4001`;
 - malformed, unparsable, or non-consecutive `academicYear` returns `400 / VAL-4001`;
