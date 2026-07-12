@@ -91,8 +91,8 @@ The application service must also check the same authority before querying. Miss
 | Parameter | Type | Required | Default | Rule |
 |---|---|---|---|---|
 | `academicYear` | string | yes | - | trim; must match `YYYY-YYYY` and the second year must equal the first year plus 1 |
-| `grade` | string | no | - | trim; exact match against grade organization code or name |
-| `classes` | string | no | - | single value; trim; exact match against class organization code or name |
+| `grade` | string | no | - | trim; blank normalizes to `null` and is ignored; exact match against grade organization code or name |
+| `classes` | string | no | - | single value; trim; blank normalizes to `null` and is ignored; exact match against class organization code or name |
 | `pageNo` | long | no | `1` | values `<= 0` normalize to `1` |
 | `pageSize` | long | no | `20` | values `<= 0` normalize to `20`; values `> 100` cap at `100` |
 
@@ -105,7 +105,7 @@ The full `academicYear` normalization and validation rules live in section 8.1.
 - `grade` filters the active parent grade unit with exact equality: `grade_ou.unit_code = grade OR grade_ou.unit_name = grade`;
 - blank values are ignored.
 
-No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. The parameter name remains `classes`, not `className`, to match the team-delivery contract; despite the plural name, this D-11 increment accepts a single class filter value only. Comma-separated values, repeated query parameters, and array-style multi-value input are not supported by this increment. The `classes` request filter matches the same class organization whose name is returned as `className` in the response.
+No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. The parameter name remains `classes`, not `className`, to match the team-delivery contract; despite the plural name, this D-11 increment accepts a single class filter value only. Comma-separated values such as `classes=a,b`, repeated query parameters such as `classes=a&classes=b`, and array-style inputs such as `classes[]=a` are rejected as invalid request parameters and return `400 / VAL-4001`. The `classes` request filter matches the same class organization whose name is returned as `className` in the response.
 
 If a filter value exactly matches one organization unit's `unit_code` and another organization unit's `unit_name`, both matching units are included because the filter uses OR semantics. If `grade` is provided, students whose selected class has no active parent grade row are excluded because there is no grade code/name to match. Without a `grade` filter, those students may still appear with `grade = null`.
 
@@ -147,9 +147,9 @@ This means disabled users, inactive memberships, non-primary memberships, and te
 
 D-11 does not reconstruct a historical roster for `academicYear`. The roster is based on current active IAM and organization membership data at query time. If the school later needs historical enrollment semantics, that must be introduced as a separate roster source and is outside this increment.
 
-Future academic years use the same rule. If the year is syntactically valid but has no final records yet, D-11 still uses the current active roster and reports in-scope students as unsubmitted.
+Future academic years use the same rule. D-11 only validates the `academicYear` string format and consecutive-year relationship; it does not apply a current-year or future-year business cutoff. If the year is syntactically valid but has no final records yet, D-11 still uses the current active roster and reports in-scope students as unsubmitted.
 
-A-group data is expected to have at most one active primary student membership per user. D-11 still guards against duplicated active primary rows: scope checks and optional `grade` / `classes` filters are evaluated across all active primary student memberships first, then the query collapses matching rows to one visible row per student. If multiple memberships for the same student satisfy the caller's scope and filters, the selected display membership is the one with the lowest `org_membership.id`. This prevents duplicate rows and inflated pagination totals without hiding a student whose lower-id dirty membership is outside scope but another active primary membership is valid and visible.
+A-group data is expected to have at most one active primary student membership per user. D-11 still guards against duplicated active primary rows: scope checks and optional `grade` / `classes` filters are evaluated across all active primary student memberships first, then the query collapses matching rows to one visible row per student. A membership is eligible for display only if it satisfies the caller's scope and all provided filters. If multiple memberships for the same student satisfy that full predicate, the selected display membership is the one with the lowest `org_membership.id`, and the returned `grade` / `className` come from that selected membership. This prevents duplicate rows and inflated pagination totals without hiding a student whose lower-id dirty membership is outside scope but another active primary membership is valid and visible.
 
 ### 5.2 Unsubmitted Definition
 
@@ -274,6 +274,40 @@ This keeps the comparison in SQL, uses the real code-path values stored by A-gro
 
 The same rule must be preserved for existing admin final-record list/detail access if the implementation touches shared scope translation. A D-11 fix must not regress Minimal D admin list visibility.
 
+### 6.4 Supported Scope SQL Forms
+
+The query provider should build a reusable `scopePredicate(classAlias)` fragment. The concrete SQL forms are:
+
+```sql
+-- ALL
+1 = 1
+
+-- ORG_UNIT
+{classAlias}.id IN (/* one bound parameter per org-unit id */)
+
+-- ORG_SUBTREE
+EXISTS (
+  SELECT 1
+  FROM org_unit root_ou
+  WHERE root_ou.id IN (/* one bound parameter per subtree root id */)
+    AND root_ou.status = 'ACTIVE'
+    AND root_ou.path IS NOT NULL
+    AND root_ou.path <> ''
+    AND root_ou.path LIKE '/%'
+    AND root_ou.path NOT LIKE '%/'
+    AND {classAlias}.path IS NOT NULL
+    AND {classAlias}.path <> ''
+    AND {classAlias}.path LIKE '/%'
+    AND {classAlias}.path NOT LIKE '%/'
+    AND (
+      {classAlias}.path = root_ou.path
+      OR {classAlias}.path LIKE CONCAT(root_ou.path, '/%')
+    )
+)
+```
+
+When multiple supported fragments are present, the provider ORs them inside parentheses. Examples: `(1 = 1)` for `ALL`, `({classAlias}.id IN (...) OR EXISTS (...))` for `ORG_UNIT + ORG_SUBTREE`, and `1 = 0` when no supported fragment exists. Use `class_ou` for the count query example and `class_ou1` for the select query visible-membership picker.
+
 ## 7. SQL Shape
 
 D-11 should add a separate mapper/provider path rather than overloading the submitted-record list query.
@@ -299,24 +333,7 @@ FROM (
    AND grade_ou.unit_type = 'GRADE'
    AND grade_ou.status = 'ACTIVE'
   WHERE u.status = 'ACTIVE'
-    AND EXISTS (
-      SELECT 1
-      FROM org_unit root_ou
-      WHERE root_ou.id IN (/* one bound parameter per subtree root id */)
-        AND root_ou.status = 'ACTIVE'
-        AND root_ou.path IS NOT NULL
-        AND root_ou.path <> ''
-        AND root_ou.path LIKE '/%'
-        AND root_ou.path NOT LIKE '%/'
-        AND class_ou.path IS NOT NULL
-        AND class_ou.path <> ''
-        AND class_ou.path LIKE '/%'
-        AND class_ou.path NOT LIKE '%/'
-        AND (
-          class_ou.path = root_ou.path
-          OR class_ou.path LIKE CONCAT(root_ou.path, '/%')
-        )
-    )
+    AND (/* scopePredicate: ALL => 1 = 1; ORG_UNIT => class_ou.id IN (...); ORG_SUBTREE => EXISTS(root path match); combined supported fragments are ORed */)
     AND (#{query.grade} IS NULL OR grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})
     AND (#{query.classes} IS NULL OR class_ou.unit_code = #{query.classes} OR class_ou.unit_name = #{query.classes})
     AND NOT EXISTS (
@@ -330,7 +347,7 @@ FROM (
 ) visible_students
 ```
 
-This shape intentionally evaluates scope and filters before grouping by student. A dirty lower-id membership outside scope, in another class, or without a matching grade must not hide another active primary membership that is visible and matches the request. The count query must not join draft records because draft data does not affect membership in the result set and a dirty duplicate draft row must never inflate `total`.
+This shape intentionally evaluates scope and filters before grouping by student. A dirty lower-id membership outside scope, in another class, or without a matching grade must not hide another active primary membership that is visible and matches the request. The count query only needs one row per visible student; display membership selection is only required in the select query. The count query must not join draft records because draft data does not affect membership in the result set and a dirty duplicate draft row must never inflate `total`.
 
 Recommended select query uses the same roster, scope, filter, and submitted/confirmed exclusion predicates inside a visible-membership picker, then joins the selected visible membership back to display fields:
 
@@ -361,24 +378,7 @@ FROM (
     WHERE om1.membership_type = 'STUDENT'
       AND om1.is_primary = 1
       AND om1.status = 'ACTIVE'
-      AND EXISTS (
-        SELECT 1
-        FROM org_unit root_ou
-        WHERE root_ou.id IN (/* one bound parameter per subtree root id */)
-          AND root_ou.status = 'ACTIVE'
-          AND root_ou.path IS NOT NULL
-          AND root_ou.path <> ''
-          AND root_ou.path LIKE '/%'
-          AND root_ou.path NOT LIKE '%/'
-          AND class_ou1.path IS NOT NULL
-          AND class_ou1.path <> ''
-          AND class_ou1.path LIKE '/%'
-          AND class_ou1.path NOT LIKE '%/'
-          AND (
-            class_ou1.path = root_ou.path
-            OR class_ou1.path LIKE CONCAT(root_ou.path, '/%')
-          )
-        )
+      AND (/* scopePredicate: ALL => 1 = 1; ORG_UNIT => class_ou1.id IN (...); ORG_SUBTREE => EXISTS(root path match); combined supported fragments are ORed */)
       AND (#{query.grade} IS NULL OR grade_ou1.unit_code = #{query.grade} OR grade_ou1.unit_name = #{query.grade})
       AND (#{query.classes} IS NULL OR class_ou1.unit_code = #{query.classes} OR class_ou1.unit_name = #{query.classes})
       AND NOT EXISTS (
@@ -415,7 +415,7 @@ LEFT JOIN (
 
 Implementers may render the visible-membership picker as a nested derived table, reusable provider fragment, or equivalent SQL, but the selected membership must be the lowest `org_membership.id` among memberships that already passed scope and filters.
 
-The scope blocks above show the `ORG_SUBTREE` branch. They are not a fixed two-parameter contract. The SQL provider must generate the exact supported scope expression from the evaluated scope set with bound parameters only:
+Provider rules summary for the `scopePredicate` described in section 6.4:
 
 - `ALL`: emit `1 = 1` as the whole scope expression and omit `IN` fragments;
 - one or more `ORG_UNIT` rules: emit `class_ou.id IN (...)` with one bound parameter per org-unit id; non-class ids naturally match no roster rows;
@@ -423,6 +423,8 @@ The scope blocks above show the `ORG_SUBTREE` branch. They are not a fixed two-p
 - combined `ORG_UNIT` and `ORG_SUBTREE`: OR the two supported fragments together;
 - no supported scope fragments: emit `1 = 0`;
 - never emit `IN ()` and never concatenate raw ids into SQL text.
+
+The same `scopePredicate` contract applies to both count and select queries. In the select query, use the visible-membership alias (`class_ou1` in the example) inside the predicate; in the outer display join, `class_ou` is only used for selected-row output and ordering.
 
 Recommended ordering:
 
@@ -447,17 +449,18 @@ Fields:
 - `academicYear`;
 - `grade`;
 - `classes`;
-- `pageNo`;
-- `pageSize`.
+- `long pageNo`;
+- `long pageSize`.
 
 Validation:
 
 - if `academicYear` is `null`, throw `ValidationException("academicYear 不能为空")` before trimming;
 - normalize non-null `academicYear` by trimming before validation and storage;
 - throw `ValidationException("academicYear 不能为空")` when the trimmed academic year is blank;
-- validate the trimmed value with `^\\d{4}-\\d{4}$`, then parse both years as integers;
+- validate the trimmed value with `^\\d{4}-\\d{4}$`, then parse both years as integers; any regex mismatch, integer parse failure, or non-consecutive year pair must be wrapped as `ValidationException`;
 - throw `ValidationException("academicYear 不合法")` when the trimmed value does not match `YYYY-YYYY` or the second year is not the first year plus 1;
 - normalize optional filters by trimming blank to `null`;
+- reject unsupported multi-value `classes` shapes with `ValidationException("classes 不合法")`;
 - normalize pagination like existing `FinalRecordPageQuery`.
 
 The exception messages remain Chinese to match the existing backend validation style and user-facing error responses.
@@ -555,13 +558,21 @@ Route order must keep `/unsubmitted` from being captured by `/{recordId}`. In Sp
 
 The controller `defaultValue` settings only handle missing pagination parameters. All pagination normalization, including `pageNo <= 0` and `pageSize` capping, is centralized in `UnsubmittedFinalRecordQuery` so behavior stays aligned with `FinalRecordPageQuery`.
 
+Because `classes` rejects repeated and array-style inputs, the controller must inspect the raw request parameter values before constructing `UnsubmittedFinalRecordQuery`. Use `HttpServletRequest#getParameterValues("classes")`, `@RequestParam MultiValueMap<String, String>`, or an equivalent Spring mechanism to reject `classes` with more than one value and to reject `classes[]` as an unsupported parameter name. A single value containing a comma is rejected by `UnsubmittedFinalRecordQuery`.
+
+Helper contracts:
+
+- `toAccessContext(UserAuthorizationContext admin, String permissionCode)` returns the `FinalRecordAccessContext` used by final-record query repositories for whole-record organization scope evaluation.
+- `toUnsubmittedView(UnsubmittedStudentRow row)` returns `UnsubmittedStudentView` with `status = "UNSUBMITTED"` and copies `lastUpdatedAt` without changing precision.
+
 ## 10. Error Handling
 
 | Scenario | HTTP | Code | Source |
 |---|---:|---|---|
 | missing `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
 | blank `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
-| malformed `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
+| malformed, unparsable, or non-consecutive `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
+| unsupported multi-value `classes` input | `400` | `VAL-4001` | `ValidationException` from query object |
 | no `score.view.assigned` authority | `403` | `AUTH-4030` | `AccessDeniedAppException` or method security |
 | only unsupported scope fragments | `200` | - | empty page, not `403` |
 | valid request with no matches | `200` | - | empty page |
@@ -577,9 +588,11 @@ Add tests that prove:
 - blank academic year throws `ValidationException`;
 - `academicYear = " 2025-2026 "` is accepted and normalized to `2025-2026`;
 - malformed academic years such as `abc`, `2025`, and `2025-2027` throw `ValidationException`;
+- unparsable numeric boundaries, if any appear after regex validation changes, are still wrapped as `ValidationException`;
 - `2025-2026` is accepted;
 - blank `grade` and `classes` normalize to `null`;
 - nonblank `grade` and `classes` are trimmed but not case-normalized;
+- comma-separated `classes` is rejected with `ValidationException`;
 - `pageNo <= 0` becomes `1`;
 - `pageSize <= 0` becomes `20`;
 - `pageSize = 100` remains `100`;
@@ -612,21 +625,24 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - excludes non-primary student memberships;
 - de-duplicates duplicate active primary memberships after scope and filters are applied, selecting the lowest visible `org_membership.id`;
 - includes a student whose lower-id dirty active primary membership is outside scope when another active primary membership for the same student is inside scope;
+- verifies duplicate active primary memberships across classes choose the lowest visible membership for displayed `grade` and `className` after all provided filters are applied;
 - filters by `grade`;
 - filters by `classes`;
 - filters by `grade` and `classes` together using intersection semantics;
 - proves `grade` and `classes` filters match organization code and organization name by exact equality;
 - proves a partial name such as `计算机` does not match `计算机 2022 级`;
-- proves a filter value that matches one org's code and another org's name includes both exact matches;
-- proves a filter value that matches both `unit_code` and `unit_name` of the same org unit still returns each student once;
+- proves a filter value that matches one org unit's code and another org unit's name includes both exact matches while still returning each student once;
+- proves a filter value that matches both `unit_code` and `unit_name` of the same org unit returns each student once;
 - verifies stable ordering by grade code, class code, user no, and user id;
 - verifies rows with `grade = null` sort after rows with an active grade;
 - verifies two-page pagination has no duplicated student ids and the combined rows match the same stable order;
+- verifies `pageNo` greater than the total page count returns the unchanged `total` and `records = []`;
 - returns empty page for unsupported category-only scopes;
 - returns all visible current-roster rows for a pure `ALL` scope;
 - returns only the exact class rows for a pure `ORG_UNIT` scope targeting a class id;
 - returns an empty page for a pure `ORG_UNIT` scope targeting a non-class grade or college id;
 - returns only subtree rows for a pure `ORG_SUBTREE` scope targeting a college id, without relying on a mixed-scope rule;
+- returns the union for a scope containing both supported `ORG_UNIT` and `ORG_SUBTREE` rules, and does not duplicate a student whose membership is visible through both fragments;
 - returns organization-scoped rows for a mixed scope containing one supported `ORG_SUBTREE` rule and one unsupported category rule;
 - resolves `ORG_SUBTREE` against real `org_unit.path` code paths, proving a scope rooted at org id `2002` can see classes whose path starts with `/WHUT/CS`;
 - proves an org path with a similar prefix but not a real child path, such as `/WHUT/CS2/CS2201`, is not visible to a root path `/WHUT/CS`;
@@ -651,9 +667,10 @@ Add or extend admin final-record controller tests to prove:
 - `GET /api/admin/final-records/unsubmitted?academicYear=2025-2026` returns the page shape;
 - a draft `lastUpdatedAt` value is rendered as an ISO-8601 UTC JSON string, not a numeric timestamp;
 - a draft `lastUpdatedAt` value with fractional seconds preserves the serialized fractional precision instead of truncating to whole seconds;
+- repeated or comma-separated `classes` input returns `400 / VAL-4001`;
 - missing `academicYear` returns `400 / VAL-4001`;
 - blank `academicYear` returns `400 / VAL-4001`;
-- malformed `academicYear` returns `400 / VAL-4001`;
+- malformed, unparsable, or non-consecutive `academicYear` returns `400 / VAL-4001`;
 - `grade` and `classes` are forwarded as single exact-match filter values;
 - a caller without `score.view.assigned` receives `403 / AUTH-4030`;
 - the `/unsubmitted` route is not captured by `/{recordId}`.
@@ -684,12 +701,15 @@ If shared scope translation is fixed to resolve `ORG_SUBTREE` by real org paths,
 - The roster starts from active primary student membership, not final records.
 - The roster is current active membership, not a historical or future-year roster snapshot.
 - Duplicate active primary membership rows do not duplicate students in the result.
+- Duplicate active primary membership rows choose display grade/class from the lowest visible membership after scope and filters.
 - Mixed supported and unsupported scope fragments return rows for the supported organization scope.
 - Pure `ALL`, pure `ORG_UNIT`, and pure `ORG_SUBTREE` scopes are each tested on the D-11 roster query path.
+- Combined `ORG_UNIT` and `ORG_SUBTREE` scopes use OR/union semantics and do not duplicate overlapping students.
 - Non-class `ORG_UNIT` rules return an empty page unless another supported scope fragment grants matching visibility.
 - Unsupported-only scope fragments return an empty page.
 - `grade` and `classes` filters are exact code/name matches.
 - Code/name OR matches do not duplicate students when both sides match the same org unit.
+- Code/name OR matches include distinct org units when one matches by code and another by name.
 - `grade` and `classes` together use intersection semantics.
 - A provided `grade` filter excludes classes without an active `GRADE` parent row.
 - Pagination order is deterministic and stable across pages.
