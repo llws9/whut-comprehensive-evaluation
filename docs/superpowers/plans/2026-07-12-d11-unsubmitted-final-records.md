@@ -2100,6 +2100,15 @@ public final class D11ScopeSqlShape {
                 || Pattern.matches(subtreeThenOrgPattern, normalized);
     }
 
+    public static void assertGeneratedFragmentsSelfValidateForD11() {
+        String singleSubtree = "(" + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}") + ")";
+        String multiSubtree = "(" + orgSubtreeFragment("#{scopeFragment.parameters.d11Subtree0}, #{scopeFragment.parameters.d11Subtree1}") + ")";
+        if (!isAllowedScopeExpression(normalize(singleSubtree))
+                || !isAllowedScopeExpression(normalize(multiSubtree))) {
+            throw new IllegalStateException("Generated D-11 ORG_SUBTREE SQL must match whitelist");
+        }
+    }
+
     private static String parameterListPattern(String prefix) {
         String parameterPattern = "#\\{scopeFragment\\.parameters\\." + prefix + "\\d+\\}";
         return parameterPattern + "(, " + parameterPattern + ")*";
@@ -2272,6 +2281,7 @@ void shouldRejectUnsafeD11ScopeExpressionFragments() {
 void shouldAcceptOnlyWhitelistedD11ScopeExpressionShapes() {
     FinalRecordQuerySqlProvider provider = new FinalRecordQuerySqlProvider();
 
+    D11ScopeSqlShape.assertGeneratedFragmentsSelfValidateForD11();
     assertProviderAccepts(provider, SqlPredicateFragment.denyAll(), "1 = 0");
     assertProviderAccepts(provider, SqlPredicateFragment.alwaysTrue(), "1 = 1");
     assertProviderAccepts(provider, new SqlPredicateFragment(
@@ -2495,7 +2505,8 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
                     .param("academicYear", "2025-2026", "2026-2027")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.code").value("VAL-4001"));
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("academicYear 不合法"));
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear[]", "2025-2026")
@@ -2508,7 +2519,8 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
                     .param("grade[]", "CS2022")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.code").value("VAL-4001"));
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("grade 不合法"));
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
@@ -2522,7 +2534,8 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
                     .param("pageNo", "1", "2")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.code").value("VAL-4001"));
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("pageNo 不合法"));
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
@@ -2536,7 +2549,8 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
                     .param("pageSize", "20", "50")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.code").value("VAL-4001"));
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("pageSize 不合法"));
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
@@ -2551,7 +2565,8 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.code").value("VAL-4001"));
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("academicYear 不合法"));
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("grade", "CS2022")
@@ -2627,14 +2642,16 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
                     .param("pageNo", "abc")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.code").value("VAL-4001"));
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("pageNo 不合法"));
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
                     .param("pageSize", "abc")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.code").value("VAL-4001"));
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("pageSize 不合法"));
 }
 
 ```
@@ -2822,11 +2839,12 @@ git commit -m "feat: expose unsubmitted final record endpoint"
 Review the actual final diff, not only file names. Record the result of each check in the execution notes before continuing:
 
 - `ApplicationScopeSqlTranslator` changed: add Step 2 regressions.
+- `SqlPredicateFragment` changed: add Step 2 regressions and run `ScopeSqlTranslatorTest`, even if the visible change is a D-11-specific helper such as `alwaysTrue()`.
 - `FinalRecordScopePredicateBuilder` output structure or clause mapping changed: add Step 2 regressions.
 - Any public/shared method named with `scope`, `Scope`, `predicate`, `Predicate`, or org-path matching changed outside a D-11-only private helper: add Step 2 regressions.
 - Existing `pageAdminFinalRecords(...)`, `buildSelectAdminFinalRecords(...)`, `buildCountAdminFinalRecords(...)`, `findAdminFinalRecordDetail(...)`, or submitted/confirmed list/detail SQL changed: add Step 2 regressions.
 - Existing submitted/confirmed admin list/detail data needed by `FinalRecordAccessValidator` changed: add Step 2 regressions.
-- Only new D-11 provider methods and a D-11-only private `rosterScopeFragment(...)` changed: document that no shared-scope files or methods changed and continue to Step 3.
+- Only new D-11 provider methods, `D11ScopeSqlShape`, and a D-11-only private `rosterScopeFragment(...)` changed, with no `SqlPredicateFragment` or shared scope translator changes: document that no shared-scope files or methods changed and continue to Step 3.
 
 - [ ] **Step 2: Add shared-scope regression tests if required**
 
@@ -2976,6 +2994,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `classes` remains `List<String>` and accepts repeated `classes` plus array-style `classes[]`.
 - `classes` and `classes[]` are merged before `UnsubmittedFinalRecordQuery` performs trim, blank dropping, de-duplication, length checks, and the normalized `MAX_CLASSES = 500` check.
 - Controller tests prove raw `classes` values are merged before raw `classes[]` values, and de-duplication keeps the first normalized value after that merged order.
+- Controller validation tests assert representative `$.message` values for invalid `academicYear`, `grade`, `pageNo`, and `pageSize`, not only `VAL-4001`.
 - Commas inside `grade` and `classes` remain ordinary exact-match characters.
 - `PageResult<T>` remains only `total` and `records`.
 - Controller JSON tests lock `PageResult<T>` to exactly `total` and `records`.
@@ -3000,6 +3019,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - Inactive `ORG_SUBTREE` roots at COLLEGE, GRADE, or CLASS level return an empty page even when their path and descendants are otherwise valid.
 - Similar path prefixes such as `/WHUT/CS2` do not match `/WHUT/CS`.
 - `D11ScopeSqlShape` is the single source for D-11 ORG_UNIT/ORG_SUBTREE SQL fragments and whitelist validation; repository/provider code and provider tests do not duplicate subtree SQL shape strings.
+- `D11ScopeSqlShape.assertGeneratedFragmentsSelfValidateForD11()` proves generated single-root and multi-root ORG_SUBTREE SQL fragments pass the same whitelist used by the provider, including the `CONCAT(root_ou.path, '/%')` shape.
 - Provider helper contracts are explicit: `scopeExpression(...)` only reads `scopeFragment`, validates the whitelist, and replaces the fixed class-alias placeholder; `classPredicate(...)` only reads `query` and generates code/name case-sensitive `IN` predicates.
 - Duplicate active primary memberships collapse after scope and filters, selecting the lowest numeric visible membership id.
 - Cross-grade duplicate memberships are filtered by `grade` before collapse, so count, row selection, and displayed grade/class all come from the visible membership set.
@@ -3015,4 +3035,5 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - A `PENDING` or `BLOCKED` Full Baseline blocks any full-suite "zero new failures" claim; it does not block reporting observed test results.
 - Any modified, added, or explicitly run final-record related test under `whut-eval-app` is in D-11 verification scope; failures in shared-scope regressions or `*FinalRecord*Test` cannot be waived as outside the D-11 test package. Unrelated pre-existing failures are judged only by the recorded baseline and zero-new-failure comparison.
 - If shared scope translation code changed, `ScopeSqlTranslatorTest` is mandatory verification and must pass; final-record-only regression commands are not sufficient.
+- `SqlPredicateFragment` changes always count as shared scope translation impact for Task 5 verification, even when the visible addition is D-11-specific.
 - No D-7, D-8, D-9, D-10, import, export, or frontend behavior is introduced.
