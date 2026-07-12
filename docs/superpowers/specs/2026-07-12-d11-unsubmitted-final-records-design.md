@@ -123,7 +123,7 @@ If a filter value exactly matches one organization unit's `unit_code` and anothe
 | `grade` | string | active parent grade `org_unit.unit_name`; `null` if the class has no active `GRADE` parent |
 | `className` | string | active primary class `org_unit.unit_name` |
 | `status` | string | fixed `UNSUBMITTED` |
-| `lastUpdatedAt` | string/null | ISO-8601 UTC string serialized from `MAX(final_record.updated_at)` across `DRAFT` rows for the academic year; otherwise `null` |
+| `lastUpdatedAt` | string/null | Java type `Instant`; JSON is an ISO-8601 UTC string serialized from `MAX(final_record.updated_at)` across `DRAFT` rows for the academic year; otherwise `null` |
 
 When no data matches, return `200` with `total = 0` and `records = []`.
 
@@ -147,6 +147,8 @@ This means disabled users, inactive memberships, non-primary memberships, and te
 
 D-11 does not reconstruct a historical roster for `academicYear`. The roster is based on current active IAM and organization membership data at query time. If the school later needs historical enrollment semantics, that must be introduced as a separate roster source and is outside this increment.
 
+Future academic years use the same rule. If the year is syntactically valid but has no final records yet, D-11 still uses the current active roster and reports in-scope students as unsubmitted.
+
 A-group data is expected to have at most one active primary student membership per user. D-11 still guards against duplicated active primary rows: the query selects one deterministic membership per user using the lowest `org_membership.id`, and all class, grade, scope, and filter behavior is evaluated from that selected membership. This prevents duplicate rows and inflated pagination totals when dirty membership data exists.
 
 ### 5.2 Unsubmitted Definition
@@ -168,6 +170,8 @@ NOT EXISTS (
 If a `DRAFT` final record exists for the same student/year, the student is still unsubmitted. Draft records only supply `lastUpdatedAt`.
 
 Minimal D enforces one `final_record` per `(student_user_id, academic_year)`, so there should be at most one draft row. The D-11 query must still be defensive in case dirty data contains multiple draft rows for the same student/year: draft data is joined through an aggregate subquery with one row per `student_user_id`, and `lastUpdatedAt` is `MAX(updated_at)`. Count and select SQL must both preserve one result row per student.
+
+Minimal D recognizes only `DRAFT`, `SUBMITTED`, and `CONFIRMED`. If dirty data contains any other `final_record.status`, D-11 ignores that row: it does not exclude the student from the unsubmitted list and it does not contribute to `lastUpdatedAt`. If dirty data contains a `SUBMITTED` or `CONFIRMED` row for the same student/year, the student is excluded from D-11 even when one or more `DRAFT` rows also exist.
 
 ### 5.3 Source of Truth
 
@@ -232,6 +236,8 @@ The seeded A-group organization path stores code paths:
 - grade: `/WHUT/CS/CS2022`;
 - class: `/WHUT/CS/CS2022/CS2201`.
 
+Valid organization paths start with `/`, are not blank, and do not end with `/`. A malformed root path is treated as no match. The top-level school path `/WHUT` is valid and may match all descendants when granted through `ORG_SUBTREE`.
+
 An `ORG_SUBTREE` rule rooted at org id `2002` must resolve the root org path (`/WHUT/CS`) and match:
 
 ```sql
@@ -249,6 +255,10 @@ EXISTS (
   FROM org_unit root_ou
   WHERE root_ou.id = #{scopeParam}
     AND root_ou.status = 'ACTIVE'
+    AND root_ou.path IS NOT NULL
+    AND root_ou.path <> ''
+    AND root_ou.path LIKE '/%'
+    AND root_ou.path NOT LIKE '%/'
     AND (
       class_ou.path = root_ou.path
       OR class_ou.path LIKE CONCAT(root_ou.path, '/%')
@@ -295,8 +305,12 @@ WHERE u.status = 'ACTIVE'
   AND EXISTS (
     SELECT 1
     FROM org_unit root_ou
-    WHERE root_ou.id IN (#{orgSubtreeRootIds[0]}, #{orgSubtreeRootIds[1]})
+    WHERE root_ou.id IN (/* one bound parameter per subtree root id */)
       AND root_ou.status = 'ACTIVE'
+      AND root_ou.path IS NOT NULL
+      AND root_ou.path <> ''
+      AND root_ou.path LIKE '/%'
+      AND root_ou.path NOT LIKE '%/'
       AND (
         class_ou.path = root_ou.path
         OR class_ou.path LIKE CONCAT(root_ou.path, '/%')
@@ -377,10 +391,13 @@ Fields:
 Validation:
 
 - normalize `academicYear` by trimming before validation and storage;
+- validate the trimmed value with `^\\d{4}-\\d{4}$`, then parse both years as integers;
 - throw `ValidationException("academicYear 不能为空")` for a missing or blank academic year after trim;
 - throw `ValidationException("academicYear 不合法")` when the trimmed value does not match `YYYY-YYYY` or the second year is not the first year plus 1;
 - normalize optional filters by trimming blank to `null`;
 - normalize pagination like existing `FinalRecordPageQuery`.
+
+The exception messages remain Chinese to match the existing backend validation style and user-facing error responses.
 
 ### 8.2 Row DTO
 
@@ -421,7 +438,7 @@ The service maps every row with `status = "UNSUBMITTED"`.
 `lastUpdatedAt` must be serialized in the same external time format used by existing final-record APIs: an ISO-8601 UTC string from `Instant`, not a numeric epoch timestamp. If the global Jackson configuration does not already disable timestamp serialization for Java time values, annotate the record component with:
 
 ```java
-@JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ss'Z'", timezone = "UTC")
+@JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ssX", timezone = "UTC")
 Instant lastUpdatedAt
 ```
 
@@ -477,6 +494,8 @@ public PageResult<UnsubmittedStudentView> pageUnsubmittedStudents(UnsubmittedFin
 ```
 
 Route order must keep `/unsubmitted` from being captured by `/{recordId}`. In Spring MVC, a static segment is more specific than a path variable, but placing `/unsubmitted` before `/{recordId}` keeps the file readable and avoids accidental ambiguity.
+
+The controller `defaultValue` settings only handle missing pagination parameters. All pagination normalization, including `pageNo <= 0` and `pageSize` capping, is centralized in `UnsubmittedFinalRecordQuery` so behavior stays aligned with `FinalRecordPageQuery`.
 
 ## 10. Error Handling
 
@@ -540,6 +559,7 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - proves `grade` and `classes` filters match organization code and organization name by exact equality;
 - proves a partial name such as `计算机` does not match `计算机 2022 级`;
 - proves a filter value that matches one org's code and another org's name includes both exact matches;
+- proves a filter value that matches both `unit_code` and `unit_name` of the same org unit still returns each student once;
 - verifies stable ordering by grade code, class code, user no, and user id;
 - verifies rows with `grade = null` sort after rows with an active grade;
 - verifies two-page pagination has no duplicated student ids and the combined rows match the same stable order;
@@ -551,10 +571,14 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - returns organization-scoped rows for a mixed scope containing one supported `ORG_SUBTREE` rule and one unsupported category rule;
 - resolves `ORG_SUBTREE` against real `org_unit.path` code paths, proving a scope rooted at org id `2002` can see classes whose path starts with `/WHUT/CS`;
 - proves an org path with a similar prefix but not a real child path, such as `/WHUT/CS2/CS2201`, is not visible to a root path `/WHUT/CS`;
+- proves an `ORG_SUBTREE` scope rooted at the top-level path `/WHUT` can see descendant class rows;
+- proves a malformed root path, such as blank, not starting with `/`, or ending with `/`, matches no rows;
 
 The two `ORG_SUBTREE` path tests are mandatory because a numeric-id path comparison such as `LIKE '%/2002/%'` would return zero rows against the seeded organization path format, while an unsafe prefix comparison would incorrectly include similar-prefix non-child paths.
 
 - verifies a student with duplicate dirty draft final records still appears once and uses `MAX(updated_at)` for `lastUpdatedAt`;
+- verifies a dirty status outside `DRAFT`, `SUBMITTED`, and `CONFIRMED` does not exclude the student and does not contribute to `lastUpdatedAt`;
+- verifies a student with both `DRAFT` and `SUBMITTED` or `CONFIRMED` dirty rows is excluded from D-11;
 - verifies a student with no `final_record` has `lastUpdatedAt = null`;
 - verifies a class with no active `GRADE` parent row is excluded when `grade` is provided and can appear with `grade = null` when no `grade` filter is provided.
 
@@ -597,19 +621,23 @@ If shared scope translation is fixed to resolve `ORG_SUBTREE` by real org paths,
 - `SUBMITTED` and `CONFIRMED` rows exclude the student.
 - Students with no `final_record` are included when otherwise in scope.
 - The roster starts from active primary student membership, not final records.
-- The roster is current active membership, not a historical roster for the requested academic year.
+- The roster is current active membership, not a historical or future-year roster snapshot.
 - Duplicate active primary membership rows do not duplicate students in the result.
 - Mixed supported and unsupported scope fragments return rows for the supported organization scope.
 - Pure `ALL`, pure `ORG_UNIT`, and pure `ORG_SUBTREE` scopes are each tested on the D-11 roster query path.
 - Non-class `ORG_UNIT` rules return an empty page unless another supported scope fragment grants matching visibility.
 - Unsupported-only scope fragments return an empty page.
 - `grade` and `classes` filters are exact code/name matches.
+- Code/name OR matches do not duplicate students when both sides match the same org unit.
 - `grade` and `classes` together use intersection semantics.
 - A provided `grade` filter excludes classes without an active `GRADE` parent row.
 - Pagination order is deterministic and stable across pages.
 - Null grade rows sort after non-null grade rows.
 - ORG_SUBTREE path matching rejects similar-prefix non-child paths.
+- ORG_SUBTREE path matching rejects malformed root paths and supports valid top-level paths such as `/WHUT`.
 - Duplicate dirty draft final records do not duplicate students in the result.
+- Unknown dirty final-record statuses are ignored.
+- Any `SUBMITTED` or `CONFIRMED` row excludes the student even if dirty `DRAFT` rows also exist.
 - `lastUpdatedAt` is the draft aggregate `MAX(final_record.updated_at)` or `null`.
 - No data returns an empty page, not `404`.
 - `ORG_SUBTREE` matches the real code-path format in `org_unit.path`.
