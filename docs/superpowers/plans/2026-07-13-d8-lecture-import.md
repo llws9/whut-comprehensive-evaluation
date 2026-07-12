@@ -365,6 +365,9 @@ class LectureImportParserTest {
 
     @Test
     void shouldRejectTemplateErrors() throws Exception {
+        assertThatThrownBy(() -> parser.parse(null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("导入模板错误：文件不可解析");
         assertThatThrownBy(() -> parser.parse(noSheets()))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("导入模板错误：缺少工作表");
@@ -486,7 +489,10 @@ public class ExcelLectureImportParser implements LectureImportParser {
 
     @Override
     public List<LectureImportRow> parse(byte[] fileContent) {
-        if (fileContent != null && fileContent.length > MAX_BYTES) {
+        if (fileContent == null) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
+        if (fileContent.length > MAX_BYTES) {
             throw new ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB");
         }
         try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(fileContent))) {
@@ -666,8 +672,10 @@ class LectureImportApplicationServiceTest {
         given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
         given(parser.parse(any())).willReturn(List.of());
 
+        LectureImportResult withoutSeconds = service.importLectures(command("学院学术讲座", "2026-05-18T14:30", "2025-2026"));
         LectureImportResult result = service.importLectures(command(" 学院学术讲座 ", "2026-05-18T14:30:00.123", " 2025-2026 "));
 
+        assertThat(withoutSeconds.heldAt().toString()).isEqualTo("2026-05-18T14:30");
         assertThat(result.lectureBatchId()).startsWith("LECTURE-20252026-20260518143000-");
         assertThat(result.lectureBatchId()).hasSize(44);
         assertThat(result.title()).isEqualTo("学院学术讲座");
@@ -1866,6 +1874,7 @@ Notes for this implementation:
 - `insertLectureComponents` returns `List<LectureImportFailedRow>` and loops over already sorted components. For each component, it locks `final_record`, inserts or reloads a DRAFT row if missing, records `FINAL_RECORD_LOCKED` as a row-level failure for non-DRAFT records, inserts a new lecture component, and immediately recalculates totals while the row is still locked.
 - The locked-row failure raw value uses `component.studentNo()` so the response preserves the frozen `rawValue.studentNo` contract from the workbook, not the internal user id.
 - Recalculate and update totals after every successful lecture component insertion, not once per distinct `final_record_id`. This preserves the frozen D-8 contract that `final_record.version` increments for every successful row mutation, including multiple successful lecture rows for the same student in one repository call.
+- D-8 has two distinct failure modes inside the single request transaction: expected row-level business failures are collected and allow other rows in the same request to commit; unexpected persistence failures throw and roll back the whole request. This is why `FINAL_RECORD_LOCKED` returns a failed row, while `updateTotals == 0` throws.
 - If any `updateTotals` returns 0 after a DRAFT lock and component insert, throw `ConflictException("最终成绩状态已变更，请刷新后重试")` so the outer transaction rolls back. This path is a persistence consistency failure, not a row-level validation failure, so it must not be represented in the returned failure list.
 - A partial-success batch is intentionally not idempotent in Minimal D-8: if any component already exists for `lectureBatchId`, `lectureBatchExists` makes a later same-batch request return 409. Operators must change `title` or `heldAt` to create a new deterministic batch id for a retry; D-8 does not add batch deletion or patch-retry semantics.
 
@@ -2020,7 +2029,7 @@ git commit -m "feat: add lecture import batch lock"
 
 Extend `AdminScoreImportControllerWebMvcTest`:
 
-Add imports for `ImportLecturesCommand`, `LectureImportApplicationService`, `LectureImportFailedRow`, `LectureImportResult`, `ValidationException`, `LocalDateTime`, and `LinkedHashMap`. Existing D-7 imports for `ConflictException`, `FileStorageException`, `MockMultipartFile`, `List`, `Map`, and MVC matchers can be reused.
+Add imports for `ImportLecturesCommand`, `LectureImportApplicationService`, `LectureImportFailedRow`, `LectureImportResult`, `ValidationException`, `IOException`, `LocalDateTime`, and `LinkedHashMap`. Existing D-7 imports for `ConflictException`, `FileStorageException`, `MockMultipartFile`, `List`, `Map`, and MVC matchers can be reused.
 
 ```java
 @MockBean
@@ -2177,8 +2186,8 @@ static class FailingLectureMockMultipartFile extends MockMultipartFile {
     }
 
     @Override
-    public byte[] getBytes() {
-        throw new FileStorageException("文件处理失败，请稍后重试");
+    public byte[] getBytes() throws IOException {
+        throw new IOException("read failed");
     }
 }
 ```
@@ -2355,11 +2364,11 @@ git commit -m "feat: expose lecture import endpoint"
 Add the focused tests below at the named layer:
 
 - Parser: `rowNo` is worksheet physical row number when blank rows exist.
-- Parser: missing header, CSV/text unreadable content, and unsupported workbook-like formats fail as template/unreadable errors.
+- Parser: null content, missing header, CSV/text unreadable content, and unsupported workbook-like formats fail as template/unreadable errors.
 - Service: non-strict decimal score formats (`-1`, `1,234.56`, `50%`, `5E-1`) fail with `SCORE_VALUE_INVALID`.
 - Service: `scoreValue` variants `0`, `0.0`, `0.00`, `1`, `1.5`, `00`, and `00.50` are accepted and normalized to scale 2 without rounding.
 - Service: `displayText` with exactly 1000 Unicode code points is accepted and 1001 is rejected.
-- Service: `heldAt` rejects timezone offsets, accepts omitted seconds, and truncates fractional seconds.
+- Service: `heldAt` rejects timezone offsets, accepts omitted seconds as `:00`, truncates fractional seconds, and feeds the same whole-second value into the response and `lectureBatchId`.
 - Service: `academicYear` rejects `2025-2027`, `2025-2024`, and `9999-0000`.
 - Service: unsupported-only scope set returns `OUT_OF_SCOPE`; `ALL` scope allows import; multiple scopes use union semantics.
 - Service: failedRows are sorted ascending by `rowNo` when failures originate from field validation, duplicate, student lookup, and scope paths.
@@ -2367,8 +2376,9 @@ Add the focused tests below at the named layer:
 - Repository: two distinct `lectureBatchId` values for the same student/year create two `INTELLECTUAL_LECTURE` components.
 - Repository: duplicate-batch detection joins through `final_record.academic_year`.
 - Repository: total recalculation persists scale 2 with `RoundingMode.HALF_UP` and increments `version` once per successful lecture row mutation, not once per distinct `final_record_id`.
+- Repository: a returned `FINAL_RECORD_LOCKED` row-level failure does not roll back earlier successful DRAFT rows, but a thrown persistence failure such as `updateTotals == 0` rolls back the whole request transaction and leaves no inserted lecture component.
 - Service: H2/JVM test lock adapter serializes two same-`lectureBatchId` service calls; hold the first call at the fake lock boundary and assert the second call gets `ConflictException("同一讲座批次正在导入，请稍后重试")` before any repository mutation.
-- Controller: empty lecture file maps to `400 / VAL-4001`, invalid `heldAt` maps to `400 / VAL-4001`, header-only result maps to `200` with zero counts, multipart read failure maps to `503 / EXT-5033`, service conflict `同一讲座批次已导入` maps to `409 / BIZ-4090`, and the route is exactly `POST /api/admin/imports/lectures` with `multipart/form-data` consumes.
+- Controller: empty lecture file maps to `400 / VAL-4001`, invalid `heldAt` maps to `400 / VAL-4001`, header-only result maps to `200` with zero counts, multipart `IOException` read failure maps to `503 / EXT-5033`, service conflict `同一讲座批次已导入` maps to `409 / BIZ-4090`, and the route is exactly `POST /api/admin/imports/lectures` with `multipart/form-data` consumes.
 
 - [ ] **Step 2: Run targeted D-8 suite**
 
