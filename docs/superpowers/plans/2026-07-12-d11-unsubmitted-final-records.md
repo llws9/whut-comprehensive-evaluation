@@ -141,6 +141,9 @@ class UnsubmittedFinalRecordQueryTest {
         assertThatThrownBy(() -> new UnsubmittedFinalRecordQuery("2025-2027", null, null, 1, 20))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("academicYear 不合法");
+        assertThatThrownBy(() -> new UnsubmittedFinalRecordQuery("2026-2025", null, null, 1, 20))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("academicYear 不合法");
     }
 
     @Test
@@ -619,6 +622,8 @@ private String valueOrEmpty(String value) {
 }
 ```
 
+`lastUpdatedAt` is a UTC `Instant` contract at the service/API boundary. The repository row must expose `Instant` values from the mapper; the application service must not reinterpret them through `LocalDateTime`, `ZoneId.systemDefault()`, or a fixed millisecond formatter. `Instant.toString()` is intentional: it emits an ISO-8601 `Z` value and preserves the actual precision of the `Instant`, so tests must compare the exact strings produced by that method rather than forcing `.SSS` milliseconds.
+
 - [ ] **Step 5: Run query-object and service tests**
 
 Run:
@@ -884,6 +889,27 @@ void shouldExcludeInactiveUsersInactiveMembershipsAndNonPrimaryMemberships() {
 }
 
 @Test
+void shouldExcludeInactiveClassOrgUnitsAndNonClassOrgUnits() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4014, 3001, 'CLASS', 'CS2299', '失效班级', '/WHUT/CS/CS2022/CS2299', 'INACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4015, 3001, 'GRADE', 'NOT_CLASS', '非班级组织', '/WHUT/CS/CS2022/NOT_CLASS', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1014, 'S014', 'InactiveClass', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1015, 'S015', 'NonClassOrg', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5014, 1014, 4014, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5015, 1015, 4015, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(3);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L)
+            .doesNotContain(1014L, 1015L);
+}
+
+@Test
 void shouldKeepClassWithoutActiveGradeWhenGradeFilterAbsentAndExcludeWhenGradeRequested() {
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'INACTIVE')");
@@ -1041,6 +1067,28 @@ void shouldUnionCodeAndNameMatchesWithoutDuplicatingStudents() {
 }
 
 @Test
+void shouldDeduplicateSameStudentWhenClassCodeAndNameMatchDifferentVisibleClasses() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4007, 3001, 'CLASS', 'DUAL_MATCH', '代码命中班', '/WHUT/CS/CS2022/DUAL_CODE', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4008, 3001, 'CLASS', 'OTHER_MATCH', 'DUAL_MATCH', '/WHUT/CS/CS2022/DUAL_NAME', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1007, 'S007', 'DualMatch', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1007, 4008, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6000, 1007, 4007, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, List.of("DUAL_MATCH"), 1, 20)
+    );
+
+    assertThat(page.total()).isEqualTo(1);
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1007L);
+    assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1007L)
+            .hasSize(1);
+    assertThat(findRow(page, 1007L).getClassName()).isEqualTo("DUAL_MATCH");
+}
+
+@Test
 void shouldMatchDirtyNullUnitCodesThroughExactUnitNames() {
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3005, 2002, 'GRADE', NULL, '无代码年级', '/WHUT/CS/NO_CODE_GRADE', 'ACTIVE')");
@@ -1152,6 +1200,18 @@ void shouldRejectMalformedOrgSubtreeRootPaths() {
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2011, NULL, 'COLLEGE', 'BAD_BLANK', '空路径学院', '', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2012, NULL, 'COLLEGE', 'BAD_PREFIX', '缺少前缀学院', 'WHUT/CS', 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2013, NULL, 'COLLEGE', 'BAD_TRAILING', '尾斜杠学院', '/WHUT/CS/', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4110, 2010, 'CLASS', 'BAD_ROOT_NULL_CLASS', '空值根子班', '/WHUT/BAD_NULL/CLASS', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4111, 2011, 'CLASS', 'BAD_ROOT_BLANK_CLASS', '空路径根子班', '/WHUT/BAD_BLANK/CLASS', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4112, 2012, 'CLASS', 'BAD_ROOT_PREFIX_CLASS', '缺前缀根子班', 'WHUT/CS/BAD_PREFIX_CLASS', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4113, 2013, 'CLASS', 'BAD_ROOT_TRAILING_CLASS', '尾斜杠根子班', '/WHUT/CS//BAD_TRAILING_CLASS', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1110, 'S110', 'BadRootNull', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1111, 'S111', 'BadRootBlank', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1112, 'S112', 'BadRootPrefix', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1113, 'S113', 'BadRootTrailing', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5110, 1110, 4110, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5111, 1111, 4111, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5112, 1112, 4112, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5113, 1113, 4113, 'STUDENT', 1, 'ACTIVE')");
 
     for (Long rootId : List.of(2010L, 2011L, 2012L, 2013L)) {
         PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
@@ -1160,6 +1220,8 @@ void shouldRejectMalformedOrgSubtreeRootPaths() {
         );
         assertThat(page.total()).isZero();
         assertThat(page.records()).isEmpty();
+        assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+                .doesNotContain(1110L, 1111L, 1112L, 1113L);
     }
 }
 
@@ -1534,6 +1596,8 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
 
 Then add helper methods. The helper must never output `IN ()`; when classes are empty it outputs `NULL` because the `classesEmpty` branch disables the `IN` predicate. The provider builds indexed MyBatis placeholders and never concatenates raw class values. `scopeExpression`, `caseSensitiveEquals(...)`, and `caseSensitiveIn(...)` may be injected into SQL strings only when they are built from fixed alias names plus MyBatis placeholders generated in this provider/repository; never pass raw request values, grade values, class values, or caller-provided SQL through these helpers. Use `CAST(... AS BINARY)` for case-sensitive comparisons because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`:
 
+`scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. The only allowed expression forms are assembled from fixed strings in `rosterScopeFragment(...)`: `__D11_CLASS_ALIAS__.id IN (#{scopeParameters...})`, the fixed `EXISTS (SELECT 1 FROM org_unit root_ou ...)` path predicate, `1 = 0`, or `1 = 1`.
+
 ```java
 private String castClassPlaceholders(Map<String, Object> params) {
     UnsubmittedFinalRecordQuery query = (UnsubmittedFinalRecordQuery) params.get("query");
@@ -1566,7 +1630,7 @@ private String scopeExpression(Map<String, Object> params, String classAlias) {
 }
 ```
 
-Add imports for `UnsubmittedFinalRecordQuery`, `ArrayList`, and `List` if they are not already present in `FinalRecordQuerySqlProvider`.
+Add imports for `UnsubmittedFinalRecordQuery`, `ArrayList`, and `List` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value.
 
 - [ ] **Step 8: Add D-11 scope-fragment builder in repository implementation**
 
@@ -1680,6 +1744,14 @@ mvn -pl whut-eval-app -am -Dtest=MybatisPlusFinalRecordQueryRepositoryIntegratio
 
 Expected: PASS. The provider must use `CAST(... AS BINARY)` for exact `grade` and `classes` comparisons so the same SQL path is deterministic on H2 MySQL-mode and MySQL.
 
+Before committing, run this local contract scan and inspect every hit:
+
+```bash
+rg -n "scopeExpression" whut-eval-infra whut-eval-application whut-eval-domain whut-eval-interfaces whut-eval-app/src/test
+```
+
+Expected: hits are limited to `FinalRecordQueryMapper`, `FinalRecordQuerySqlProvider`, `MybatisPlusFinalRecordQueryRepository`, and D-11 tests/plan references. There must be no public controller/service/repository-interface/query-object path that accepts caller-provided raw SQL for `scopeExpression`.
+
 - [ ] **Step 10: Commit**
 
 ```bash
@@ -1703,7 +1775,7 @@ git commit -m "feat: query unsubmitted final record roster"
 
 Add controller tests:
 
-Use Mockito imports for `anyLong()` and `never()` if the test file does not already import them.
+Use Mockito imports for `any()`, `anyLong()`, `never()`, and `reset()` if the test file does not already import them. Use `org.hamcrest.Matchers.aMapWithSize` for the exact `PageResult` JSON field-count assertion.
 
 ```java
 @Test
@@ -1717,10 +1789,15 @@ void shouldReturnUnsubmittedFinalRecordPage() throws Exception {
                     .param("academicYear", "2025-2026")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data").value(aMapWithSize(2)))
             .andExpect(jsonPath("$.data.total").value(1))
             .andExpect(jsonPath("$.data.records[0].studentUserId").value(1001))
             .andExpect(jsonPath("$.data.records[0].status").value("UNSUBMITTED"))
-            .andExpect(jsonPath("$.data.records[0].lastUpdatedAt").value("2026-07-12T10:15:30.123Z"));
+            .andExpect(jsonPath("$.data.records[0].lastUpdatedAt").value("2026-07-12T10:15:30.123Z"))
+            .andExpect(jsonPath("$.data.pages").doesNotExist())
+            .andExpect(jsonPath("$.data.pageNum").doesNotExist())
+            .andExpect(jsonPath("$.data.pageNo").doesNotExist())
+            .andExpect(jsonPath("$.data.pageSize").doesNotExist());
 }
 
 @Test
@@ -1759,6 +1836,17 @@ void shouldAcceptRepeatedAndArrayStyleClassesButRejectRepeatedSingleValueParams(
     verify(queryApplicationService).pageUnsubmittedStudents(captor.capture());
     assertThat(captor.getValue().getGrade()).isEqualTo("Grade,With,Comma");
     assertThat(captor.getValue().getClasses()).containsExactly("CS2201", "Class,With,Comma", "CS2202");
+
+    reset(queryApplicationService);
+    when(queryApplicationService.pageUnsubmittedStudents(any()))
+            .thenReturn(new PageResult<>(0, List.of()));
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .param("classes[]", "CS2203", "CS2204")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isOk());
+    verify(queryApplicationService).pageUnsubmittedStudents(captor.capture());
+    assertThat(captor.getValue().getClasses()).containsExactly("CS2203", "CS2204");
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026", "2026-2027")
@@ -1836,6 +1924,12 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
             .andExpect(jsonPath("$.code").value("VAL-4001"));
 
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2026-2025")
+                    .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "   ")
                     .with(user("admin").authorities(new SimpleGrantedAuthority(AuthorizationPermissionCodes.SCORE_VIEW_ASSIGNED))))
             .andExpect(status().isBadRequest())
@@ -1888,7 +1982,7 @@ void shouldValidateUnsubmittedAcademicYearClassesAndOverflowAtControllerBoundary
 
 ```
 
-Do not put the `score.view.assigned` authorization contract only in this standalone controller test file. Add the route security checks to the existing `FinalRecordSecurityIntegrationTest`, which already runs the real Spring Security and method-security configuration:
+Do not put the `score.view.assigned` authorization contract only in this standalone controller test file. Add the route security checks to the existing `FinalRecordSecurityIntegrationTest`, which already runs the real Spring Security and method-security configuration. Add imports for `AccessDeniedAppException`, `jsonPath`, and `never` if the file does not already have them:
 
 ```java
 @Test
@@ -1907,7 +2001,22 @@ void shouldRejectUnsubmittedAdminListWithoutScoreViewAssigned() throws Exception
     mockMvc.perform(get("/api/admin/final-records/unsubmitted")
                     .param("academicYear", "2025-2026")
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "score.confirm.assigned")))
-            .andExpect(status().isForbidden());
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.code").value("AUTH-4030"));
+
+    verify(queryApplicationService, never()).pageUnsubmittedStudents(any());
+}
+
+@Test
+void shouldMapUnsubmittedServiceAccessDeniedToAuth4030() throws Exception {
+    given(queryApplicationService.pageUnsubmittedStudents(any()))
+            .willThrow(new AccessDeniedAppException("当前用户无未提交最终成绩名单查询权限"));
+
+    mockMvc.perform(get("/api/admin/final-records/unsubmitted")
+                    .param("academicYear", "2025-2026")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "score.view.assigned")))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.code").value("AUTH-4030"));
 }
 ```
 
@@ -2098,7 +2207,7 @@ Run:
 mvn test
 ```
 
-Expected: PASS. If unrelated pre-existing failures were recorded in the Pre-Implementation Verification Baseline section, compare this run with that recorded baseline and confirm there are zero new failing tests. If no pre-implementation baseline was recorded, do not claim "zero new failures"; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4. Any failure in a D-11-touched module fails verification regardless of baseline availability.
+Expected: PASS. If unrelated pre-existing failures were recorded in the Pre-Implementation Verification Baseline section, compare this run with that recorded baseline and confirm there are zero new failing tests. If no pre-implementation baseline was recorded, do not claim "zero new failures"; report the final `mvn test` result, focused D-11 test result from Step 3, and final-record regression result from Step 4. Any failure in a D-11-touched module fails verification regardless of baseline availability. D-11-touched modules are `whut-eval-domain`, `whut-eval-application`, `whut-eval-infra`, `whut-eval-interfaces`, and the D-11 test package under `whut-eval-app`; a failure in any of these modules fails D-11 verification even if the full reactor also has unrelated modules.
 
 - [ ] **Step 6: Review diff for contract drift**
 
@@ -2115,6 +2224,8 @@ rg -n "status\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'CONFIRMED'\s*\)|status\s*=\s*'SUBMI
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 rg -n "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
+rg -n "scopeExpression" \
+  whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 ```
 
 If `rg` is unavailable in the execution environment, run the equivalent `grep -RInE` command with the regex in double quotes:
@@ -2126,14 +2237,18 @@ grep -RInE "status\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'CONFIRMED'\s*\)|status\s*=\s*'
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 grep -RInE "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
+grep -RInE "scopeExpression" \
+  whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 ```
 
 Expected:
 
 - `git diff --check` prints no whitespace errors.
-- The scope, status, and numeric-path scans are mandatory. If `rg` is available, run the three `rg` commands above; if `rg` is unavailable, run the three `grep -RInE` fallback commands above over the same directories before claiming Task 5 verification is complete.
+- The scope, status, numeric-path, and `scopeExpression` scans are mandatory. If `rg` is available, run the four `rg` commands above; if `rg` is unavailable, run the four `grep -RInE` fallback commands above over the same directories before claiming Task 5 verification is complete.
+- The `scopeExpression` scan is mandatory. It may find the mapper/provider infrastructure and repository-internal builder, but must not find a D-11 public API, request object, controller, service, repository contract, or DTO that accepts a caller-provided raw SQL fragment.
 - The scans pass only when they produce no new D-11 contract-drift hits in changed files. Any new hit fails the verification unless the execution notes name the file/line and explain why the hit is unrelated to D-11 contract drift.
 - No `PageResult` metadata fields are added.
+- Controller tests assert the D-11 `$.data` object has exactly `total` and `records`, with no `pages`, `pageNum`, `pageNo`, or `pageSize`.
 - No D-11 request or response contract adds `classId`.
 - No D-11 code uses application/import/export tables.
 - No D-11 invalid academic-year path uses `academicYear 不能为空`.
@@ -2164,14 +2279,16 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - `classes` remains `List<String>` and accepts repeated `classes` plus array-style `classes[]`.
 - Commas inside `grade` and `classes` remain ordinary exact-match characters.
 - `PageResult<T>` remains only `total` and `records`.
+- Controller JSON tests lock `PageResult<T>` to exactly `total` and `records`.
 - Roster SQL starts from active `iam_user`, active primary `org_membership`, and active class `org_unit`.
 - Roster SQL requires both `iam_user.identity = 'STUDENT'` and `org_membership.membership_type = 'STUDENT'`.
 - Inactive `iam_user`, inactive `org_membership`, non-primary `org_membership`, non-STUDENT identities, and non-STUDENT membership types are excluded by repository tests.
+- Inactive class `org_unit` rows and non-CLASS `org_unit` rows are excluded by repository tests.
 - `DRAFT` records keep students unsubmitted, appear once per student, and only contribute `MAX(updated_at)`.
 - A student with both `DRAFT` and `SUBMITTED` or `CONFIRMED` records for the same year is excluded.
 - `SUBMITTED` and `CONFIRMED` records exclude students.
 - Unknown and `NULL` final-record statuses are ignored and do not contribute to `lastUpdatedAt`.
-- `lastUpdatedAt` is rendered with `Instant.toString()` actual precision, or empty string.
+- `lastUpdatedAt` is a UTC `Instant` at the mapper/service boundary and is rendered with `Instant.toString()` actual precision, or empty string.
 - DRAFT rows with `updated_at = NULL` keep the student unsubmitted, expose raw `lastUpdatedAt = null`, and render API `lastUpdatedAt` as an empty string.
 - Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
 - Rows without an active `GRADE` parent sort after rows with active grades.
@@ -2182,6 +2299,9 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
 - Count and select SQL keep eligibility predicates aligned: identity, membership, scope, grade/classes, and submitted/confirmed exclusion must change together.
 - Grade/classes exact filters are case-sensitive, use code-or-name OR semantics, include distinct code/name matches, and do not duplicate a student when both sides match the same org unit.
+- If the same student matches the same `classes` filter through one visible class code and another visible class name, the student appears once and displays the lowest numeric visible membership id.
 - Dirty `unit_code = NULL` rows can still match by exact `unit_name`.
 - `pageNo` offset overflow is rejected.
+- `pageNo` and `pageSize` intentionally remain `long` in `UnsubmittedFinalRecordQuery` so offset multiplication can detect overflow before mapper execution.
+- Baseline notes belong in the execution notes for this plan, directly under the Pre-Implementation Verification Baseline section or in the task-run handoff summary; do not bury baseline failures only in terminal scrollback.
 - No D-7, D-8, D-9, D-10, import, export, or frontend behavior is introduced.
