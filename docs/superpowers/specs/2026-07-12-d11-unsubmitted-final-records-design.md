@@ -122,7 +122,7 @@ If `grade` is provided, students whose selected class has no parent grade row ar
 | `grade` | string | parent grade `org_unit.unit_name`; `null` if the class has no grade parent |
 | `className` | string | active primary class `org_unit.unit_name` |
 | `status` | string | fixed `UNSUBMITTED` |
-| `lastUpdatedAt` | string/null | `MAX(final_record.updated_at)` across `DRAFT` rows for the academic year; otherwise `null` |
+| `lastUpdatedAt` | string/null | ISO-8601 UTC string serialized from `MAX(final_record.updated_at)` across `DRAFT` rows for the academic year; otherwise `null` |
 
 When no data matches, return `200` with `total = 0` and `records = []`.
 
@@ -339,7 +339,6 @@ u.user_no AS user_no,
 u.user_name AS user_name,
 grade_ou.unit_name AS grade,
 class_ou.unit_name AS class_name,
-'UNSUBMITTED' AS status,
 draft_fr.last_updated_at AS last_updated_at
 ```
 
@@ -381,12 +380,12 @@ Create `UnsubmittedStudentRow` for mapper/repository results.
 
 Fields:
 
-- `studentUserId`;
-- `userNo`;
-- `userName`;
-- `grade`;
-- `className`;
-- `lastUpdatedAt`.
+- `Long studentUserId`;
+- `String userNo`;
+- `String userName`;
+- `String grade`;
+- `String className`;
+- `Instant lastUpdatedAt`.
 
 The row does not need a mutable `status` field because the application layer always exposes `UNSUBMITTED`.
 
@@ -410,6 +409,8 @@ public record UnsubmittedStudentView(
 ```
 
 The service maps every row with `status = "UNSUBMITTED"`.
+
+`lastUpdatedAt` must be serialized in the same external time format used by existing final-record APIs: an ISO-8601 UTC string from `Instant`, not a numeric epoch timestamp. If the global Jackson configuration does not already disable timestamp serialization for Java time values, this DTO must add a local annotation/configuration so the JSON contract remains a string.
 
 ### 8.4 Repository Contract
 
@@ -526,6 +527,7 @@ Extend `MybatisPlusFinalRecordQueryRepositoryIntegrationTest` or add a focused s
 - returns empty page for unsupported category-only scopes;
 - returns all visible current-roster rows for a pure `ALL` scope;
 - returns only the exact class rows for a pure `ORG_UNIT` scope targeting a class id;
+- returns only subtree rows for a pure `ORG_SUBTREE` scope targeting a college id, without relying on a mixed-scope rule;
 - returns organization-scoped rows for a mixed scope containing one supported `ORG_SUBTREE` rule and one unsupported category rule;
 - resolves `ORG_SUBTREE` against real `org_unit.path` code paths, proving a scope rooted at org id `2002` can see classes whose path starts with `/WHUT/CS`.
 - verifies a student with duplicate dirty draft final records still appears once and uses `MAX(updated_at)` for `lastUpdatedAt`;
@@ -541,6 +543,7 @@ The repository integration test schema must include the real A-group columns use
 Add or extend admin final-record controller tests to prove:
 
 - `GET /api/admin/final-records/unsubmitted?academicYear=2025-2026` returns the page shape;
+- a draft `lastUpdatedAt` value is rendered as an ISO-8601 UTC JSON string, not a numeric timestamp;
 - missing `academicYear` returns `400 / VAL-4001`;
 - blank `academicYear` returns `400 / VAL-4001`;
 - malformed `academicYear` returns `400 / VAL-4001`;
