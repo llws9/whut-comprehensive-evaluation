@@ -40,7 +40,7 @@ Execution notes placeholder. The executor must write the observed baseline value
 
 Comparison rule: only a recorded full `mvn test` baseline allows a full-suite "zero new failures" comparison. If the full baseline is `BLOCKED` or still `PENDING` and only the focused fallback baseline exists, compare only D-11 and final-record related tests against the focused fallback; any later full-suite failures outside that focused set must be reported as observed state, not classified as new or pre-existing. D-11 added/modified tests and final-record tests explicitly run by this plan must pass in all cases.
 
-**Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
+**Tech Stack:** Java 21, Spring Boot 3.3.2, Spring MVC with `jakarta.servlet`, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
 ---
 
@@ -68,7 +68,7 @@ Comparison rule: only a recorded full `mvn test` baseline allows a full-suite "z
   - `whut-eval-domain/src/main/java/edu/whut/eval/domain/auth/model/ApplicationScopeClause.java`
     - D-11 reads `getScopeType()`, `getOrgUnitId()`, and `getOrgSubtreeRootId()` only. `getCategoryCode()`, `getItemCode()`, and `getExpressionJson()` are ignored for whole-record final-record roster access.
   - `whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/query/FinalRecordAccessContext.java`
-    - D-11 converts this context into `UserAuthorizationContext` using the existing access-context fields for user id/no/name, roles, authorities, and scope rules; `getPermissionCode()` must remain `score.view.assigned` for the unsubmitted route.
+    - D-11 converts this context into `UserAuthorizationContext` using the existing access-context fields for user id/no/name, identity, roles, authorities, and scope rules; `getPermissionCode()` must remain `score.view.assigned` for the unsubmitted route. The access-context `identity` field is authorization context data only; D-11 roster SQL must still not depend on an `iam_user.identity` database column.
   - `whut-eval-infra/src/main/java/edu/whut/eval/infra/security/sql/SqlPredicateFragment.java`
     - Existing `allowAll()` returns a blank expression and `isAllowAll() == true` for existing translators. D-11 must add `alwaysTrue()` returning expression `1 = 1` with an empty parameter map because the D-11 provider treats blank `scopeExpression` as defensive deny-all.
     - `denyAll()` returns expression `1 = 0`.
@@ -89,8 +89,8 @@ Request:
 | Field | Type | Required | Constraint |
 | --- | --- | --- | --- |
 | `academicYear` | `String` | yes | Trimmed `yyyy-yyyy`, where end year is start year + 1; invalid or repeated values return `VAL-4001` with message `academicYear 不合法`. |
-| `grade` | `String` | no | Trimmed exact code-or-name filter; blank becomes no filter; repeated values or `grade[]` return `VAL-4001`. |
-| `classes` / `classes[]` | `List<String>` | no | Controller concatenates raw `classes` values first, then raw `classes[]` values. `UnsubmittedFinalRecordQuery` trims, drops blanks, de-duplicates in that merged-list order, rejects more than 500 normalized values, and treats commas as ordinary exact-match characters. |
+| `grade` | `String` | no | Trimmed exact code-or-name filter; blank becomes no filter; a normalized value longer than 256 characters returns `VAL-4001`; repeated values or `grade[]` return `VAL-4001`. |
+| `classes` / `classes[]` | `List<String>` | no | Controller concatenates raw `classes` values first, then raw `classes[]` values. `UnsubmittedFinalRecordQuery` trims, drops blanks, de-duplicates in that merged-list order, rejects more than 500 normalized values, rejects any normalized value longer than 256 characters, and treats commas as ordinary exact-match characters. |
 | `pageNo` | `long` | no | Defaults to `1`; non-numeric values return `VAL-4001`; values `<= 0` normalize to `1`; offset overflow returns `pageNo 不合法`. |
 | `pageSize` | `long` | no | Defaults to `20`; non-numeric values return `VAL-4001`; values `<= 0` normalize to `20`; values `> 100` normalize to `100`. |
 
@@ -143,6 +143,7 @@ Response `data` remains `PageResult<UnsubmittedStudentView>` with exactly `total
 - Modify `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java`
 - Modify `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java`
 - Modify `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java`
+- Modify `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordControllerSecurityAnnotationTest.java`
 
 This plan intentionally keeps `UnsubmittedFinalRecordQueryTest` in the existing `whut-eval-app` aggregate test module because the current repository has no `whut-eval-domain/src/test` tree and existing module-level tests are concentrated under `whut-eval-app/src/test`. Do not create a new domain test module layout as part of D-11 unless the repository-wide test organization is changed in a separate task.
 
@@ -1049,7 +1050,7 @@ void shouldApplyOrgUnitAsExactClassOnly() {
 }
 
 @Test
-void shouldFilterGradeAndClassesByCaseSensitiveExactCodeOrNameIntersection() {
+void shouldApplyGradeAndClassesFiltersTogetherWithCaseSensitiveExactCodeOrNameMatches() {
     seedRoster();
 
     assertThat(repository.pageUnsubmittedStudents(accessContextWithOrgSubtree(2002L),
@@ -1769,7 +1770,7 @@ public String buildSelectUnsubmittedStudents(Map<String, Object> params) {
 
 Then add helper methods. The provider builds indexed MyBatis placeholders and never concatenates raw class values. `scopeExpression`, `caseSensitiveEquals(...)`, and `caseSensitiveIn(...)` may be injected into SQL strings only when they are built from fixed alias names plus MyBatis placeholders generated in this provider/repository; never pass raw request values, grade values, class values, or caller-provided SQL through these helpers. Use `CAST(... AS BINARY)` for case-sensitive comparisons because local H2 2.2.224 rejects MySQL's prefix `BINARY` operator, while H2 MySQL-mode and MySQL both support `CAST(expr AS BINARY)`:
 
-`scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. The only allowed expression forms are assembled from fixed strings in `rosterScopeFragment(...)`: `__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters...})`, the fixed `EXISTS (SELECT 1 FROM org_unit root_ou ...)` path predicate, `1 = 0`, or `1 = 1`.
+`scopeExpression` is not a public extension point. For D-11, it must only come from `MybatisPlusFinalRecordQueryRepository.rosterScopeFragment(...)`; controller, service, query object, request fields, and external callers must never provide it. The mapper/provider methods remain package-internal infrastructure calls in practice: do not expose a repository API that accepts raw SQL fragments for D-11. The only allowed expression forms are assembled from fixed strings in `rosterScopeFragment(...)`: `__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters...})`, the fixed `EXISTS (SELECT 1 FROM org_unit root_ou ...)` path predicate, `1 = 0`, or `1 = 1`. Provider validation must use full-expression matching, not prefix matching.
 
 ```java
 private String classPredicate(Map<String, Object> params, String classAlias) {
@@ -1810,19 +1811,42 @@ private String scopeExpression(Map<String, Object> params, String classAlias) {
 }
 
 private void validateD11ScopeExpression(String expression) {
-    String normalized = expression.strip();
+    String normalized = expression.strip().replaceAll("\\s+", " ");
     if ("1 = 0".equals(normalized) || "1 = 1".equals(normalized)) {
         return;
     }
-    if (normalized.startsWith("(__D11_CLASS_ALIAS__.id IN (")
-            || normalized.startsWith("(EXISTS (")) {
+    String orgUnitFragmentPattern = "__D11_CLASS_ALIAS__\\.id IN \\(" + parameterListPattern("d11OrgUnit") + "\\)";
+    String subtreeFragmentPattern = "EXISTS \\( SELECT 1 FROM org_unit root_ou WHERE root_ou\\.id IN \\("
+            + parameterListPattern("d11Subtree")
+            + "\\) AND root_ou\\.status = 'ACTIVE'"
+            + " AND root_ou\\.path IS NOT NULL"
+            + " AND root_ou\\.path <> ''"
+            + " AND root_ou\\.path LIKE '/%'"
+            + " AND root_ou\\.path NOT LIKE '%/'"
+            + " AND __D11_CLASS_ALIAS__\\.path IS NOT NULL"
+            + " AND __D11_CLASS_ALIAS__\\.path <> ''"
+            + " AND __D11_CLASS_ALIAS__\\.path LIKE '/%'"
+            + " AND __D11_CLASS_ALIAS__\\.path NOT LIKE '%/'"
+            + " AND \\( __D11_CLASS_ALIAS__\\.path = root_ou\\.path"
+            + " OR __D11_CLASS_ALIAS__\\.path LIKE CONCAT\\(root_ou\\.path, '/%'\\) \\) \\)";
+    String orgUnitOnlyPattern = "\\( ?" + orgUnitFragmentPattern + " ?\\)";
+    String subtreeOnlyPattern = "\\( ?" + subtreeFragmentPattern + " ?\\)";
+    String orgThenSubtreePattern = "\\( ?" + orgUnitFragmentPattern + " OR " + subtreeFragmentPattern + " ?\\)";
+    if (normalized.matches(orgUnitOnlyPattern)
+            || normalized.matches(subtreeOnlyPattern)
+            || normalized.matches(orgThenSubtreePattern)) {
         return;
     }
     throw new IllegalArgumentException("Unsafe D-11 scope expression");
 }
+
+private String parameterListPattern(String prefix) {
+    String parameterPattern = "#\\{scopeFragment\\.parameters\\." + prefix + "\\d+\\}";
+    return parameterPattern + "(, " + parameterPattern + ")*";
+}
 ```
 
-Build the classes predicate outside the SQL template: when `query.isClassesEmpty()` is true, render the fixed predicate `TRUE`; otherwise render the two case-sensitive class code/name membership predicates. Add imports for `UnsubmittedFinalRecordQuery`, `SqlPredicateFragment`, `ArrayList`, and `List` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value.
+Build the classes predicate outside the SQL template: when `query.isClassesEmpty()` is true, render the fixed predicate `TRUE`; otherwise render the two case-sensitive class code/name membership predicates. Add imports for `UnsubmittedFinalRecordQuery`, `SqlPredicateFragment`, `ArrayList`, and `List` if they are not already present in `FinalRecordQuerySqlProvider`. Keep `scopeExpression` limited to this mapper/provider plumbing plus the repository-internal D-11 builder. Do not add a controller, service, repository interface, DTO, request, or public helper parameter that accepts a raw SQL string for this value. Add a provider unit/integration test that passes a `SqlPredicateFragment` with expression `(__D11_CLASS_ALIAS__.id IN (#{scopeFragment.parameters.d11OrgUnit0})) OR 1 = 1` and asserts `buildCountUnsubmittedStudents(...)` throws `IllegalArgumentException`.
 
 In `SqlPredicateFragment`, add a D-11-specific explicit true fragment while preserving the existing blank-expression `allowAll()` behavior used by existing translators:
 
