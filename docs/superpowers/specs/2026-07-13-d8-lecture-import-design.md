@@ -19,7 +19,7 @@ Source contract:
 
 Current implementation patterns:
 
-- The repository is a multi-module Maven project. D-8 should keep the current module boundaries: domain records in `whut-eval-domain`, application services in `whut-eval-application`, POI/MyBatis code in `whut-eval-infra`, HTTP DTO/controller code in `whut-eval-interfaces`, and tests in `whut-eval-app`.
+- This rewrite worktree is a multi-module Maven project with a root `packaging=pom`. D-8 should keep the current module boundaries: domain records in `whut-eval-domain`, application services in `whut-eval-application`, POI/MyBatis code in `whut-eval-infra`, HTTP DTO/controller code in `whut-eval-interfaces`, and tests in `whut-eval-app`.
 - `AdminScoreImportController` already owns `/api/admin/imports`.
 - `MentorScoreImportApplicationService` proves the D-side import pattern: method-level authority, service-level `UserAuthorizationContext`, row-level scope checks, active primary membership lookup, DRAFT-only final-record mutation, total recalculation, and `failedRows`.
 - `ExcelMentorScoreImportParser` uses Apache POI with `WorkbookFactory` and `DataFormatter`.
@@ -165,7 +165,7 @@ Frozen row-level failure mapping:
 | row target outside `score.import` scope | `OUT_OF_SCOPE` | `当前用户无权导入该学生讲座成绩` |
 | existing final record is `SUBMITTED` or `CONFIRMED` | `FINAL_RECORD_LOCKED` | `已提交或已确认的最终成绩不允许导入覆盖` |
 
-When more than one row-level condition applies, use the first matching condition in the table above. The strict decimal-text validation excludes negative numbers, so `-1` fails with `SCORE_VALUE_INVALID`; `SCORE_VALUE_OUT_OF_RANGE` only handles numeric text above the upper bound. Duplicate-student detection runs only after the row passes `studentNo`, `scoreValue`, and `displayText` field validation, so field-invalid rows do not consume the duplicate key. A field-valid row consumes its normalized `studentNo` duplicate key even if it later fails student lookup, scope, or final-record lock checks.
+When more than one row-level condition applies, use the first matching condition in the table above. The strict decimal-text validation excludes negative numbers, so `-1` fails with `SCORE_VALUE_INVALID`; `SCORE_VALUE_OUT_OF_RANGE` only handles numeric text above the upper bound. `0`, `0.0`, and `0.00` are valid values and are not out of range. Duplicate-student detection runs only after the row passes `studentNo`, `scoreValue`, and `displayText` field validation, so field-invalid rows do not consume the duplicate key. A field-valid row consumes its normalized `studentNo` duplicate key even if it later fails student lookup, scope, or final-record lock checks.
 
 ## Excel Template
 
@@ -177,7 +177,7 @@ Header row is row 1. Header names are case-sensitive and must appear in this exa
 |---:|---|---:|---|
 | A | `studentNo` | yes | Existing active `iam_user.user_no`. |
 | B | `scoreValue` | yes | Strict decimal text matching `^[0-9]+(\.[0-9]+)?$`, `0 <= value <= 99999999.99`, at most 2 decimal places. Thousand separators, percentages, currency symbols, and scientific notation are invalid. The upper bound follows `DECIMAL(10,2)`. |
-| C | `displayText` | no | Max 1000 characters after trim. When blank, the normalized row display text is the normalized request title followed by ` 讲座签到`. |
+| C | `displayText` | no | Max 1000 characters after trim. When blank, the normalized row display text is the normalized request title followed by the fixed system suffix ` 讲座签到`. The suffix is a frozen Chinese constant for this backend scope and is not locale-derived. |
 
 Extra columns after column C are ignored.
 
@@ -248,6 +248,7 @@ Batch-level concurrency:
 - The preferred implementation is an application-level lock backed by the database, such as `SELECT GET_LOCK(CONCAT('D8_LECTURE:', ?), 30)` on MySQL and an H2-test equivalent lock abstraction.
 - The lock must be exposed behind a narrow `LectureImportBatchLock` port with a minimal contract equivalent to `boolean tryAcquire(String lectureBatchId, Duration timeout)` plus `void release(String lectureBatchId)` on the same owner. Production wiring must use the MySQL connection-bound named-lock implementation. H2 tests must wire an explicit test implementation, such as a keyed JVM `ReentrantLock`, so service-level same-batch serialization is testable even though H2 has no `GET_LOCK`; that test implementation must not be used in production profiles.
 - The batch lock must be acquired and released on the same database connection that owns the request transaction, so the lock lifetime covers the whole import transaction.
+- After the batch lock is acquired, it must be released on every exit path with `try/finally`-equivalent semantics, including already-imported `409`, zero-row success, row-processing success, unexpected persistence failure, rollback, and exceptions propagated to the controller. A connection-level lock implementation must release the lock before returning the connection to the pool; callers must never rely on connection close or pool reuse to clean up the lock.
 - An implementation may use an equivalent durable claim or unique-key strategy, but it must not add a general import batch table in this D-8 scope.
 - If the lock cannot be acquired because the same batch is already running, the request fails with `409 / BIZ-4090` and message `同一讲座批次正在导入，请稍后重试`. This is an in-flight conflict, not a persisted imported marker; callers may retry after the running request finishes.
 - If the lock is acquired but the duplicate-batch check finds persisted components for the same `lectureBatchId`, the request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
@@ -280,11 +281,12 @@ The end-to-end order is fixed as:
 2. Outside the request transaction, parse the workbook, validate the first-sheet header, build raw row values, skip blank rows, enforce the 5000-row limit, run field-level row validation, and run duplicate-student detection in workbook row order.
 3. Compute `lectureBatchId` from normalized request metadata. An implementation may run the optional duplicate-batch fast-path check at this point; if it finds persisted components, return the already-imported `409`.
 4. Start the single request transaction and acquire the `LectureImportBatchLock` for `lectureBatchId`. If acquisition fails, return the in-flight `409`.
-5. While holding the batch lock, run the authoritative duplicate-batch check. If it finds persisted components, return the already-imported `409`.
-6. If `totalCount = 0`, commit without row mutation, release the batch lock, and return the zero-count `200` response.
-7. Resolve eligible students, active primary organizations, and `score.import` scope matches for field-valid, non-duplicate rows. Collect `STUDENT_NOT_FOUND` and `OUT_OF_SCOPE` failures without throwing transaction-rolling exceptions.
-8. For rows still eligible for mutation, sort by `student_user_id` ascending and then `rowNo` ascending. For each row, lock or create the target `final_record`, collect `FINAL_RECORD_LOCKED` if the locked record is not DRAFT, otherwise insert the lecture component and recalculate totals while the record remains locked.
-9. Commit the transaction, release the batch lock on the same owner, and return counts plus `failedRows` sorted by ascending `rowNo`.
+5. Once the batch lock is acquired, enter a `try/finally`-equivalent release block that covers every later return or thrown exception.
+6. While holding the batch lock, run the authoritative duplicate-batch check. If it finds persisted components, return the already-imported `409` through the release block.
+7. If `totalCount = 0`, keep the same lock and transaction path for consistent in-flight and already-imported conflict semantics, commit without row mutation, and return the zero-count `200` response through the release block.
+8. Resolve eligible students, active primary organizations, and `score.import` scope matches for field-valid, non-duplicate rows. `DUPLICATE_STUDENT` failures were already added in step 2; this step only processes field-valid, non-duplicate rows. Collect `STUDENT_NOT_FOUND` and `OUT_OF_SCOPE` failures without throwing transaction-rolling exceptions.
+9. For rows still eligible for mutation, sort by `student_user_id` ascending and then `rowNo` ascending. For each row, lock or create the target `final_record`, collect `FINAL_RECORD_LOCKED` if the locked record is not DRAFT, otherwise insert the lecture component and recalculate totals while the record remains locked.
+10. Commit the transaction, then return counts plus `failedRows` sorted by ascending `rowNo` through the release block.
 
 ### Student Eligibility
 
@@ -450,6 +452,7 @@ Add tests proving:
 - mismatched header fails with the expected column message;
 - workbooks with no sheets fail with `导入模板错误：缺少工作表`;
 - formatted values that are not strict decimal text, such as `-1`, `1,234.56`, `50%`, or `5E-1`, fail with `SCORE_VALUE_INVALID`;
+- `0` and `0.00` are accepted as valid score values;
 - numeric text above `99999999.99` fails with `SCORE_VALUE_OUT_OF_RANGE`;
 - numeric text with more than 2 decimal places fails with `SCORE_VALUE_SCALE_INVALID`;
 - unreadable bytes fail with `导入模板错误：文件不可解析`.
@@ -459,7 +462,7 @@ Add tests proving:
 Add tests proving:
 
 - invalid `academicYear` fails with `academicYear 不合法`;
-- `academicYear` accepts only the concrete `^\d{4}-\d{4}$` format with the second year equal to first year + 1;
+- `academicYear` accepts only the concrete `^\d{4}-\d{4}$` format with the second year equal to first year + 1, and rejects boundary examples such as `2025-2027`, `2025-2024`, and `9999-0000`;
 - blank or overlong `title` fails with the frozen message;
 - invalid `heldAt` fails with `heldAt 格式非法`;
 - `heldAt` accepts omitted seconds, truncates fractional seconds, and rejects timezone offsets;
@@ -469,8 +472,9 @@ Add tests proving:
 - `lectureBatchId` uses the 12-character SHA-256 prefix and fits `source_ref_id VARCHAR(64)`;
 - a duplicate existing `lectureBatchId` throws `ConflictException`;
 - a same-batch in-flight lock conflict throws `ConflictException` with `同一讲座批次正在导入，请稍后重试`;
+- acquired batch locks are released for already-imported conflicts, header-only success, successful row-processing, and thrown persistence failures;
 - a zero-success import leaves no persisted batch marker and allows a later retry;
-- a header-only workbook returns a result with all counts zero and no batch marker;
+- a header-only workbook still acquires the batch lock, runs the authoritative duplicate-batch check, and returns either the expected conflict or a result with all counts zero and no batch marker;
 - a valid row inserts a new draft record and lecture component;
 - a new final record starts at `version = 0` and reaches `version = 1` after the successful row mutation;
 - a row with blank `displayText` stores the normalized request title followed by ` 讲座签到`;
@@ -517,7 +521,7 @@ Add tests proving:
 - empty file returns `400 VAL-4001`;
 - missing title returns `400 VAL-4001`;
 - invalid heldAt returns `400 VAL-4001`;
-- a header-only workbook returns HTTP 200 with all counts zero;
+- a header-only workbook returns HTTP 200 with all counts zero when no same-batch conflict exists;
 - service conflict returns `409 BIZ-4090`;
 - multipart read failure returns `503 EXT-5033`;
 - controller method declares `SCORE_IMPORT`.
