@@ -6,7 +6,7 @@
 
 **Scope lock:** This D-11 plan implements only the frozen unsubmitted list route above. It does not add Excel export, `classId`, `pageNum`, `pages`, or frontend behavior. Request fields are `academicYear`, optional `grade`, `classes` as a `string[]`, `pageNo`, and `pageSize`; `classes` accepts both repeated `classes=a&classes=b` and array-style `classes[]=a&classes[]=b` encodings. Response pagination remains `PageResult<T>` with only `total` and `records`.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student-number nulls-last, student number, then user id; `user_id ASC` is the final tie-breaker and is part of the pagination contract for duplicate or null student numbers. This plan intentionally extends the design SQL with student-number nulls-last ordering to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student-number nulls-last, student number, then user id; `user_id ASC` is the final tie-breaker and is part of the pagination contract for duplicate or null student numbers. This plan intentionally extends the design SQL with student-number nulls-last ordering to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class plus the active grade parent from the lowest numeric visible membership id; if that class has no active grade parent, display grade as null/empty rather than borrowing a grade from another membership. `grade` and `classes` filters both use case-sensitive code-or-name OR semantics. `classes` filters decide which memberships enter the visible set; final display selection still uses the lowest numeric visible membership id and never depends on request filter order or class-code lexical order.
 
 ## Pre-Implementation Verification Baseline
 
@@ -92,6 +92,8 @@ Execution notes placeholder:
 - Modify `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalRecordControllerWebMvcTest.java`
 - Modify `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java`
 
+This plan intentionally keeps `UnsubmittedFinalRecordQueryTest` in the existing `whut-eval-app` aggregate test module because the current repository has no `whut-eval-domain/src/test` tree and existing module-level tests are concentrated under `whut-eval-app/src/test`. Do not create a new domain test module layout as part of D-11 unless the repository-wide test organization is changed in a separate task.
+
 ---
 
 ### Task 1: Query Object Contract
@@ -157,6 +159,7 @@ class UnsubmittedFinalRecordQueryTest {
     @Test
     void shouldNormalizePageSizeLikeExistingFinalRecordPageQuery() {
         assertThat(new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 0).getPageSize()).isEqualTo(20);
+        assertThat(new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, -1).getPageSize()).isEqualTo(20);
         assertThat(new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 100).getPageSize()).isEqualTo(100);
         assertThat(new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 101).getPageSize()).isEqualTo(100);
     }
@@ -1322,6 +1325,28 @@ void shouldDisplayGradeAndClassFromSameLowestVisibleMembership() {
 }
 
 @Test
+void shouldNotBorrowGradeFromHigherVisibleMembershipWhenLowestVisibleMembershipHasNoActiveGrade() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3002, 2002, 'GRADE', 'CS2023', '计算机2023级', '/WHUT/CS/CS2023', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3003, 2002, 'GRADE', 'CS2024', '计算机2024级', '/WHUT/CS/CS2024', 'INACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4004, 3003, 'CLASS', 'CS2401', '计算机2401班', '/WHUT/CS/CS2024/CS2401', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4005, 3002, 'CLASS', 'CS2301', '计算机2301班', '/WHUT/CS/CS2023/CS2301', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1001, 4004, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (6000, 1001, 4005, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    UnsubmittedStudentRow alice = findRow(page, 1001L);
+    assertThat(page.records()).filteredOn(row -> row.getStudentUserId() == 1001L)
+            .hasSize(1);
+    assertThat(alice.getClassName()).isEqualTo("计算机2401班");
+    assertThat(alice.getGrade()).isNull();
+}
+
+@Test
 void shouldIgnoreLowerMembershipIdOutsideScopeBeforePickingVisibleMembership() {
     seedRoster();
     jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (2998, NULL, 'COLLEGE', 'MATH', '数学学院', '/WHUT/MATH', 'ACTIVE')");
@@ -1361,6 +1386,31 @@ void shouldKeepCountAndRowsConsistentWhenFiltersLeaveMultipleVisibleMembershipsF
     assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
             .doesNotHaveDuplicates();
     assertThat(findRow(page, 1001L).getClassName()).isEqualTo("计算机2200班");
+}
+
+@Test
+void shouldSelectSameLowestVisibleMembershipRegardlessOfClassesFilterOrder() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4003, 3001, 'CLASS', 'CS2200', '计算机2200班', '/WHUT/CS/CS2022/CS2200', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4004, 3001, 'CLASS', 'CS2203', '计算机2203班', '/WHUT/CS/CS2022/CS2203', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (4000, 1001, 4003, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (7000, 1001, 4004, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> forward = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2200", "CS2203"), 1, 20)
+    );
+    PageResult<UnsubmittedStudentRow> reverse = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", List.of("CS2203", "CS2200"), 1, 20)
+    );
+
+    assertThat(reverse.total()).isEqualTo(forward.total());
+    assertThat(reverse.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactlyElementsOf(forward.records().stream().map(UnsubmittedStudentRow::getStudentUserId).toList());
+    assertThat(findRow(forward, 1001L).getClassName()).isEqualTo("计算机2200班");
+    assertThat(findRow(reverse, 1001L).getClassName()).isEqualTo("计算机2200班");
+    assertThat(findRow(reverse, 1001L).getGrade()).isEqualTo(findRow(forward, 1001L).getGrade());
 }
 
 @Test
@@ -2286,8 +2336,11 @@ Run:
 ```bash
 git diff --check
 BASE_BRANCH="${BASE_BRANCH:-$(git show-ref --verify --quiet refs/heads/main && echo main || (git show-ref --verify --quiet refs/heads/master && echo master || true))}"
-test -n "$BASE_BRANCH" || { echo "Set BASE_BRANCH to the branch to diff against"; exit 1; }
-git diff --stat "$BASE_BRANCH"...HEAD
+if [ -n "$BASE_BRANCH" ]; then
+  git diff --stat "$BASE_BRANCH"...HEAD
+else
+  echo "BASE_BRANCH not found; skipping informational diff stat"
+fi
 rg -n "pageNum|pages|classId|className.*List|academicYear 不能为空|application_submission|application_fact" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 rg -n "status\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'CONFIRMED'\s*\)|status\s*=\s*'SUBMITTED'|status\s*=\s*'CONFIRMED'|submitted_fr\.status|final_record.*status" \
@@ -2363,6 +2416,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - DRAFT rows with `updated_at = NULL` keep the student unsubmitted, expose raw `lastUpdatedAt = null`, and render API `lastUpdatedAt` as an empty string.
 - Classes without an active `GRADE` parent can appear without a grade filter, expose raw `grade = null`, and are excluded when a grade filter is present.
 - Rows without an active `GRADE` parent sort after rows with active grades.
+- When the lowest numeric visible membership's class has no active grade parent, display `grade = null` for that selected class even if a higher visible membership has an active grade.
 - `ORG_UNIT` is exact class id only and does not depend on `org_unit.path` being non-null.
 - `ORG_SUBTREE` resolves root `org_unit.path` and compares real code paths.
 - `ORG_SUBTREE` may be rooted at any active org unit with a valid path, including a CLASS root; a CLASS root exposes that class only, not sibling classes.
@@ -2371,6 +2425,7 @@ If no files changed, do not create an empty commit. If `git status --short` stil
 - Duplicate-membership repository tests assert both `records` and `total` so count and select deduplication stay aligned.
 - Count and select SQL keep eligibility predicates aligned: identity, membership, scope, grade/classes, and submitted/confirmed exclusion must change together.
 - Grade/classes exact filters are case-sensitive, use code-or-name OR semantics, include distinct code/name matches, and do not duplicate a student when both sides match the same org unit.
+- Reversing the request order of `classes` values does not change the selected display membership, returned student ids, total count, or grade/class display values.
 - If the same student matches the same `classes` filter through one visible class code and another visible class name, the student appears once and displays the lowest numeric visible membership id.
 - Dirty `unit_code = NULL` rows can still match by exact `unit_name`.
 - Sorting uses `user_id ASC` as the final tie-breaker when grade, class, and student number keys are equal or null, so pagination stays stable with dirty duplicate or null student numbers.
