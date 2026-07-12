@@ -1,0 +1,1621 @@
+# D-8 Lecture Import Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build D-8 `POST /api/admin/imports/lectures` so authorized admins can synchronously import lecture attendance scores into draft final records.
+
+**Architecture:** Add a D-8-specific import slice beside the existing D-7 mentor import code instead of extending D-7's upsert model. The interface layer reads multipart bytes and metadata, the application layer owns request/row validation, authorization, deterministic batch ids, duplicate-batch behavior, lock orchestration, and row ordering, while the infra layer owns POI parsing, MyBatis persistence, and the production MySQL named-lock adapter. Successful D-8 rows insert new `INTELLECTUAL/INTELLECTUAL_LECTURE` components with `source_type = IMPORT` and `source_ref_id = lectureBatchId`.
+
+**Tech Stack:** Java 21, Spring Boot 3, Spring MVC multipart, Spring Security `@PreAuthorize`, Spring transactions, MyBatis/MyBatis-Plus, Apache POI `WorkbookFactory`, H2 MySQL-mode integration tests, MySQL `GET_LOCK` / `RELEASE_LOCK` for production batch serialization.
+
+---
+
+## Source Inputs
+
+- Spec: `docs/superpowers/specs/2026-07-13-d8-lecture-import-design.md`
+- Existing D-7 plan: `docs/superpowers/plans/2026-07-13-d7-mentor-score-import.md`
+- Existing D-7 implementation:
+  - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/AdminScoreImportController.java`
+  - `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/MentorScoreImportApplicationService.java`
+  - `whut-eval-infra/src/main/java/edu/whut/eval/infra/finalrecord/importing/ExcelMentorScoreImportParser.java`
+  - `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisMentorScoreImportRepository.java`
+  - `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/MentorScoreImportMapper.java`
+- D schema: `docs/team-delivery/group-d-score-finalization-import-export.safe-init.sql`
+- Frozen delivery doc: `docs/team-delivery/group-d-score-finalization-import-export.md`
+
+## Spec Review Status
+
+The D-8 spec passed a blocking review gate in `loop-f3d76838-0c22-46b3-abb7-b762df225c39` with `state = max_rounds_reached_non_blocking` and no P0/P1 findings. Later non-blocking boundary items were absorbed in commits `8031577` and `8e5d3d0`. A final rerun `loop-20d55383-9266-4b74-b6ca-bb2e5f086093` failed because all reviewer outputs were invalid or timed out; raw `doubao` output stated no P0/P1 findings, and its actionable boundary notes were absorbed.
+
+Do not use the failed final rerun as a spec blocker. Do keep its tool failure path as evidence if later reporting asks why there is no clean final review-loop state after `8e5d3d0`.
+
+## File Map
+
+Create:
+
+- `whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/importing/LectureImportRow.java`
+- `whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/importing/LectureImportFailedRow.java`
+- `whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/importing/LectureImportResult.java`
+- `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/ImportLecturesCommand.java`
+- `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportApplicationService.java`
+- `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportBatchLock.java`
+- `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportParser.java`
+- `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportRepository.java`
+- `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportStudentTarget.java`
+- `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportedComponent.java`
+- `whut-eval-infra/src/main/java/edu/whut/eval/infra/finalrecord/importing/ExcelLectureImportParser.java`
+- `whut-eval-infra/src/main/java/edu/whut/eval/infra/finalrecord/importing/MySqlLectureImportBatchLock.java`
+- `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/LectureImportMapper.java`
+- `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisLectureImportRepository.java`
+- `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/row/LectureImportStudentTargetRow.java`
+- `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/row/LectureImportedComponentRow.java`
+- `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/row/LectureScoreCategoryTotalRow.java`
+- `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/response/LectureImportFailedRowResponse.java`
+- `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/response/LectureImportResultResponse.java`
+- `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportParserTest.java`
+- `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportApplicationServiceTest.java`
+- `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisLectureImportRepositoryIntegrationTest.java`
+- `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportBatchLockTest.java`
+
+Modify:
+
+- `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/AdminScoreImportController.java`
+- `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminScoreImportControllerWebMvcTest.java`
+- `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminScoreImportControllerSecurityAnnotationTest.java`
+
+Do not modify `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/config/FinalRecordApplicationConfiguration.java`; the production lock adapter is a `@Component`, and tests should use fakes or `@MockBean` at the test boundary.
+
+Do not modify D-7 mentor import semantics except for shared controller constructor wiring and shared helper extraction that is strictly necessary.
+
+---
+
+### Task 1: Domain And Application Contracts
+
+**Files:**
+
+- Create: `whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/importing/LectureImportRow.java`
+- Create: `whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/importing/LectureImportFailedRow.java`
+- Create: `whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/importing/LectureImportResult.java`
+- Create: `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/ImportLecturesCommand.java`
+- Create: `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportParser.java`
+- Create: `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportBatchLock.java`
+- Create: `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportRepository.java`
+- Create: `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportStudentTarget.java`
+- Create: `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportedComponent.java`
+
+- [ ] **Step 1: Add immutable domain result types**
+
+Create `LectureImportRow`:
+
+```java
+package edu.whut.eval.domain.finalrecord.importing;
+
+public record LectureImportRow(
+        Long rowNo,
+        String studentNo,
+        String scoreValue,
+        String displayText
+) {
+}
+```
+
+Create `LectureImportFailedRow`:
+
+```java
+package edu.whut.eval.domain.finalrecord.importing;
+
+import java.util.Map;
+
+public record LectureImportFailedRow(
+        Long rowNo,
+        String code,
+        String message,
+        Map<String, String> rawValue
+) {
+}
+```
+
+Create `LectureImportResult`:
+
+```java
+package edu.whut.eval.domain.finalrecord.importing;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+public record LectureImportResult(
+        String lectureBatchId,
+        String title,
+        LocalDateTime heldAt,
+        String academicYear,
+        long totalCount,
+        long successCount,
+        long failedCount,
+        List<LectureImportFailedRow> failedRows
+) {
+}
+```
+
+- [ ] **Step 2: Add application command and ports**
+
+Create `ImportLecturesCommand`:
+
+```java
+package edu.whut.eval.application.finalrecord.importing;
+
+public record ImportLecturesCommand(
+        byte[] fileContent,
+        String title,
+        String heldAt,
+        String academicYear
+) {
+}
+```
+
+Create `LectureImportParser`:
+
+```java
+package edu.whut.eval.application.finalrecord.importing;
+
+import edu.whut.eval.domain.finalrecord.importing.LectureImportRow;
+
+import java.util.List;
+
+public interface LectureImportParser {
+    List<LectureImportRow> parse(byte[] fileContent);
+}
+```
+
+Create `LectureImportBatchLock`:
+
+```java
+package edu.whut.eval.application.finalrecord.importing;
+
+import java.time.Duration;
+
+public interface LectureImportBatchLock {
+    boolean tryAcquire(String lectureBatchId, Duration timeout);
+
+    void release(String lectureBatchId);
+}
+```
+
+Create `LectureImportRepository`:
+
+```java
+package edu.whut.eval.application.finalrecord.importing;
+
+import edu.whut.eval.domain.finalrecord.importing.LectureImportFailedRow;
+
+import java.util.List;
+import java.util.Optional;
+
+public interface LectureImportRepository {
+    boolean lectureBatchExists(String academicYear, String lectureBatchId);
+
+    Optional<LectureImportStudentTarget> findTarget(String studentNo, String academicYear);
+
+    Optional<String> findActiveOrgPath(Long orgUnitId);
+
+    List<LectureImportFailedRow> insertLectureComponents(String academicYear,
+                                                         String lectureBatchId,
+                                                         List<LectureImportedComponent> components);
+}
+```
+
+Create `LectureImportStudentTarget`:
+
+```java
+package edu.whut.eval.application.finalrecord.importing;
+
+public record LectureImportStudentTarget(
+        Long studentUserId,
+        String studentNo,
+        Long orgUnitId,
+        String orgPath
+) {
+}
+```
+
+Create `LectureImportedComponent`:
+
+```java
+package edu.whut.eval.application.finalrecord.importing;
+
+import java.math.BigDecimal;
+
+public record LectureImportedComponent(
+        Long rowNo,
+        Long studentUserId,
+        String scoreValueText,
+        BigDecimal scoreValue,
+        String displayText
+) {
+}
+```
+
+- [ ] **Step 3: Compile the contract slice**
+
+Run:
+
+```bash
+mvn -pl whut-eval-application -am -DskipTests compile
+```
+
+Expected: compile passes. If it fails for missing imports or package names, fix the new files before continuing.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/importing/LectureImportRow.java \
+  whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/importing/LectureImportFailedRow.java \
+  whut-eval-domain/src/main/java/edu/whut/eval/domain/finalrecord/importing/LectureImportResult.java \
+  whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/ImportLecturesCommand.java \
+  whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportParser.java \
+  whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportBatchLock.java \
+  whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportRepository.java \
+  whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportStudentTarget.java \
+  whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportedComponent.java
+git commit -m "feat: add lecture import contracts"
+```
+
+---
+
+### Task 2: Excel Lecture Parser
+
+**Files:**
+
+- Create: `whut-eval-infra/src/main/java/edu/whut/eval/infra/finalrecord/importing/ExcelLectureImportParser.java`
+- Create: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportParserTest.java`
+
+- [ ] **Step 1: Write parser tests**
+
+Create `LectureImportParserTest` with these tests:
+
+```java
+package edu.whut.eval.app.finalrecord;
+
+import edu.whut.eval.common.exception.ValidationException;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportRow;
+import edu.whut.eval.infra.finalrecord.importing.ExcelLectureImportParser;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class LectureImportParserTest {
+
+    private final ExcelLectureImportParser parser = new ExcelLectureImportParser();
+
+    @Test
+    void shouldParseValidRowsWithPhysicalRowNumbersAndTrimmedRawValues() throws Exception {
+        byte[] workbook = xlsx(row(" 2022305001 ", " 0.50 ", " 签到 "));
+
+        List<LectureImportRow> rows = parser.parse(workbook);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).rowNo()).isEqualTo(2L);
+        assertThat(rows.get(0).studentNo()).isEqualTo("2022305001");
+        assertThat(rows.get(0).scoreValue()).isEqualTo("0.50");
+        assertThat(rows.get(0).displayText()).isEqualTo("签到");
+    }
+
+    @Test
+    void shouldSkipBlankRowsAndIgnoreExtraColumns() throws Exception {
+        byte[] workbook = xlsx(
+                row(null, null, null, "ignored"),
+                row("2022305002", "1.00", null, "ignored")
+        );
+
+        List<LectureImportRow> rows = parser.parse(workbook);
+
+        assertThat(rows).extracting(LectureImportRow::rowNo).containsExactly(3L);
+        assertThat(rows.get(0).displayText()).isNull();
+    }
+
+    @Test
+    void shouldAcceptXlsAndXlsxWorkbookContent() throws Exception {
+        assertThat(parser.parse(xlsx(row("2022305001", "1.00", "xlsx")))).hasSize(1);
+        assertThat(parser.parse(xls(row("2022305001", "1.00", "xls")))).hasSize(1);
+    }
+
+    @Test
+    void shouldRejectTooLargeBytesBeforeOpeningWorkbook() {
+        byte[] bytes = new byte[(5 * 1024 * 1024) + 1];
+
+        assertThatThrownBy(() -> parser.parse(bytes))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("讲座导入文件最多支持 5000 行且不超过 5MB");
+    }
+
+    @Test
+    void shouldRejectMoreThan5000NonBlankRowsButAcceptExactly5000() throws Exception {
+        String[][] fiveThousand = new String[5000][];
+        for (int i = 0; i < fiveThousand.length; i++) {
+            fiveThousand[i] = row("S" + i, "1.00", null);
+        }
+        assertThat(parser.parse(xlsx(fiveThousand))).hasSize(5000);
+
+        String[][] fiveThousandOne = new String[5001][];
+        for (int i = 0; i < fiveThousandOne.length; i++) {
+            fiveThousandOne[i] = row("S" + i, "1.00", null);
+        }
+        assertThatThrownBy(() -> parser.parse(xlsx(fiveThousandOne)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("讲座导入文件最多支持 5000 行且不超过 5MB");
+    }
+
+    @Test
+    void shouldRejectTemplateErrors() throws Exception {
+        assertThatThrownBy(() -> parser.parse(noSheets()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("导入模板错误：缺少工作表");
+        assertThatThrownBy(() -> parser.parse(xlsxWithHeaders("studentNo", "bad", "displayText")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("导入模板错误：第2列表头应为 scoreValue");
+        assertThatThrownBy(() -> parser.parse("not excel".getBytes()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("导入模板错误：文件不可解析");
+    }
+
+    private static String[] row(String studentNo, String scoreValue, String displayText, String... ignored) {
+        String[] values = new String[3 + ignored.length];
+        values[0] = studentNo;
+        values[1] = scoreValue;
+        values[2] = displayText;
+        System.arraycopy(ignored, 0, values, 3, ignored.length);
+        return values;
+    }
+
+    private static byte[] xlsx(String[]... rows) throws Exception {
+        return workbookBytes(new XSSFWorkbook(), rows);
+    }
+
+    private static byte[] xls(String[]... rows) throws Exception {
+        return workbookBytes(new HSSFWorkbook(), rows);
+    }
+
+    private static byte[] xlsxWithHeaders(String... headers) throws Exception {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Sheet1");
+            writeRow(sheet.createRow(0), headers);
+            return bytes(workbook);
+        }
+    }
+
+    private static byte[] noSheets() throws Exception {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            return bytes(workbook);
+        }
+    }
+
+    private static byte[] workbookBytes(Workbook workbook, String[]... rows) throws Exception {
+        try (workbook) {
+            Sheet sheet = workbook.createSheet("Sheet1");
+            writeRow(sheet.createRow(0), "studentNo", "scoreValue", "displayText");
+            for (int i = 0; i < rows.length; i++) {
+                writeRow(sheet.createRow(i + 1), rows[i]);
+            }
+            return bytes(workbook);
+        }
+    }
+
+    private static void writeRow(Row row, String... values) {
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] != null) {
+                row.createCell(i).setCellValue(values[i]);
+            }
+        }
+    }
+
+    private static byte[] bytes(Workbook workbook) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        workbook.write(output);
+        return output.toByteArray();
+    }
+}
+```
+
+- [ ] **Step 2: Run failing parser test**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=LectureImportParserTest test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: compilation fails because `ExcelLectureImportParser` does not exist.
+
+- [ ] **Step 3: Implement parser**
+
+Create `ExcelLectureImportParser`:
+
+```java
+package edu.whut.eval.infra.finalrecord.importing;
+
+import edu.whut.eval.application.finalrecord.importing.LectureImportParser;
+import edu.whut.eval.common.exception.ValidationException;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportRow;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.springframework.stereotype.Component;
+
+import java.io.ByteArrayInputStream;
+import java.util.ArrayList;
+import java.util.List;
+
+@Component
+public class ExcelLectureImportParser implements LectureImportParser {
+
+    private static final int MAX_BYTES = 5 * 1024 * 1024;
+    private static final int MAX_ROWS = 5000;
+    private static final List<String> REQUIRED_HEADERS = List.of("studentNo", "scoreValue", "displayText");
+
+    @Override
+    public List<LectureImportRow> parse(byte[] fileContent) {
+        if (fileContent != null && fileContent.length > MAX_BYTES) {
+            throw new ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB");
+        }
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(fileContent))) {
+            if (workbook.getNumberOfSheets() == 0) {
+                throw new ValidationException("导入模板错误：缺少工作表");
+            }
+            Sheet sheet = workbook.getSheetAt(0);
+            DataFormatter formatter = new DataFormatter();
+            Row header = sheet.getRow(0);
+            if (header == null) {
+                throw new ValidationException("导入模板错误：缺少表头");
+            }
+            validateHeaders(header, formatter);
+
+            List<LectureImportRow> rows = new ArrayList<>();
+            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+                Row row = sheet.getRow(i);
+                if (row == null) {
+                    continue;
+                }
+                String studentNo = cellValue(row.getCell(0), formatter);
+                String scoreValue = cellValue(row.getCell(1), formatter);
+                String displayText = cellValue(row.getCell(2), formatter);
+                if (isBlank(studentNo) && isBlank(scoreValue) && isBlank(displayText)) {
+                    continue;
+                }
+                rows.add(new LectureImportRow(i + 1L, studentNo, scoreValue, displayText));
+                if (rows.size() > MAX_ROWS) {
+                    throw new ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB");
+                }
+            }
+            return rows;
+        } catch (ValidationException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
+    }
+
+    private void validateHeaders(Row header, DataFormatter formatter) {
+        for (int i = 0; i < REQUIRED_HEADERS.size(); i++) {
+            String actual = cellValue(header.getCell(i), formatter);
+            String expected = REQUIRED_HEADERS.get(i);
+            if (!expected.equals(actual)) {
+                throw new ValidationException("导入模板错误：第" + (i + 1) + "列表头应为 " + expected);
+            }
+        }
+    }
+
+    private String cellValue(Cell cell, DataFormatter formatter) {
+        if (cell == null) {
+            return null;
+        }
+        String value = formatter.formatCellValue(cell);
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+}
+```
+
+- [ ] **Step 4: Verify parser**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=LectureImportParserTest test -Dsurefire.failIfNoSpecifiedTests=false
+git diff --check
+```
+
+Expected: parser test passes and `git diff --check` has no output.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add whut-eval-infra/src/main/java/edu/whut/eval/infra/finalrecord/importing/ExcelLectureImportParser.java \
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportParserTest.java
+git commit -m "feat: parse lecture import workbooks"
+```
+
+---
+
+### Task 3: Application Service Validation, Batch Id, And Row Semantics
+
+**Files:**
+
+- Create: `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportApplicationService.java`
+- Create: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportApplicationServiceTest.java`
+
+- [ ] **Step 1: Write service tests for request validation and batch id**
+
+Create `LectureImportApplicationServiceTest` with a fake lock and mocked ports. Start with these tests:
+
+```java
+package edu.whut.eval.app.finalrecord;
+
+import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
+import edu.whut.eval.application.finalrecord.importing.ImportLecturesCommand;
+import edu.whut.eval.application.finalrecord.importing.LectureImportApplicationService;
+import edu.whut.eval.application.finalrecord.importing.LectureImportBatchLock;
+import edu.whut.eval.application.finalrecord.importing.LectureImportParser;
+import edu.whut.eval.application.finalrecord.importing.LectureImportRepository;
+import edu.whut.eval.application.finalrecord.importing.LectureImportStudentTarget;
+import edu.whut.eval.common.exception.AccessDeniedAppException;
+import edu.whut.eval.common.exception.ConflictException;
+import edu.whut.eval.common.exception.ValidationException;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportResult;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportRow;
+import edu.whut.eval.domain.iam.model.IamScopeRule;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+
+class LectureImportApplicationServiceTest {
+
+    private final UserAuthorizationContextAssembler authorizationContextAssembler = mock(UserAuthorizationContextAssembler.class);
+    private final LectureImportParser parser = mock(LectureImportParser.class);
+    private final LectureImportRepository repository = mock(LectureImportRepository.class);
+    private final RecordingLock lock = new RecordingLock();
+    private final LectureImportApplicationService service =
+            new LectureImportApplicationService(authorizationContextAssembler, parser, repository, lock);
+
+    @Test
+    void shouldRejectInvalidRequestParametersBeforeParsing() {
+        assertThatThrownBy(() -> service.importLectures(command(" ", "2026-05-18T14:30", "2025-2026")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("title 不能为空");
+        assertThatThrownBy(() -> service.importLectures(command("讲座", "bad", "2025-2026")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("heldAt 格式非法");
+        assertThatThrownBy(() -> service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2027")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("academicYear 不合法");
+    }
+
+    @Test
+    void shouldGenerateDeterministicBatchIdAndNormalizedMetadata() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+        given(parser.parse(any())).willReturn(List.of());
+
+        LectureImportResult result = service.importLectures(command(" 学院学术讲座 ", "2026-05-18T14:30:00.123", " 2025-2026 "));
+
+        assertThat(result.lectureBatchId()).startsWith("LECTURE-20252026-20260518143000-");
+        assertThat(result.lectureBatchId()).hasSize(44);
+        assertThat(result.title()).isEqualTo("学院学术讲座");
+        assertThat(result.heldAt().toString()).isEqualTo("2026-05-18T14:30");
+        assertThat(result.academicYear()).isEqualTo("2025-2026");
+    }
+
+    @Test
+    void shouldRejectMissingScoreImportAuthority() {
+        given(authorizationContextAssembler.requiredAuthorizationContext())
+                .willReturn(new UserAuthorizationContext(1L, "admin", "Admin", "teacher", Set.of(), Set.of(), List.of()));
+
+        assertThatThrownBy(() -> service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026")))
+                .isInstanceOf(AccessDeniedAppException.class)
+                .hasMessage("当前用户无导入权限");
+    }
+
+    private ImportLecturesCommand command(String title, String heldAt, String academicYear) {
+        return new ImportLecturesCommand(new byte[]{1}, title, heldAt, academicYear);
+    }
+
+    private UserAuthorizationContext scopedAdmin() {
+        return new UserAuthorizationContext(1010L, "T1010", "Counselor", "teacher", Set.of("COUNSELOR"), Set.of("score.import"), List.of(
+                new IamScopeRule(7010L, "score.import", "ORG_SUBTREE", 2002L, null, null, null, 80, "ACTIVE")
+        ));
+    }
+
+    private static class RecordingLock implements LectureImportBatchLock {
+        private boolean available = true;
+        private final AtomicInteger releases = new AtomicInteger();
+
+        @Override
+        public boolean tryAcquire(String lectureBatchId, Duration timeout) {
+            return available;
+        }
+
+        @Override
+        public void release(String lectureBatchId) {
+            releases.incrementAndGet();
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Run failing service tests**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=LectureImportApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: compilation fails because `LectureImportApplicationService` does not exist.
+
+- [ ] **Step 3: Implement request validation and batch id skeleton**
+
+Create `LectureImportApplicationService` with these constants and methods. The later steps will fill row validation and repository calls.
+
+```java
+package edu.whut.eval.application.finalrecord.importing;
+
+import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
+import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
+import edu.whut.eval.common.exception.AccessDeniedAppException;
+import edu.whut.eval.common.exception.ConflictException;
+import edu.whut.eval.common.exception.ValidationException;
+import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportFailedRow;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportResult;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportRow;
+import edu.whut.eval.domain.iam.model.IamScopeRule;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+@Service
+public class LectureImportApplicationService {
+
+    private static final Pattern ACADEMIC_YEAR_PATTERN = Pattern.compile("^(\\d{4})-(\\d{4})$");
+    private static final Pattern STRICT_DECIMAL_PATTERN = Pattern.compile("^[0-9]+(\\.[0-9]+)?$");
+    private static final BigDecimal MAX_SCORE = new BigDecimal("99999999.99");
+    private static final Duration BATCH_LOCK_TIMEOUT = Duration.ofSeconds(30);
+    private static final String CATEGORY_CODE = "INTELLECTUAL";
+    private static final String ITEM_CODE = "INTELLECTUAL_LECTURE";
+
+    private final UserAuthorizationContextAssembler authorizationContextAssembler;
+    private final LectureImportParser parser;
+    private final LectureImportRepository repository;
+    private final LectureImportBatchLock batchLock;
+
+    public LectureImportApplicationService(UserAuthorizationContextAssembler authorizationContextAssembler,
+                                           LectureImportParser parser,
+                                           LectureImportRepository repository,
+                                           LectureImportBatchLock batchLock) {
+        this.authorizationContextAssembler = authorizationContextAssembler;
+        this.parser = parser;
+        this.repository = repository;
+        this.batchLock = batchLock;
+    }
+
+    @Transactional
+    public LectureImportResult importLectures(ImportLecturesCommand command) {
+        NormalizedRequest request = normalize(command);
+        UserAuthorizationContext context = authorizationContextAssembler.requiredAuthorizationContext();
+        if (!context.hasAuthority(AuthorizationPermissionCodes.SCORE_IMPORT)) {
+            throw new AccessDeniedAppException("当前用户无导入权限");
+        }
+        String lectureBatchId = lectureBatchId(request);
+        List<LectureImportRow> rows = parser.parse(command.fileContent());
+
+        boolean acquired = batchLock.tryAcquire(lectureBatchId, BATCH_LOCK_TIMEOUT);
+        if (!acquired) {
+            throw new ConflictException("同一讲座批次正在导入，请稍后重试");
+        }
+        try {
+            if (repository.lectureBatchExists(request.academicYear(), lectureBatchId)) {
+                throw new ConflictException("同一讲座批次已导入");
+            }
+            return processRows(request, lectureBatchId, context, rows);
+        } finally {
+            batchLock.release(lectureBatchId);
+        }
+    }
+
+    private LectureImportResult processRows(NormalizedRequest request,
+                                            String lectureBatchId,
+                                            UserAuthorizationContext context,
+                                            List<LectureImportRow> rows) {
+        return new LectureImportResult(lectureBatchId, request.title(), request.heldAt(), request.academicYear(),
+                rows.size(), 0, rows.size(), List.of());
+    }
+
+    private NormalizedRequest normalize(ImportLecturesCommand command) {
+        String title = normalizeTitle(command.title());
+        LocalDateTime heldAt = normalizeHeldAt(command.heldAt());
+        String academicYear = normalizeAcademicYear(command.academicYear());
+        return new NormalizedRequest(title, heldAt, academicYear);
+    }
+
+    private String normalizeTitle(String title) {
+        if (title == null || title.trim().isEmpty()) {
+            throw new ValidationException("title 不能为空");
+        }
+        String value = title.trim();
+        if (value.codePointCount(0, value.length()) > 255) {
+            throw new ValidationException("title 长度不能超过 255");
+        }
+        return value;
+    }
+
+    private LocalDateTime normalizeHeldAt(String heldAt) {
+        if (heldAt == null || heldAt.isBlank()) {
+            throw new ValidationException("heldAt 格式非法");
+        }
+        try {
+            return LocalDateTime.parse(heldAt.trim()).withNano(0);
+        } catch (DateTimeParseException exception) {
+            throw new ValidationException("heldAt 格式非法");
+        }
+    }
+
+    private String normalizeAcademicYear(String academicYear) {
+        if (academicYear == null) {
+            throw new ValidationException("academicYear 不合法");
+        }
+        String value = academicYear.trim();
+        Matcher matcher = ACADEMIC_YEAR_PATTERN.matcher(value);
+        if (!matcher.matches()) {
+            throw new ValidationException("academicYear 不合法");
+        }
+        int start = Integer.parseInt(matcher.group(1));
+        int end = Integer.parseInt(matcher.group(2));
+        if (end != start + 1) {
+            throw new ValidationException("academicYear 不合法");
+        }
+        return value;
+    }
+
+    private String lectureBatchId(NormalizedRequest request) {
+        String year = request.academicYear().replace("-", "");
+        String held = request.heldAt().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
+        String hashInput = request.academicYear() + "|" + held + "|" + request.title();
+        return "LECTURE-" + year + "-" + held + "-" + sha256Prefix(hashInput);
+    }
+
+    private String sha256Prefix(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : bytes) {
+                hex.append(String.format("%02X", b));
+            }
+            return hex.substring(0, 12);
+        } catch (Exception exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
+    }
+
+    private record NormalizedRequest(String title, LocalDateTime heldAt, String academicYear) {
+    }
+}
+```
+
+- [ ] **Step 4: Verify request validation slice**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=LectureImportApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: tests added so far pass.
+
+Do not commit if later tests in this class have already been added and are failing; finish the relevant step first.
+
+---
+
+### Task 4: Application Row Validation, Auth Scope, Duplicate Rows, And Lock Release
+
+**Files:**
+
+- Modify: `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportApplicationService.java`
+- Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportApplicationServiceTest.java`
+
+- [ ] **Step 1: Add row behavior tests**
+
+Extend `LectureImportApplicationServiceTest` with these tests:
+
+```java
+@Test
+void shouldCollectFieldFailuresInFrozenOrderAndRawValueShape() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+    given(parser.parse(any())).willReturn(List.of(
+            new LectureImportRow(2L, null, null, "x"),
+            new LectureImportRow(3L, "S1", "99999999.999", "x"),
+            new LectureImportRow(4L, "S2", "1.234", "x")
+    ));
+
+    LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+    assertThat(result.failedRows()).extracting("code")
+            .containsExactly("STUDENT_NO_REQUIRED", "SCORE_VALUE_OUT_OF_RANGE", "SCORE_VALUE_SCALE_INVALID");
+    assertThat(result.failedRows().get(0).rawValue()).containsOnlyKeys("studentNo", "scoreValue", "displayText");
+}
+
+@Test
+void shouldTreatZeroAndUpperBoundAsValidAndDefaultDisplayText() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+    given(parser.parse(any())).willReturn(List.of(
+            new LectureImportRow(2L, "S1", "0.00", null),
+            new LectureImportRow(3L, "S2", "99999999.99", "")
+    ));
+    given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
+    given(repository.findTarget(eq("S2"), eq("2025-2026"))).willReturn(Optional.of(target(1002L, "/WHUT/CS/CS2022/CS2202")));
+    given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+    given(repository.insertLectureComponents(eq("2025-2026"), any(), any())).willReturn(List.of());
+
+    LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+    assertThat(result.successCount()).isEqualTo(2);
+    verify(repository).insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components ->
+            components.size() == 2 && components.get(0).displayText().equals("讲座 讲座签到")));
+}
+
+@Test
+void shouldCollectDuplicateStudentAfterFieldValidation() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+    given(parser.parse(any())).willReturn(List.of(
+            new LectureImportRow(2L, "S1", "bad", null),
+            new LectureImportRow(3L, "S1", "1.00", null),
+            new LectureImportRow(4L, "S1", "2.00", null)
+    ));
+    given(repository.findTarget(eq("S1"), eq("2025-2026"))).willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
+    given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+    given(repository.insertLectureComponents(eq("2025-2026"), any(), any())).willReturn(List.of());
+
+    LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+    assertThat(result.failedRows()).extracting("rowNo").containsExactly(2L, 4L);
+    assertThat(result.failedRows()).extracting("code").containsExactly("SCORE_VALUE_INVALID", "DUPLICATE_STUDENT");
+    assertThat(result.successCount()).isEqualTo(1);
+}
+
+@Test
+void shouldCollectStudentScopeAndLockFailuresAndSortFailedRowsByRowNo() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+    given(parser.parse(any())).willReturn(List.of(
+            new LectureImportRow(4L, "S4", "1.00", null),
+            new LectureImportRow(2L, "S2", "1.00", null),
+            new LectureImportRow(3L, "S3", "1.00", null)
+    ));
+    given(repository.findTarget(eq("S2"), eq("2025-2026"))).willReturn(Optional.empty());
+    given(repository.findTarget(eq("S3"), eq("2025-2026"))).willReturn(Optional.of(target(1003L, "/WHUT/ME/ME2022/ME2201")));
+    given(repository.findTarget(eq("S4"), eq("2025-2026"))).willReturn(Optional.of(target(1004L, "/WHUT/CS/CS2022/CS2204")));
+    given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+    given(repository.insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components -> components.size() == 1)))
+            .willReturn(List.of(new LectureImportFailedRow(
+                    4L,
+                    "FINAL_RECORD_LOCKED",
+                    "已提交或已确认的最终成绩不允许导入覆盖",
+                    raw("S4", "1.00", null)
+            )));
+
+    LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+    assertThat(result.failedRows()).extracting("rowNo").containsExactly(2L, 3L, 4L);
+    assertThat(result.failedRows()).extracting("code").containsExactly("STUDENT_NOT_FOUND", "OUT_OF_SCOPE", "FINAL_RECORD_LOCKED");
+}
+
+@Test
+void shouldReleaseAcquiredLockOnDuplicateConflictAndPersistenceFailure() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+    given(parser.parse(any())).willReturn(List.of());
+    given(repository.lectureBatchExists(eq("2025-2026"), any())).willReturn(true);
+
+    assertThatThrownBy(() -> service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026")))
+            .isInstanceOf(ConflictException.class)
+            .hasMessage("同一讲座批次已导入");
+    assertThat(lock.releases.get()).isEqualTo(1);
+}
+
+private LectureImportStudentTarget target(Long studentUserId, String orgPath) {
+    return new LectureImportStudentTarget(studentUserId, "S" + studentUserId, 2010L, orgPath);
+}
+
+private Map<String, String> raw(String studentNo, String scoreValue, String displayText) {
+    Map<String, String> raw = new LinkedHashMap<>();
+    raw.put("studentNo", studentNo);
+    raw.put("scoreValue", scoreValue);
+    raw.put("displayText", displayText);
+    return raw;
+}
+```
+
+- [ ] **Step 2: Run failing row tests**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=LectureImportApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: several tests fail because `processRows` still returns all failures and does not call repository.
+
+- [ ] **Step 3: Implement row processing**
+
+Replace `processRows` with logic that:
+
+- validates fields in frozen order;
+- consumes duplicate keys only for field-valid rows;
+- resolves target by normalized student number;
+- applies `score.import` scope with union semantics and real org path prefix;
+- creates `LectureImportedComponent` values with default display text `request.title() + " 讲座签到"`;
+- sorts mutation candidates by `studentUserId` then `rowNo`;
+- calls repository once with the sorted candidate list;
+- merges repository-returned row-level failures such as `FINAL_RECORD_LOCKED` into `failedRows`;
+- lets unexpected `ConflictException` from repository propagate so the surrounding transaction rolls back.
+
+Use these helpers in `LectureImportApplicationService`:
+
+```java
+private Optional<LectureImportFailedRow> validateFields(LectureImportRow row) {
+    if (isBlank(row.studentNo())) {
+        return Optional.of(failed(row, "STUDENT_NO_REQUIRED", "studentNo 不能为空"));
+    }
+    if (isBlank(row.scoreValue())) {
+        return Optional.of(failed(row, "SCORE_VALUE_REQUIRED", "scoreValue 不能为空"));
+    }
+    String value = row.scoreValue().trim();
+    if (!STRICT_DECIMAL_PATTERN.matcher(value).matches()) {
+        return Optional.of(failed(row, "SCORE_VALUE_INVALID", "scoreValue 必须是数字"));
+    }
+    BigDecimal score = new BigDecimal(value);
+    if (score.compareTo(MAX_SCORE) > 0) {
+        return Optional.of(failed(row, "SCORE_VALUE_OUT_OF_RANGE", "scoreValue 必须在 0 到 99999999.99 之间"));
+    }
+    if (score.stripTrailingZeros().scale() > 2) {
+        return Optional.of(failed(row, "SCORE_VALUE_SCALE_INVALID", "scoreValue 最多保留 2 位小数"));
+    }
+    if (row.displayText() != null && row.displayText().codePointCount(0, row.displayText().length()) > 1000) {
+        return Optional.of(failed(row, "DISPLAY_TEXT_TOO_LONG", "displayText 长度不能超过 1000"));
+    }
+    return Optional.empty();
+}
+
+private LectureImportFailedRow failed(LectureImportRow row, String code, String message) {
+    Map<String, String> raw = new LinkedHashMap<>();
+    raw.put("studentNo", row.studentNo());
+    raw.put("scoreValue", row.scoreValue());
+    raw.put("displayText", row.displayText());
+    return new LectureImportFailedRow(row.rowNo(), code, message, raw);
+}
+
+private boolean canAccess(UserAuthorizationContext context, LectureImportStudentTarget target) {
+    for (IamScopeRule rule : context.findScopeRulesByPermissionCode(AuthorizationPermissionCodes.SCORE_IMPORT)) {
+        if (!"ACTIVE".equals(rule.status())) {
+            continue;
+        }
+        if ("ALL".equals(rule.scopeType())) {
+            return true;
+        }
+        if ("ORG_UNIT".equals(rule.scopeType()) && rule.orgUnitId() != null && rule.orgUnitId().equals(target.orgUnitId())) {
+            return true;
+        }
+        if ("ORG_SUBTREE".equals(rule.scopeType()) && matchesOrgSubtree(rule.orgUnitId(), target.orgPath())) {
+            return true;
+        }
+    }
+    return false;
+}
+```
+
+Add `ResolvedLectureRow` as a private record and ensure final `failedRows` is sorted by `rowNo`.
+
+- [ ] **Step 4: Verify service behavior**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=LectureImportApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
+git diff --check
+```
+
+Expected: service tests pass. If row-level locked behavior cannot be handled cleanly with the initial repository API, adjust the repository API before committing:
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportApplicationService.java \
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportApplicationServiceTest.java
+git commit -m "feat: validate lecture import rows"
+```
+
+---
+
+### Task 5: Persistence Mapper And Repository
+
+**Files:**
+
+- Create: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/LectureImportMapper.java`
+- Create: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisLectureImportRepository.java`
+- Create: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/row/LectureImportStudentTargetRow.java`
+- Create: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/row/LectureImportedComponentRow.java`
+- Create: `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/row/LectureScoreCategoryTotalRow.java`
+- Create: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisLectureImportRepositoryIntegrationTest.java`
+
+- [ ] **Step 1: Write repository integration tests**
+
+Create `MybatisLectureImportRepositoryIntegrationTest` using the schema pattern from `MybatisMentorScoreImportRepositoryIntegrationTest`. Required tests:
+
+```java
+@Test
+void shouldFindActiveStudentTargetWithoutIdentityAndResolveSmallestPrimaryMembership() {
+    insertStudent(1004L, "S1004", "ACTIVE");
+    insertMembership(1004L, 3010L, true, "ACTIVE");
+    insertMembership(1004L, 2010L, true, "ACTIVE");
+
+    Optional<LectureImportStudentTarget> target = repository.findTarget("S1004", "2025-2026");
+
+    assertThat(target).isPresent();
+    assertThat(target.get().orgUnitId()).isEqualTo(2010L);
+}
+
+@Test
+void shouldDetectExistingLectureBatchByAcademicYearAndSourceRefId() {
+    Long recordId = insertDraftRecord(1001L, "2025-2026");
+    insertComponent(recordId, "INTELLECTUAL", "INTELLECTUAL_LECTURE", "1.00", "IMPORT", "LECTURE-20252026-20260518143000-ABCDEF123456");
+
+    assertThat(repository.lectureBatchExists("2025-2026", "LECTURE-20252026-20260518143000-ABCDEF123456")).isTrue();
+    assertThat(repository.lectureBatchExists("2026-2027", "LECTURE-20252026-20260518143000-ABCDEF123456")).isFalse();
+}
+
+@Test
+void shouldInsertLectureComponentsWithoutOverwritingPreviousLectureBatches() {
+    repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-AAAABBBBCCCC", List.of(
+            component(2L, 1001L, "1.25", "讲座A"),
+            component(3L, 1001L, "2.00", "讲座A second batch row should not happen in service")
+    ));
+
+    Long recordId = jdbcTemplate.queryForObject("SELECT id FROM final_record WHERE student_user_id = 1001 AND academic_year = '2025-2026'", Long.class);
+    assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score WHERE final_record_id = ?", Long.class, recordId)).isEqualTo(2L);
+    assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
+            .isEqualByComparingTo("3.25");
+    assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(2L);
+}
+
+@Test
+void shouldReturnFinalRecordLockedFailureAndLeaveNoComponentForSubmittedRecord() {
+    insertFinalRecord(1001L, "2025-2026", "SUBMITTED");
+
+    List<LectureImportFailedRow> failures = repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-LOCKED000001", List.of(
+            component(2L, 1001L, "1.00", "讲座")
+    ));
+
+    assertThat(failures).extracting("code").containsExactly("FINAL_RECORD_LOCKED");
+    assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score", Long.class)).isZero();
+}
+```
+
+Use a local H2 schema with `final_record`, `final_component_score`, `iam_user`, `org_unit`, and `org_membership`. Do not add a unique key to `final_component_score`; the real D safe-init schema does not define one.
+
+- [ ] **Step 2: Run failing repository tests**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=MybatisLectureImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: compilation fails because mapper/repository classes do not exist.
+
+- [ ] **Step 3: Implement mapper**
+
+Create `LectureImportMapper` with SQL adapted from `MentorScoreImportMapper`:
+
+```java
+@Select("""
+        SELECT u.id AS student_user_id,
+               u.user_no AS student_no,
+               ou.id AS org_unit_id,
+               ou.path AS org_path
+        FROM iam_user u
+        JOIN org_membership om ON om.user_id = u.id AND om.status = 'ACTIVE' AND om.is_primary = 1
+        JOIN org_unit ou ON ou.id = om.org_unit_id AND ou.status = 'ACTIVE'
+        WHERE u.user_no = #{studentNo}
+          AND u.status = 'ACTIVE'
+        ORDER BY om.id ASC
+        LIMIT 1
+        """)
+LectureImportStudentTargetRow selectTarget(@Param("studentNo") String studentNo);
+
+@Select("SELECT path FROM org_unit WHERE id = #{orgUnitId} AND status = 'ACTIVE'")
+String selectActiveOrgPath(@Param("orgUnitId") Long orgUnitId);
+
+@Select("""
+        SELECT COUNT(1)
+        FROM final_component_score fcs
+        JOIN final_record fr ON fr.id = fcs.final_record_id
+        WHERE fr.academic_year = #{academicYear}
+          AND fcs.category_code = 'INTELLECTUAL'
+          AND fcs.item_code = 'INTELLECTUAL_LECTURE'
+          AND fcs.source_type = 'IMPORT'
+          AND fcs.source_ref_id = #{lectureBatchId}
+        """)
+long countLectureBatchComponents(@Param("academicYear") String academicYear,
+                                 @Param("lectureBatchId") String lectureBatchId);
+```
+
+Add `selectFinalRecordForUpdate`, `insertDraft`, `insertLectureComponent`, `selectTotals`, and `updateTotals` by adapting D-7. `updateTotals` must keep `WHERE id = ? AND status = 'DRAFT'`.
+
+- [ ] **Step 4: Implement repository**
+
+Create `MybatisLectureImportRepository`:
+
+- `findTarget` maps `LectureImportStudentTargetRow`.
+- `lectureBatchExists` returns `count > 0`.
+- `insertLectureComponents` returns `List<LectureImportFailedRow>` and loops over sorted components. For each component:
+  - locks `final_record`;
+  - inserts a new DRAFT final record if missing, reloading on unique-key race;
+  - if locked record status is not `DRAFT`, add `LectureImportFailedRow` with `FINAL_RECORD_LOCKED` and continue;
+  - insert a new `final_component_score` with `category_code='INTELLECTUAL'`, `item_code='INTELLECTUAL_LECTURE'`, `source_type='IMPORT'`, `source_ref_id=lectureBatchId`;
+  - recalculate totals from all current components;
+  - if `updateTotals` returns 0 after a DRAFT lock, throw `ConflictException("最终成绩状态已变更，请刷新后重试")` so the outer transaction rolls back.
+
+- [ ] **Step 5: Verify repository**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=MybatisLectureImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+git diff --check
+```
+
+Expected: repository tests pass and formatting check has no output.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/LectureImportRepository.java \
+  whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/LectureImportMapper.java \
+  whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisLectureImportRepository.java \
+  whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/row/LectureImportStudentTargetRow.java \
+  whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/row/LectureImportedComponentRow.java \
+  whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/row/LectureScoreCategoryTotalRow.java \
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisLectureImportRepositoryIntegrationTest.java
+git commit -m "feat: persist lecture import components"
+```
+
+---
+
+### Task 6: Batch Lock Adapters
+
+**Files:**
+
+- Create: `whut-eval-infra/src/main/java/edu/whut/eval/infra/finalrecord/importing/MySqlLectureImportBatchLock.java`
+- Create: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportBatchLockTest.java`
+
+- [ ] **Step 1: Write lock adapter tests**
+
+Create `LectureImportBatchLockTest` with a mocked `JdbcTemplate`:
+
+```java
+class LectureImportBatchLockTest {
+
+    private final JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+    private final MySqlLectureImportBatchLock lock = new MySqlLectureImportBatchLock(jdbcTemplate);
+
+    @Test
+    void shouldAcquireAndReleaseNamedLock() {
+        given(jdbcTemplate.queryForObject(eq("SELECT GET_LOCK(?, ?)"), eq(Integer.class), eq("D8_LECTURE:batch"), eq(30)))
+                .willReturn(1);
+
+        assertThat(lock.tryAcquire("batch", Duration.ofSeconds(30))).isTrue();
+
+        lock.release("batch");
+        verify(jdbcTemplate).queryForObject("SELECT RELEASE_LOCK(?)", Integer.class, "D8_LECTURE:batch");
+    }
+
+    @Test
+    void shouldReturnFalseWhenNamedLockTimesOut() {
+        given(jdbcTemplate.queryForObject(eq("SELECT GET_LOCK(?, ?)"), eq(Integer.class), eq("D8_LECTURE:batch"), eq(30)))
+                .willReturn(0);
+
+        assertThat(lock.tryAcquire("batch", Duration.ofSeconds(30))).isFalse();
+    }
+}
+```
+
+- [ ] **Step 2: Run failing lock tests**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=LectureImportBatchLockTest test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: compilation fails because `MySqlLectureImportBatchLock` does not exist.
+
+- [ ] **Step 3: Implement MySQL lock adapter**
+
+Create:
+
+```java
+package edu.whut.eval.infra.finalrecord.importing;
+
+import edu.whut.eval.application.finalrecord.importing.LectureImportBatchLock;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+
+@Component
+public class MySqlLectureImportBatchLock implements LectureImportBatchLock {
+
+    private static final String PREFIX = "D8_LECTURE:";
+
+    private final JdbcTemplate jdbcTemplate;
+
+    public MySqlLectureImportBatchLock(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    @Override
+    public boolean tryAcquire(String lectureBatchId, Duration timeout) {
+        Integer result = jdbcTemplate.queryForObject(
+                "SELECT GET_LOCK(?, ?)",
+                Integer.class,
+                lockName(lectureBatchId),
+                Math.toIntExact(timeout.toSeconds())
+        );
+        return result != null && result == 1;
+    }
+
+    @Override
+    public void release(String lectureBatchId) {
+        jdbcTemplate.queryForObject("SELECT RELEASE_LOCK(?)", Integer.class, lockName(lectureBatchId));
+    }
+
+    private String lockName(String lectureBatchId) {
+        return PREFIX + lectureBatchId;
+    }
+}
+```
+
+Production uses the active transaction-bound connection through Spring's `JdbcTemplate` / transaction synchronization. Do not call `dataSource.getConnection()` directly.
+
+- [ ] **Step 4: Verify lock adapter**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=LectureImportBatchLockTest test -Dsurefire.failIfNoSpecifiedTests=false
+git diff --check
+```
+
+Expected: lock tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add whut-eval-infra/src/main/java/edu/whut/eval/infra/finalrecord/importing/MySqlLectureImportBatchLock.java \
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportBatchLockTest.java
+git commit -m "feat: add lecture import batch lock"
+```
+
+---
+
+### Task 7: Controller And Response Surface
+
+**Files:**
+
+- Modify: `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/AdminScoreImportController.java`
+- Create: `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/response/LectureImportResultResponse.java`
+- Create: `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/response/LectureImportFailedRowResponse.java`
+- Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminScoreImportControllerWebMvcTest.java`
+- Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminScoreImportControllerSecurityAnnotationTest.java`
+
+- [ ] **Step 1: Add MVC tests**
+
+Extend `AdminScoreImportControllerWebMvcTest`:
+
+```java
+@MockBean
+private LectureImportApplicationService lectureImportApplicationService;
+
+@Test
+void shouldImportLecturesAndReturnResultShape() throws Exception {
+    MockMultipartFile file = new MockMultipartFile("file", "lectures.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+    Map<String, String> rawValue = new LinkedHashMap<>();
+    rawValue.put("studentNo", "S1002");
+    rawValue.put("scoreValue", "1.00");
+    rawValue.put("displayText", null);
+    given(lectureImportApplicationService.importLectures(any(ImportLecturesCommand.class)))
+            .willReturn(new LectureImportResult(
+                    "LECTURE-20252026-20260518143000-ABCDEF123456",
+                    "学院学术讲座",
+                    LocalDateTime.parse("2026-05-18T14:30:00"),
+                    "2025-2026",
+                    2,
+                    1,
+                    1,
+                    List.of(new LectureImportFailedRow(3L, "OUT_OF_SCOPE", "当前用户无权导入该学生讲座成绩", rawValue))
+            ));
+
+    mockMvc.perform(multipart("/api/admin/imports/lectures")
+                    .file(file)
+                    .param("title", "学院学术讲座")
+                    .param("heldAt", "2026-05-18T14:30")
+                    .param("academicYear", "2025-2026"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.lectureBatchId").value("LECTURE-20252026-20260518143000-ABCDEF123456"))
+            .andExpect(jsonPath("$.data.title").value("学院学术讲座"))
+            .andExpect(jsonPath("$.data.heldAt").value("2026-05-18T14:30:00"))
+            .andExpect(jsonPath("$.data.academicYear").value("2025-2026"))
+            .andExpect(jsonPath("$.data.failedRows[0].rawValue.scoreValue").value("1.00"));
+
+    verify(lectureImportApplicationService).importLectures(argThat(command ->
+            new String(command.fileContent()).equals("excel")
+                    && "学院学术讲座".equals(command.title())
+                    && "2026-05-18T14:30".equals(command.heldAt())
+                    && "2025-2026".equals(command.academicYear())
+    ));
+}
+
+@Test
+void shouldReturn400WhenLectureTitleMissing() throws Exception {
+    MockMultipartFile file = new MockMultipartFile("file", "lectures.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+
+    mockMvc.perform(multipart("/api/admin/imports/lectures")
+                    .file(file)
+                    .param("title", " ")
+                    .param("heldAt", "2026-05-18T14:30")
+                    .param("academicYear", "2025-2026"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VAL-4001"))
+            .andExpect(jsonPath("$.message").value("title 不能为空"));
+}
+```
+
+Extend `AdminScoreImportControllerSecurityAnnotationTest`:
+
+```java
+@Test
+void shouldRequireScoreImportAuthorityForLectureImport() throws Exception {
+    PreAuthorize preAuthorize = AdminScoreImportController.class
+            .getMethod("importLectures", MultipartFile.class, String.class, String.class, String.class)
+            .getAnnotation(PreAuthorize.class);
+
+    assertThat(preAuthorize).isNotNull();
+    assertThat(preAuthorize.value()).isEqualTo(
+            "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_IMPORT)"
+    );
+}
+```
+
+- [ ] **Step 2: Run failing MVC tests**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: compilation fails because lecture endpoint and response DTOs do not exist.
+
+- [ ] **Step 3: Implement response DTOs and controller method**
+
+Create `LectureImportFailedRowResponse`:
+
+```java
+package edu.whut.eval.interfaces.admin.response;
+
+import java.util.Map;
+
+public record LectureImportFailedRowResponse(
+        Long rowNo,
+        String code,
+        String message,
+        Map<String, String> rawValue
+) {
+}
+```
+
+Create `LectureImportResultResponse`:
+
+```java
+package edu.whut.eval.interfaces.admin.response;
+
+import java.util.List;
+
+public record LectureImportResultResponse(
+        String lectureBatchId,
+        String title,
+        String heldAt,
+        String academicYear,
+        long totalCount,
+        long successCount,
+        long failedCount,
+        List<LectureImportFailedRowResponse> failedRows
+) {
+}
+```
+
+Modify `AdminScoreImportController` constructor to inject `LectureImportApplicationService`. Add:
+
+```java
+@PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_IMPORT)")
+@PostMapping(value = "/lectures", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+public ApiResponse<LectureImportResultResponse> importLectures(
+        @RequestParam("file") MultipartFile file,
+        @RequestParam("title") String title,
+        @RequestParam("heldAt") String heldAt,
+        @RequestParam("academicYear") String academicYear) {
+    if (file == null || file.isEmpty()) {
+        throw new ValidationException("上传文件不能为空");
+    }
+    if (title == null || title.trim().isEmpty()) {
+        throw new ValidationException("title 不能为空");
+    }
+    byte[] bytes;
+    try {
+        bytes = file.getBytes();
+    } catch (FileStorageException exception) {
+        throw exception;
+    } catch (IOException exception) {
+        throw new FileStorageException("文件处理失败，请稍后重试", exception);
+    }
+    LectureImportResult result = lectureImportApplicationService.importLectures(
+            new ImportLecturesCommand(bytes, title, heldAt, academicYear)
+    );
+    return ApiResponse.success(toLectureResponse(result));
+}
+```
+
+Use `DateTimeFormatter.ISO_LOCAL_DATE_TIME` for `heldAt` response so whole seconds render as `2026-05-18T14:30:00`.
+
+- [ ] **Step 4: Verify controller**
+
+```bash
+mvn -pl whut-eval-app -am -Dtest=AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest test -Dsurefire.failIfNoSpecifiedTests=false
+git diff --check
+```
+
+Expected: MVC and annotation tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/AdminScoreImportController.java \
+  whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/response/LectureImportResultResponse.java \
+  whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/response/LectureImportFailedRowResponse.java \
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminScoreImportControllerWebMvcTest.java \
+  whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminScoreImportControllerSecurityAnnotationTest.java
+git commit -m "feat: expose lecture import endpoint"
+```
+
+---
+
+### Task 8: Integration, Regression, And Full Verification
+
+**Files:**
+
+- Modify: tests from Tasks 2-7 as needed.
+- No production files unless a verification failure exposes a missing requirement.
+
+- [ ] **Step 1: Add regression tests for core D-8 risks**
+
+Add focused tests where they fit best:
+
+- Parser: `rowNo` is worksheet physical row number when blank rows exist.
+- Service: unsupported-only scope set returns `OUT_OF_SCOPE`; `ALL` scope allows import; multiple scopes use union semantics.
+- Service: failedRows are sorted ascending by `rowNo` when failures originate from field validation, duplicate, student lookup, and scope paths.
+- Repository: two distinct `lectureBatchId` values for the same student/year create two `INTELLECTUAL_LECTURE` components.
+- Repository: duplicate-batch detection joins through `final_record.academic_year`.
+- Repository: total recalculation persists scale 2 and increments `version`.
+- Controller: service conflict `同一讲座批次已导入` maps to `409 / BIZ-4090`.
+
+- [ ] **Step 2: Run targeted D-8 suite**
+
+```bash
+mvn -pl whut-eval-app -am \
+  -Dtest=LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest \
+  test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: all targeted D-8 tests pass.
+
+- [ ] **Step 3: Run D-7 regression suite**
+
+```bash
+mvn -pl whut-eval-app -am \
+  -Dtest=MentorScoreImportParserTest,MentorScoreImportApplicationServiceTest,MybatisMentorScoreImportRepositoryIntegrationTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest \
+  test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: D-7 tests still pass after adding the D-8 endpoint to the shared controller.
+
+- [ ] **Step 4: Run final record module regression slice**
+
+```bash
+mvn -pl whut-eval-app -am \
+  -Dtest='*FinalRecord*Test,*ScoreImport*Test,*LectureImport*Test' \
+  test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: final-record and import tests pass.
+
+- [ ] **Step 5: Run formatting and full compile**
+
+```bash
+mvn -pl whut-eval-app -am test -Dsurefire.failIfNoSpecifiedTests=false
+git diff --check
+```
+
+Expected: full app module test suite passes and `git diff --check` has no output.
+
+- [ ] **Step 6: Commit verification-only test additions**
+
+If Step 1 added tests after the previous commits, commit them:
+
+```bash
+git add whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord
+git commit -m "test: cover lecture import regressions"
+```
+
+If no files changed, do not create an empty commit.
+
+---
+
+## Implementation Order
+
+1. Task 1 must land first because every later slice depends on D-8 contracts.
+2. Task 2 can run independently after Task 1 because parser tests do not require application service wiring.
+3. Task 3 and Task 4 establish service behavior before persistence exists, using mocks/fakes.
+4. Task 5 then implements the repository against the frozen schema and may require one coordinated service API adjustment for row-level `FINAL_RECORD_LOCKED`.
+5. Task 6 adds production locking after the service lock contract exists.
+6. Task 7 exposes HTTP and must preserve D-7 controller behavior.
+7. Task 8 is the verification closure before code review-loop.
+
+## Plan Self-Review Checklist
+
+- Spec coverage:
+  - HTTP route, request params, response shape: Task 7.
+  - Excel template, limits, row numbers, raw values: Task 2 and Task 8.
+  - Batch id, normalized metadata, duplicate-batch behavior: Task 3, Task 4, Task 5.
+  - Batch lock release on all paths: Task 4 and Task 6.
+  - Student eligibility and scope semantics: Task 4 and Task 5.
+  - Insert-only component mutation and total recalculation: Task 5 and Task 8.
+  - Controller/security/error mapping: Task 7.
+- Placeholder scan: no `TBD`, no open-ended "add tests" without concrete target behavior.
+- Type consistency: D-8 types use `LectureImport*`; D-7 `MentorScoreImport*` types remain D-7-only.
