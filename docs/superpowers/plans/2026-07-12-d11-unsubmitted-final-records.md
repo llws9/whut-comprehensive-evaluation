@@ -4,7 +4,7 @@
 
 **Goal:** Build `GET /api/admin/final-records/unsubmitted` so authorized admins can page current active in-scope students who have not submitted or confirmed final records for an academic year.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, excludes `SUBMITTED` and `CONFIRMED` records, and maps `lastUpdatedAt` from `MAX(updated_at)` across that student/year's `DRAFT` final records.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, excludes `SUBMITTED` and `CONFIRMED` records, and maps `lastUpdatedAt` from `MAX(updated_at)` across that student/year's `DRAFT` final records. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student number, then user id so pagination is stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class/grade from the lowest numeric visible membership id.
 
 **Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -561,7 +561,7 @@ CREATE TABLE org_membership (
 );
 ```
 
-Keep all existing Minimal D columns needed by submitted/confirmed list/detail tests. If the current fixture uses simplified `org_unit` or `org_membership` tables, replace only the test fixture setup and update old inserts to populate the new columns.
+Also ensure the test `final_record.status` column accepts `NULL`, because D-11 explicitly covers legacy dirty rows with null status. Keep all existing Minimal D columns needed by submitted/confirmed list/detail tests. If the current fixture uses simplified `org_unit` or `org_membership` tables, replace only the test fixture setup and update old inserts to populate the new columns.
 
 - [ ] **Step 2: Write failing no-record, draft, and submitted/confirmed tests**
 
@@ -579,6 +579,26 @@ private void seedRoster() {
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5001, 1001, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5002, 1002, 4001, 'STUDENT', 1, 'ACTIVE')");
     jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5003, 1003, 4002, 'STUDENT', 1, 'ACTIVE')");
+}
+
+private void insertFinalRecord(Long id, Long studentUserId, String academicYear, String status, String updatedAt) {
+    jdbcTemplate.update("""
+            INSERT INTO final_record (id, student_user_id, academic_year, status,
+                                      moral_total, intellectual_total, physical_total, labor_total, grand_total,
+                                      submitted_at, confirmed_at, confirm_comment, version, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 0.00, 0.00, 0.00, 0.00, 0.00,
+                    CASE WHEN ? = 'SUBMITTED' THEN CAST(? AS DATETIME) ELSE NULL END,
+                    CASE WHEN ? = 'CONFIRMED' THEN CAST(? AS DATETIME) ELSE NULL END,
+                    NULL, 1, CAST(? AS DATETIME), CAST(? AS DATETIME))
+            """, id, studentUserId, academicYear, status,
+            status, updatedAt, status, updatedAt, updatedAt, updatedAt);
+}
+
+private UnsubmittedStudentRow findRow(PageResult<UnsubmittedStudentRow> page, Long studentUserId) {
+    return page.records().stream()
+            .filter(row -> studentUserId.equals(row.getStudentUserId()))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("Missing unsubmitted student row: " + studentUserId));
 }
 ```
 
@@ -1006,6 +1026,26 @@ void shouldPageInStableOrderWithoutDuplicatingStudents() {
             .containsExactly(1003L);
     assertThat(outOfRange.total()).isEqualTo(3);
     assertThat(outOfRange.records()).isEmpty();
+}
+
+@Test
+void shouldSortNullUnitCodesAfterNonNullCodesWithStableTieBreakers() {
+    seedRoster();
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (3005, 2002, 'GRADE', NULL, '无代码年级', '/WHUT/CS/NO_CODE_GRADE', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4005, 3001, 'CLASS', NULL, '无代码班', '/WHUT/CS/CS2022/NO_CODE_CLASS', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_unit (id, parent_id, unit_type, unit_code, unit_name, path, status) VALUES (4006, 3005, 'CLASS', 'NC2201', '无代码年级一班', '/WHUT/CS/NO_CODE_GRADE/NC2201', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1005, 'S005', 'NullClassCode', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, identity, status) VALUES (1006, 'S006', 'NullGradeCode', 'STUDENT', 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5005, 1005, 4005, 'STUDENT', 1, 'ACTIVE')");
+    jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (5006, 1006, 4006, 'STUDENT', 1, 'ACTIVE')");
+
+    PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", null, null, 1, 20)
+    );
+
+    assertThat(page.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L, 1005L, 1006L);
 }
 ```
 
@@ -1535,28 +1575,25 @@ git commit -m "feat: expose unsubmitted final record endpoint"
 ### Task 5: Regression and Full Verification
 
 **Files:**
-- Modify only if a previous task touched shared scope translation:
+- Always inspect the final diff before verification.
+- Modify only if D-11 changed shared scope translation, `FinalRecordScopePredicateBuilder`, or existing submitted/confirmed admin list/detail behavior:
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisPlusFinalRecordQueryRepositoryIntegrationTest.java`
+  - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordQueryApplicationServiceTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordScopePredicateBuilderTest.java`
 
-- [ ] **Step 1: Check whether shared scope translation was touched**
+- [ ] **Step 1: Inspect shared-scope impact**
 
-Run:
-
-```bash
-git diff --name-only main...HEAD
-```
-
-If the diff includes `ApplicationScopeSqlTranslator`, `FinalRecordScopePredicateBuilder`, or shared admin submitted/confirmed list SQL, add regression tests before continuing. If D-11 used only `rosterScopeFragment(...)` and new provider methods, no extra shared-scope regression is required.
+Review the actual final diff, not only file names. If D-11 changed `ApplicationScopeSqlTranslator`, `FinalRecordScopePredicateBuilder`, existing `pageAdminFinalRecords(...)` SQL, existing `findAdminFinalRecordDetail(...)` data needed by access validation, or any shared helper used by submitted/confirmed admin list/detail, add the regression tests in Step 2 before continuing. If D-11 used only new D-11 provider methods and a D-11-only roster scope fragment, document that no shared-scope files or methods changed and continue to Step 3.
 
 - [ ] **Step 2: Add shared-scope regression tests if required**
 
-If shared scope translation changed, add tests proving:
+If shared scope behavior changed, add tests proving the existing submitted/confirmed list and detail paths still enforce real org-path scope, including negative similar-prefix cases:
 
 ```java
 @Test
 void shouldKeepSubmittedAdminListOrgSubtreeVisibilityOnRealOrgPaths() {
     seedSubmittedFinalRecordInClassPath("/WHUT/CS/CS2022/CS2201");
+    seedSubmittedFinalRecordInClassPath("/WHUT/CS2/CS2201");
 
     PageResult<FinalRecordQueryRow> page = repository.pageAdminFinalRecords(
             accessContextWithOrgSubtree(2002L),
@@ -1569,14 +1606,20 @@ void shouldKeepSubmittedAdminListOrgSubtreeVisibilityOnRealOrgPaths() {
 
 @Test
 void shouldKeepAdminDetailOrgSubtreeAccessOnRealOrgPaths() {
-    long recordId = seedSubmittedFinalRecordInClassPath("/WHUT/CS/CS2022/CS2201");
+    FinalRecordQueryRow inScope = rowWithOrgPath(41001L, "/WHUT/CS/CS2022/CS2201");
+    FinalRecordQueryRow outOfScope = rowWithOrgPath(41002L, "/WHUT/CS2/CS2201");
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(adminContextWithOrgSubtree(2002L));
+    given(queryRepository.findAdminFinalRecordDetail(41001L)).willReturn(Optional.of(inScope));
+    given(queryRepository.findAdminFinalRecordDetail(41002L)).willReturn(Optional.of(outOfScope));
+    given(queryRepository.listAdminFinalRecordComponents(41001L)).willReturn(List.of());
 
-    FinalRecordQueryRow row = repository.findAdminFinalRecordDetail(recordId).orElseThrow();
-    assertThat(row.getOrgPath()).isEqualTo("/WHUT/CS/CS2022/CS2201");
+    assertThat(service.getAdminFinalRecordDetail(41001L).record().finalRecordId()).isEqualTo(41001L);
+    assertThatThrownBy(() -> service.getAdminFinalRecordDetail(41002L))
+            .isInstanceOf(AccessDeniedAppException.class);
 }
 ```
 
-Keep these tests aligned with actual helper names and access-validation flow in the current test file. Do not relax existing `ORG_UNIT` exact-unit behavior.
+Keep these tests aligned with actual helper names and access-validation flow in the current test file. The detail regression must go through `FinalRecordQueryApplicationService.getAdminFinalRecordDetail(...)` or directly through `FinalRecordAccessValidator.requireAccess(...)`; `repository.findAdminFinalRecordDetail(...)` alone is an unscoped context fetch and is not sufficient. Do not relax existing `ORG_UNIT` exact-unit behavior.
 
 - [ ] **Step 3: Run focused D-11 tests**
 
