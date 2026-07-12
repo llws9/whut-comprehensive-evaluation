@@ -18,6 +18,7 @@ Source contract:
 
 Current implementation patterns:
 
+- The repository is a multi-module Maven project. D-8 should keep the current module boundaries: domain records in `whut-eval-domain`, application services in `whut-eval-application`, POI/MyBatis code in `whut-eval-infra`, HTTP DTO/controller code in `whut-eval-interfaces`, and tests in `whut-eval-app`.
 - `AdminScoreImportController` already owns `/api/admin/imports`.
 - `MentorScoreImportApplicationService` proves the D-side import pattern: method-level authority, service-level `UserAuthorizationContext`, row-level scope checks, active primary membership lookup, DRAFT-only final-record mutation, total recalculation, and `failedRows`.
 - `ExcelMentorScoreImportParser` uses Apache POI with `WorkbookFactory` and `DataFormatter`.
@@ -73,9 +74,9 @@ Request parameters:
 | Parameter | Required | Rule |
 |---|---:|---|
 | `file` | yes | Non-empty Excel file. |
-| `title` | yes | Non-blank after trim, max 255 characters. |
-| `heldAt` | yes | ISO local date-time, accepted by `LocalDateTime.parse`, normalized with seconds in the response. |
-| `academicYear` | yes | Must match `yyyy-yyyy`, and the second year must equal first year + 1. |
+| `title` | yes | Non-blank after trim, max 255 characters. Leading and trailing whitespace are removed; internal whitespace, case, and Unicode normalization form are preserved. |
+| `heldAt` | yes | ISO local date-time accepted by `LocalDateTime.parse`; normalized to whole seconds in the response and batch id. |
+| `academicYear` | yes | Trimmed before validation; must match `yyyy-yyyy`, and the second year must equal first year + 1. |
 
 Successful response:
 
@@ -141,7 +142,7 @@ Frozen row-level failure mapping:
 | row target outside `score.import` scope | `OUT_OF_SCOPE` | `当前用户无权导入该学生讲座成绩` |
 | existing final record is `SUBMITTED` or `CONFIRMED` | `FINAL_RECORD_LOCKED` | `已提交或已确认的最终成绩不允许导入覆盖` |
 
-When more than one row-level condition applies, use the first matching condition in the table above. Duplicate-student detection runs only after the row passes `studentNo`, `scoreValue`, and `displayText` field validation, so field-invalid rows do not consume the duplicate key.
+When more than one row-level condition applies, use the first matching condition in the table above. Duplicate-student detection runs only after the row passes `studentNo`, `scoreValue`, and `displayText` field validation, so field-invalid rows do not consume the duplicate key. A field-valid row consumes its normalized `studentNo` duplicate key even if it later fails student lookup, scope, or final-record lock checks.
 
 ## Excel Template
 
@@ -153,7 +154,7 @@ Header row is row 1. Header names are case-sensitive and must appear in this exa
 |---:|---|---:|---|
 | A | `studentNo` | yes | Existing active `iam_user.user_no`. |
 | B | `scoreValue` | yes | Decimal, `0 <= value <= 99999999.99`, at most 2 decimal places. |
-| C | `displayText` | no | Max 1000 characters after trim. Blank becomes `<title> 讲座签到`. |
+| C | `displayText` | no | Max 1000 characters after trim. Blank becomes the normalized request title followed by ` 讲座签到`. |
 
 Blank data rows are ignored and do not count toward `totalCount`.
 
@@ -182,15 +183,52 @@ This is intentionally different from D-7. D-7 upserts one imported component per
 
 The hash input is:
 
-`academicYear + "|" + normalizedHeldAt + "|" + normalizedTitle`
+`normalizedAcademicYear + "|" + normalizedHeldAt + "|" + normalizedTitle`
 
 Use SHA-256 over the UTF-8 hash input, uppercase the hexadecimal digest, and take the first 6 characters.
 
-The generated value must fit `final_component_score.source_ref_id` length constraints.
+Normalization is fixed as:
+
+- `normalizedAcademicYear`: request `academicYear` after trim.
+- `normalizedTitle`: request `title` after trim; no internal whitespace collapsing, case folding, or Unicode normalization is applied.
+- `normalizedHeldAt`: parsed `heldAt` truncated to whole seconds and formatted as `yyyyMMddHHmmss`.
+- response `heldAt`: the same whole-second value formatted as ISO local date-time, for example `2026-05-18T14:30:00`.
+
+The generated `lectureBatchId` format is `^LECTURE-[0-9]{8}-[0-9]{14}-[0-9A-F]{6}$`. Its length is 37 characters, which fits the documented `final_component_score.source_ref_id VARCHAR(64)` constraint.
 
 Before any row mutation, the service checks whether any existing `final_component_score` joined to the same `academicYear` has `category_code = 'INTELLECTUAL'`, `item_code = 'INTELLECTUAL_LECTURE'`, `source_type = 'IMPORT'`, and `source_ref_id = lectureBatchId`. If yes, the whole request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
 
 Because this phase does not introduce an import batch table, duplicate-batch detection is backed by the existing final-component rows. If a previous import had zero successful rows, there is no persisted batch marker and a retry is accepted.
+
+This zero-success retry behavior is intentional for D-8: an upload that produced no persisted lecture component is not considered imported. Callers may retry the same metadata and workbook after fixing row data or authorization.
+
+### Concurrency and Transaction Boundaries
+
+D-8 must protect the batch and each final record with concrete database-level serialization, not only a pre-check in application memory.
+
+Batch-level concurrency:
+
+- The implementation must serialize imports for the same `lectureBatchId` before row mutation.
+- The preferred implementation is an application-level lock backed by the database, such as `SELECT GET_LOCK(CONCAT('D8_LECTURE:', ?), timeout)` on MySQL and an H2-test equivalent lock abstraction.
+- The batch lock lifetime must cover the entire import request, including all row-level mutation transactions or savepoints.
+- An implementation may use an equivalent durable claim or unique-key strategy, but it must not add a general import batch table in this D-8 scope.
+- If the lock cannot be acquired because the same batch is already running or has just been persisted by another transaction, the request fails with `409 / BIZ-4090` and message `同一讲座批次已导入`.
+- While holding the batch lock, the service performs the existing-component duplicate check again inside the transaction before any row mutation.
+
+Per-student final-record concurrency:
+
+- Every successful row mutation must lock the target `final_record` with `SELECT ... FOR UPDATE`.
+- If no record exists, insert the DRAFT record and then re-read it with `SELECT ... FOR UPDATE`; concurrent insert races must be handled the same way D-7 handles the `(student_user_id, academic_year)` unique key.
+- Component insert and total recalculation must occur while the target record is locked.
+- The totals update must include `WHERE id = ? AND status = 'DRAFT'`.
+- If the conditional totals update affects zero rows, treat that row as `FINAL_RECORD_LOCKED` when the transaction can continue; if the database operation has already failed the transaction, roll back the current row transaction and surface `FINAL_RECORD_LOCKED` for that row through the service layer.
+
+Transaction scope:
+
+- Request-level validation, parsing, duplicate-batch locking, and duplicate-batch pre-check happen before row mutations.
+- Each row mutation runs in its own transaction or savepoint-equivalent unit so row-level failures do not roll back earlier successful rows.
+- Unexpected infrastructure failures during a row mutation roll back that row's transaction and propagate as a request-level exception; already committed earlier row transactions remain committed.
+- `final_record.version` is an optimistic-change counter for final-record consumers. D-8 increments it on every successful row mutation. D-8 does not require the caller to provide an expected version, but the conditional `status = 'DRAFT'` update protects against concurrent submit/confirm transitions.
 
 ### Student Eligibility
 
@@ -243,7 +281,7 @@ D-8 never submits or confirms a final record.
 D-8 is insert-only for successful rows:
 
 - Insert one `final_component_score` per successful student row.
-- Use `displayText` when present; otherwise default to `<title> 讲座签到`.
+- Use `displayText` when present; otherwise default to the normalized request title followed by ` 讲座签到`.
 - Use the request-derived `lectureBatchId` as `sourceRefId`.
 - Preserve existing imported and application components.
 - Do not update existing D-7 mentor/fixed-score components.
@@ -251,9 +289,9 @@ D-8 is insert-only for successful rows:
 
 Duplicate non-blank `studentNo` values inside the same workbook are deterministic row-level failures:
 
-- the first valid occurrence remains eligible for import;
+- the first field-valid occurrence consumes the duplicate key and remains eligible for later student lookup, scope, and final-record lock checks;
 - later duplicate rows fail with `DUPLICATE_STUDENT`;
-- duplicates that are blank or already field-invalid are handled by the earlier field failure rule.
+- duplicates that are blank or already field-invalid are handled by the earlier field failure rule and do not consume the duplicate key.
 
 Row-level failures do not roll back earlier successful mutations in the same request. Request-level failures abort before mutation.
 
@@ -330,17 +368,22 @@ Add tests proving:
 - invalid `academicYear` fails with `academicYear 不合法`;
 - blank or overlong `title` fails with the frozen message;
 - invalid `heldAt` fails with `heldAt 格式非法`;
-- deterministic `lectureBatchId` is returned for the same title, heldAt, and academicYear;
+- deterministic `lectureBatchId` is returned for the same normalized title, heldAt, and academicYear;
+- title trimming and whole-second heldAt normalization feed both `lectureBatchId` and response `heldAt`;
 - a duplicate existing `lectureBatchId` throws `ConflictException`;
+- a zero-success import leaves no persisted batch marker and allows a later retry;
 - a valid row inserts a new draft record and lecture component;
 - two distinct lecture batches for the same student accumulate two components and totals;
 - duplicate `studentNo` inside the same workbook produces a `DUPLICATE_STUDENT` failed row;
+- a field-valid row that later fails student lookup or scope still consumes the duplicate-student key;
 - a row for a missing or inactive student appears in `failedRows`;
 - a row outside `score.import` scope appears in `failedRows`;
 - `SUBMITTED` and `CONFIRMED` targets appear in `failedRows` and are not mutated;
 - successful rows update totals and increment version;
 - mixed valid and invalid rows return HTTP 200 with accurate counts;
-- service method has a transactional boundary.
+- row-level business failures do not roll back previously committed successful row mutations;
+- same-batch concurrent imports result in one successful import and one `ConflictException` mapped to `409 / BIZ-4090`;
+- a concurrent submit/confirm transition between target lookup and totals update is reported as `FINAL_RECORD_LOCKED` and does not mutate that row.
 
 ### Repository Integration Tests
 
@@ -352,8 +395,10 @@ Use H2 MySQL mode and local test schema to verify:
 - `ORG_SUBTREE` scope uses real path-prefix matching and rejects similar prefixes;
 - inserted draft records satisfy all non-null `final_record` columns;
 - inserted lecture components satisfy all non-null `final_component_score` columns;
+- generated `lectureBatchId` fits `final_component_score.source_ref_id VARCHAR(64)`;
 - two lecture batches for the same student create two components instead of overwriting;
 - duplicate-batch existence checks join through `final_record.academic_year`;
+- duplicate-batch locking or equivalent serialization prevents two same-batch transactions from both inserting rows;
 - totals are recalculated from all current components.
 
 ### MVC and Security Tests
@@ -403,6 +448,7 @@ mvn test
 - `score.import` protects the method and service-level row scope.
 - Valid rows mutate only draft final records.
 - Submitted and confirmed records are not overwritten.
+- Same-batch concurrent requests cannot both insert lecture components.
 - Row-level failures appear in `failedRows`.
 - Request-level validation and duplicate-batch errors match the documented HTTP codes.
 - Lecture import writes `INTELLECTUAL / INTELLECTUAL_LECTURE`.
