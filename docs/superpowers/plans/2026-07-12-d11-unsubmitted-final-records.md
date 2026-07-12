@@ -4,7 +4,7 @@
 
 **Goal:** Build `GET /api/admin/final-records/unsubmitted` so authorized admins can page current active in-scope students who have not submitted or confirmed final records for an academic year.
 
-**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student number nulls-last, student number, then user id so pagination is stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class/grade from the lowest numeric visible membership id.
+**Architecture:** Add a D-11 query path beside the existing Minimal D final-record list, but do not overload the submitted/confirmed list SQL. The new path starts from active IAM roster membership, applies whole-record organization scope to the selected class org, and excludes the whole student if that student has any `SUBMITTED` or `CONFIRMED` final record in the requested academic year. `DRAFT`, unknown, and `NULL` statuses still mean the student is unsubmitted, but only `DRAFT` records contribute `lastUpdatedAt` via `MAX(updated_at)`. Sort rows by grade nulls-last, grade code, class nulls-last, class code, student number, then user id; this plan intentionally extends the design SQL with student-number nulls-last before `student number` to keep dirty `user_no = NULL` pagination stable. If a student has multiple visible primary class memberships after scope and filters, return the student once and display the class/grade from the lowest numeric visible membership id.
 
 **Tech Stack:** Java 17, Spring Boot, Spring MVC, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
 
@@ -663,6 +663,8 @@ void shouldKeepDraftStudentsUnsubmittedAndExposeMaxDraftUpdatedAt() {
     seedRoster();
     insertFinalRecord(11L, 1001L, "2025-2026", "DRAFT", "2026-07-12 10:15:30.123");
     insertFinalRecord(12L, 1001L, "2025-2026", "DRAFT", "2026-07-12 11:15:30.456");
+    insertFinalRecord(13L, 1001L, "2025-2026", "UNKNOWN", "2026-07-12 12:15:30.789");
+    insertFinalRecord(14L, 1001L, "2025-2026", null, "2026-07-12 13:15:30.789");
 
     PageResult<UnsubmittedStudentRow> page = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
@@ -785,13 +787,20 @@ void shouldKeepClassWithoutActiveGradeWhenGradeFilterAbsentAndExcludeWhenPresent
             .containsExactly(1001L, 1002L, 1003L, 1004L);
     assertThat(findRow(withoutGradeFilter, 1004L).getGrade()).isNull();
 
-    PageResult<UnsubmittedStudentRow> withGradeFilter = repository.pageUnsubmittedStudents(
+    PageResult<UnsubmittedStudentRow> withMatchingGradeFilter = repository.pageUnsubmittedStudents(
+            accessContextWithOrgSubtree(2002L),
+            new UnsubmittedFinalRecordQuery("2025-2026", "CS2022", null, 1, 20)
+    );
+    PageResult<UnsubmittedStudentRow> withNonMatchingGradeFilter = repository.pageUnsubmittedStudents(
             accessContextWithOrgSubtree(2002L),
             new UnsubmittedFinalRecordQuery("2025-2026", "CS2023", null, 1, 20)
     );
 
-    assertThat(withGradeFilter.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
-            .doesNotContain(1004L);
+    assertThat(withMatchingGradeFilter.total()).isEqualTo(3);
+    assertThat(withMatchingGradeFilter.records()).extracting(UnsubmittedStudentRow::getStudentUserId)
+            .containsExactly(1001L, 1002L, 1003L);
+    assertThat(withNonMatchingGradeFilter.total()).isZero();
+    assertThat(withNonMatchingGradeFilter.records()).isEmpty();
 }
 ```
 
@@ -1792,14 +1801,18 @@ Run:
 ```bash
 git diff --check
 git diff --stat main...HEAD
-rg -n "pageNum|pages|className.*List|academicYear 不能为空|LIKE '%/|SUBMITTED', 'CONFIRMED'.*unsubmitted|application_submission|application_fact" \
+rg -n "pageNum|pages|className.*List|academicYear 不能为空|SUBMITTED', 'CONFIRMED'.*unsubmitted|application_submission|application_fact" \
+  whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
+rg -n "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 ```
 
 If `rg` is unavailable in the execution environment, run the equivalent `grep -RInE` command with the regex in double quotes:
 
 ```bash
-grep -RInE "pageNum|pages|className.*List|academicYear 不能为空|LIKE '%/|SUBMITTED', 'CONFIRMED'.*unsubmitted|application_submission|application_fact" \
+grep -RInE "pageNum|pages|className.*List|academicYear 不能为空|SUBMITTED', 'CONFIRMED'.*unsubmitted|application_submission|application_fact" \
+  whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
+grep -RInE "LIKE\s+'%/[0-9]|LIKE\s+CONCAT\('%/',|org_unit_id.*path.*LIKE|path.*LIKE.*org_unit_id" \
   whut-eval-domain whut-eval-application whut-eval-infra whut-eval-interfaces whut-eval-app/src/test
 ```
 
@@ -1809,7 +1822,7 @@ Expected:
 - No `PageResult` metadata fields are added.
 - No D-11 code uses application/import/export tables.
 - No D-11 invalid academic-year path uses `academicYear 不能为空`.
-- No D-11 `ORG_SUBTREE` SQL compares numeric ids to `org_unit.path`.
+- The numeric-path anti-pattern check has zero D-11 hits, or every hit is manually confirmed unrelated to D-11 `ORG_SUBTREE` SQL. Correct D-11 subtree matching must compare `class_ou.path` to `root_ou.path` with `CONCAT(root_ou.path, '/%')`, never numeric org ids embedded in path strings.
 
 - [ ] **Step 7: Commit final fixes if any**
 
