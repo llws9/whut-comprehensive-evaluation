@@ -100,6 +100,7 @@ import java.nio.file.Path;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -155,96 +156,138 @@ class MinimumBusinessLoopHttpSmokeIntegrationTest {
 
     @Test
     void shouldRunMinimumBusinessLoopThroughHttpControllersAndSecurityFilter() throws Exception {
-        String studentToken = login("2022010101");
-        String counselorToken = login("T20260001");
+        String studentToken = stage("login student 2022010101", () -> login("2022010101"));
+        String counselorToken = stage("login counselor T20260001", () -> login("T20260001"));
 
-        MvcResult draftResult = mockMvc.perform(post("/api/student/applications/drafts")
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + studentToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "orgUnitId": 2010,
-                                  "categoryCode": "INTELLECTUAL",
-                                  "itemCode": "INTELLECTUAL_PAPER",
-                                  "academicYear": "2025-2026",
-                                  "term": "上学期",
-                                  "title": "最小 HTTP 闭环论文申请",
-                                  "description": "通过 HTTP controller 和安全过滤器验证最小业务闭环",
-                                  "attachmentFileIds": ["FILE-0001"]
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value("OK"))
-                .andExpect(jsonPath("$.data.status").value("DRAFT"))
-                .andExpect(jsonPath("$.data.attachmentCount").value(1))
-                .andReturn();
+        MvcResult draftResult = stage("create student draft with seeded attachment", () ->
+                mockMvc.perform(post("/api/student/applications/drafts")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + studentToken)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("""
+                                        {
+                                          "orgUnitId": 2010,
+                                          "categoryCode": "INTELLECTUAL",
+                                          "itemCode": "INTELLECTUAL_PAPER",
+                                          "academicYear": "2025-2026",
+                                          "term": "上学期",
+                                          "title": "最小 HTTP 闭环论文申请",
+                                          "description": "通过 HTTP controller 和安全过滤器验证最小业务闭环",
+                                          "attachmentFileIds": ["FILE-0001"]
+                                        }
+                                        """))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.code").value("OK"))
+                        .andExpect(jsonPath("$.data.status").value("DRAFT"))
+                        .andExpect(jsonPath("$.data.attachmentCount").value(1))
+                        .andReturn()
+        );
         Long applicationId = readLong(draftResult, "$.data.applicationId");
         Long draftVersion = readLong(draftResult, "$.data.version");
 
-        MvcResult submittedResult = mockMvc.perform(post("/api/student/applications/{applicationId}/submit", applicationId)
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + studentToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "expectedVersion": %d,
-                                  "appliedPoints": 2.00,
-                                  "optionCode": "PAPER_CORE_FIRST_AUTHOR"
-                                }
-                                """.formatted(draftVersion)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("SUBMITTED"))
-                .andExpect(jsonPath("$.data.appliedPoints").value(2.00))
-                .andReturn();
+        MvcResult submittedResult = stage("submit student application", () ->
+                mockMvc.perform(post("/api/student/applications/{applicationId}/submit", applicationId)
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + studentToken)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("""
+                                        {
+                                          "expectedVersion": %d,
+                                          "appliedPoints": 2.00,
+                                          "optionCode": "PAPER_CORE_FIRST_AUTHOR"
+                                        }
+                                        """.formatted(draftVersion)))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.status").value("SUBMITTED"))
+                        .andExpect(jsonPath("$.data.appliedPoints").value(2.00))
+                        .andReturn()
+        );
         Long submittedVersion = readLong(submittedResult, "$.data.version");
 
-        mockMvc.perform(post("/api/review/applications/{applicationId}/approve", applicationId)
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + counselorToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "expectedVersion": %d,
-                                  "comment": "通过"
-                                }
-                                """.formatted(submittedVersion)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("APPROVED"))
-                .andExpect(jsonPath("$.data.reviewLogId").isNumber());
+        stage("approve application as counselor", () ->
+                mockMvc.perform(post("/api/review/applications/{applicationId}/approve", applicationId)
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + counselorToken)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("""
+                                        {
+                                          "expectedVersion": %d,
+                                          "comment": "通过"
+                                        }
+                                        """.formatted(submittedVersion)))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                        .andExpect(jsonPath("$.data.reviewLogId").isNumber())
+                        .andReturn()
+        );
 
-        MvcResult finalRecordResult = mockMvc.perform(post("/api/student/final-records/submit")
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + studentToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "academicYear": "2025-2026",
-                                  "expectedVersion": 0
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("SUBMITTED"))
-                .andExpect(jsonPath("$.data.grandTotal").value(2.00))
-                .andReturn();
+        MvcResult finalRecordResult = stage("submit final record as student", () ->
+                mockMvc.perform(post("/api/student/final-records/submit")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + studentToken)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("""
+                                        {
+                                          "academicYear": "2025-2026",
+                                          "expectedVersion": 0
+                                        }
+                                        """))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.status").value("SUBMITTED"))
+                        .andExpect(jsonPath("$.data.grandTotal").value(2.00))
+                        .andReturn()
+        );
         Long finalRecordId = readLong(finalRecordResult, "$.data.finalRecordId");
         Long finalRecordVersion = readLong(finalRecordResult, "$.data.version");
 
-        mockMvc.perform(post("/api/admin/final-records/{recordId}/confirm", finalRecordId)
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + counselorToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "expectedVersion": %d,
-                                  "comment": "确认无误"
-                                }
-                                """.formatted(finalRecordVersion)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("CONFIRMED"))
-                .andExpect(jsonPath("$.data.confirmComment").value("确认无误"));
+        stage("confirm final record as counselor", () ->
+                mockMvc.perform(post("/api/admin/final-records/{recordId}/confirm", finalRecordId)
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + counselorToken)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("""
+                                        {
+                                          "expectedVersion": %d,
+                                          "comment": "确认无误"
+                                        }
+                                        """.formatted(finalRecordVersion)))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.status").value("CONFIRMED"))
+                        .andExpect(jsonPath("$.data.confirmComment").value("确认无误"))
+                        .andReturn()
+        );
 
-        assertThat(applicationStatus(applicationId)).isEqualTo("APPROVED");
-        assertThat(countRows("application_fact", "application_id = " + applicationId)).isEqualTo(1);
-        assertThat(reviewLogCount(applicationId)).isEqualTo(1);
-        assertThat(finalRecordStatus(finalRecordId)).isEqualTo("CONFIRMED");
-        assertThat(componentSourceRef(finalRecordId)).isEqualTo(String.valueOf(applicationId));
-        assertThat(finalRecordGrandTotal(finalRecordId)).isEqualByComparingTo("2.00");
+        stage("verify persisted business loop state", () -> {
+            assertThat(applicationStatus(applicationId)).isEqualTo("APPROVED");
+            assertThat(countRows("application_fact", "application_id = " + applicationId)).isEqualTo(1);
+            assertThat(reviewLogCount(applicationId)).isEqualTo(1);
+            assertThat(finalRecordStatus(finalRecordId)).isEqualTo("CONFIRMED");
+            assertThat(componentSourceRef(finalRecordId)).isEqualTo(String.valueOf(applicationId));
+            assertThat(finalRecordGrandTotal(finalRecordId)).isEqualByComparingTo("2.00");
+            return null;
+        });
+    }
+
+    @Test
+    void shouldReportStageNameWhenHttpSmokeStageFails() {
+        IllegalStateException rootCause = new IllegalStateException("root failure");
+
+        AssertionError failure = assertThrows(AssertionError.class, () ->
+                stage("diagnostic probe", () -> {
+                    throw rootCause;
+                }));
+
+        assertThat(failure)
+                .hasMessage("HTTP smoke stage failed: diagnostic probe")
+                .hasCause(rootCause);
+    }
+
+    private <T> T stage(String stageName, StageAction<T> action) throws Exception {
+        try {
+            return action.execute();
+        } catch (AssertionError | Exception failure) {
+            throw new AssertionError("HTTP smoke stage failed: " + stageName, failure);
+        }
+    }
+
+    @FunctionalInterface
+    private interface StageAction<T> {
+        T execute() throws Exception;
     }
 
     private String login(String credential) throws Exception {
