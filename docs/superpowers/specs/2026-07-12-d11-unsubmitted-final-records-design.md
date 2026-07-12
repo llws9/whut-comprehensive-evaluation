@@ -105,7 +105,7 @@ The full `academicYear` normalization and validation rules live in section 8.1.
 - `grade` filters the active parent grade unit with exact equality: `grade_ou.unit_code = grade OR grade_ou.unit_name = grade`;
 - blank values are ignored.
 
-No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. The parameter name remains `classes`, not `className`, to match the team-delivery contract; despite the plural name, this D-11 increment accepts a single class filter value only. Comma-separated values such as `classes=a,b`, repeated query parameters such as `classes=a&classes=b`, and array-style inputs such as `classes[]=a` are rejected as invalid request parameters and return `400 / VAL-4001`. The `classes` request filter matches the same class organization whose name is returned as `className` in the response.
+No fuzzy match, prefix match, contains match, or case normalization is performed by application code. The database collation determines case sensitivity. `grade` and `classes` are single-value filters. Comma-separated values such as `grade=a,b` or `classes=a,b`, repeated query parameters such as `grade=a&grade=b`, and array-style inputs such as `classes[]=a` are rejected as invalid request parameters and return `400 / VAL-4001`. The parameter name remains `classes`, not `className`, to match the team-delivery contract. The `classes` request filter matches the same class organization whose name is returned as `className` in the response.
 
 If a filter value exactly matches one organization unit's `unit_code` and another organization unit's `unit_name`, both matching units are included because the filter uses OR semantics. If `grade` is provided, students whose selected class has no active parent grade row are excluded because there is no grade code/name to match. Without a `grade` filter, those students may still appear with `grade = null`.
 
@@ -431,6 +431,7 @@ Recommended ordering:
 ```sql
 ORDER BY CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
          grade_ou.unit_code ASC,
+         CASE WHEN class_ou.unit_code IS NULL THEN 1 ELSE 0 END ASC,
          class_ou.unit_code ASC,
          u.user_no ASC,
          u.id ASC
@@ -460,7 +461,7 @@ Validation:
 - validate the trimmed value with `^\\d{4}-\\d{4}$`, then parse both years as integers; any regex mismatch, integer parse failure, or non-consecutive year pair must be wrapped as `ValidationException`;
 - throw `ValidationException("academicYear 不合法")` when the trimmed value does not match `YYYY-YYYY` or the second year is not the first year plus 1;
 - normalize optional filters by trimming blank to `null`;
-- reject unsupported multi-value `classes` shapes with `ValidationException("classes 不合法")`;
+- reject comma-separated single-value filter content with `ValidationException("grade 不合法")` or `ValidationException("classes 不合法")`; repeated parameters and array-style parameter names are detected in the controller before query object construction;
 - normalize pagination like existing `FinalRecordPageQuery`.
 
 The exception messages remain Chinese to match the existing backend validation style and user-facing error responses.
@@ -533,7 +534,10 @@ public ApiResponse<PageResult<UnsubmittedStudentView>> pageUnsubmittedFinalRecor
         @RequestParam(required = false) String grade,
         @RequestParam(required = false) String classes,
         @RequestParam(defaultValue = "1") long pageNo,
-        @RequestParam(defaultValue = "20") long pageSize) {
+        @RequestParam(defaultValue = "20") long pageSize,
+        HttpServletRequest request) {
+    rejectUnsupportedSingleValueFilterShape(request, "grade");
+    rejectUnsupportedSingleValueFilterShape(request, "classes");
     return ApiResponse.success(queryApplicationService.pageUnsubmittedStudents(
             new UnsubmittedFinalRecordQuery(academicYear, grade, classes, pageNo, pageSize)
     ));
@@ -558,7 +562,7 @@ Route order must keep `/unsubmitted` from being captured by `/{recordId}`. In Sp
 
 The controller `defaultValue` settings only handle missing pagination parameters. All pagination normalization, including `pageNo <= 0` and `pageSize` capping, is centralized in `UnsubmittedFinalRecordQuery` so behavior stays aligned with `FinalRecordPageQuery`.
 
-Because `classes` rejects repeated and array-style inputs, the controller must inspect the raw request parameter values before constructing `UnsubmittedFinalRecordQuery`. Use `HttpServletRequest#getParameterValues("classes")`, `@RequestParam MultiValueMap<String, String>`, or an equivalent Spring mechanism to reject `classes` with more than one value and to reject `classes[]` as an unsupported parameter name. A single value containing a comma is rejected by `UnsubmittedFinalRecordQuery`.
+Because `grade` and `classes` reject repeated and array-style inputs, the controller must inspect raw request parameter names and values before constructing `UnsubmittedFinalRecordQuery`. `rejectUnsupportedSingleValueFilterShape(request, name)` must reject `request.getParameterValues(name).length > 1` and unsupported parameter names such as `name + "[]"` by throwing `ValidationException(name + " 不合法")`. A single value containing a comma is rejected by `UnsubmittedFinalRecordQuery`.
 
 Helper contracts:
 
@@ -572,7 +576,7 @@ Helper contracts:
 | missing `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
 | blank `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
 | malformed, unparsable, or non-consecutive `academicYear` | `400` | `VAL-4001` | `ValidationException` from query object |
-| unsupported multi-value `classes` input | `400` | `VAL-4001` | `ValidationException` from query object |
+| unsupported multi-value `grade` or `classes` input | `400` | `VAL-4001` | `ValidationException` from controller raw-parameter check or query object |
 | no `score.view.assigned` authority | `403` | `AUTH-4030` | `AccessDeniedAppException` or method security |
 | only unsupported scope fragments | `200` | - | empty page, not `403` |
 | valid request with no matches | `200` | - | empty page |
@@ -592,7 +596,7 @@ Add tests that prove:
 - `2025-2026` is accepted;
 - blank `grade` and `classes` normalize to `null`;
 - nonblank `grade` and `classes` are trimmed but not case-normalized;
-- comma-separated `classes` is rejected with `ValidationException`;
+- comma-separated `grade` and `classes` are rejected with `ValidationException`;
 - `pageNo <= 0` becomes `1`;
 - `pageSize <= 0` becomes `20`;
 - `pageSize = 100` remains `100`;
@@ -667,7 +671,8 @@ Add or extend admin final-record controller tests to prove:
 - `GET /api/admin/final-records/unsubmitted?academicYear=2025-2026` returns the page shape;
 - a draft `lastUpdatedAt` value is rendered as an ISO-8601 UTC JSON string, not a numeric timestamp;
 - a draft `lastUpdatedAt` value with fractional seconds preserves the serialized fractional precision instead of truncating to whole seconds;
-- repeated or comma-separated `classes` input returns `400 / VAL-4001`;
+- repeated, comma-separated, or array-style `grade` input returns `400 / VAL-4001`;
+- repeated, comma-separated, or array-style `classes` input returns `400 / VAL-4001`;
 - missing `academicYear` returns `400 / VAL-4001`;
 - blank `academicYear` returns `400 / VAL-4001`;
 - malformed, unparsable, or non-consecutive `academicYear` returns `400 / VAL-4001`;
