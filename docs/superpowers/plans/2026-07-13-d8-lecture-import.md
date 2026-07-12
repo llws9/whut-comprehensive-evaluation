@@ -1226,8 +1226,8 @@ private PreparedLectureRows prepareRows(List<LectureImportRow> rows) {
             failedRows.add(failed(row, "DUPLICATE_STUDENT", "同一讲座批次中学生重复"));
             continue;
         }
-        // Pads scale 0/1 values such as "1" and "1.5" to scale 2 without allowing rounding.
-        BigDecimal score = new BigDecimal(row.scoreValue().trim()).setScale(2, RoundingMode.UNNECESSARY);
+        // validateFields has already rejected scale > 2; this only pads values such as "1" and "1.5".
+        BigDecimal score = new BigDecimal(row.scoreValue().trim()).setScale(2, RoundingMode.HALF_UP);
         fieldValidRows.add(new FieldValidLectureRow(row, studentNo, row.scoreValue().trim(), score));
     }
 
@@ -1597,6 +1597,8 @@ int updateTotals(@Param("finalRecordId") Long finalRecordId,
                  @Param("updatedAt") LocalDateTime updatedAt);
 ```
 
+The `insertDraft` SQL must bind the `confirm_comment` column with `#{confirmComment}`. Do not write a literal `confirm_comment` token in the `VALUES` list.
+
 `findTarget(String studentNo, String academicYear)` keeps the `academicYear` argument to match the D-7 port shape and to make later historical-organization lookup changes binary-local to the infra adapter. Minimal D-8 intentionally does not use the argument in the SQL because the current schema has only current `org_membership` state.
 
 Create the row classes used by the mapper:
@@ -1647,16 +1649,190 @@ public class LectureScoreCategoryTotalRow {
 
 Create `MybatisLectureImportRepository`:
 
+```java
+package edu.whut.eval.infra.persistence.repository;
+
+import edu.whut.eval.application.finalrecord.importing.LectureImportRepository;
+import edu.whut.eval.application.finalrecord.importing.LectureImportStudentTarget;
+import edu.whut.eval.application.finalrecord.importing.LectureImportedComponent;
+import edu.whut.eval.common.exception.ConflictException;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportFailedRow;
+import edu.whut.eval.infra.persistence.dataobject.FinalRecordDO;
+import edu.whut.eval.infra.persistence.mapper.LectureImportMapper;
+import edu.whut.eval.infra.persistence.repository.row.LectureImportStudentTargetRow;
+import edu.whut.eval.infra.persistence.repository.row.LectureImportedComponentRow;
+import edu.whut.eval.infra.persistence.repository.row.LectureScoreCategoryTotalRow;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+@Repository
+public class MybatisLectureImportRepository implements LectureImportRepository {
+
+    private static final String CATEGORY_CODE = "INTELLECTUAL";
+    private static final String ITEM_CODE = "INTELLECTUAL_LECTURE";
+
+    private final LectureImportMapper mapper;
+
+    public MybatisLectureImportRepository(LectureImportMapper mapper) {
+        this.mapper = mapper;
+    }
+
+    @Override
+    public boolean lectureBatchExists(String academicYear, String lectureBatchId) {
+        return mapper.countLectureBatchComponents(academicYear, lectureBatchId) > 0;
+    }
+
+    @Override
+    public Optional<LectureImportStudentTarget> findTarget(String studentNo, String academicYear) {
+        return Optional.ofNullable(mapper.selectTarget(studentNo))
+                .map(this::toTarget);
+    }
+
+    @Override
+    public Optional<String> findActiveOrgPath(Long orgUnitId) {
+        return Optional.ofNullable(mapper.selectActiveOrgPath(orgUnitId));
+    }
+
+    @Override
+    @Transactional
+    public List<LectureImportFailedRow> insertLectureComponents(String academicYear,
+                                                                String lectureBatchId,
+                                                                List<LectureImportedComponent> components) {
+        List<LectureImportFailedRow> failures = new ArrayList<>();
+        for (LectureImportedComponent component : components) {
+            FinalRecordDO record = mapper.selectFinalRecordForUpdate(component.studentUserId(), academicYear);
+            if (record == null) {
+                record = insertOrReloadDraft(academicYear, component);
+            }
+            if (!"DRAFT".equals(record.getStatus())) {
+                failures.add(lockedFailure(component));
+                continue;
+            }
+
+            LocalDateTime now = LocalDateTime.now();
+            mapper.insertLectureComponent(toComponentRow(record.getId(), lectureBatchId, component, now));
+            updateTotals(record.getId(), now);
+        }
+        return List.copyOf(failures);
+    }
+
+    private LectureImportStudentTarget toTarget(LectureImportStudentTargetRow row) {
+        return new LectureImportStudentTarget(
+                row.getStudentUserId(),
+                row.getStudentNo(),
+                row.getOrgUnitId(),
+                row.getOrgPath()
+        );
+    }
+
+    private FinalRecordDO insertOrReloadDraft(String academicYear, LectureImportedComponent component) {
+        FinalRecordDO record = newDraftRecord(academicYear, component.studentUserId());
+        try {
+            mapper.insertDraft(record);
+            return record;
+        } catch (DataIntegrityViolationException exception) {
+            FinalRecordDO concurrentRecord = mapper.selectFinalRecordForUpdate(component.studentUserId(), academicYear);
+            if (concurrentRecord == null) {
+                throw new ConflictException("最终成绩保存后读取失败");
+            }
+            return concurrentRecord;
+        }
+    }
+
+    private FinalRecordDO newDraftRecord(String academicYear, Long studentUserId) {
+        LocalDateTime now = LocalDateTime.now();
+        FinalRecordDO record = new FinalRecordDO();
+        record.setStudentUserId(studentUserId);
+        record.setAcademicYear(academicYear);
+        record.setStatus("DRAFT");
+        record.setMoralTotal(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+        record.setIntellectualTotal(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+        record.setPhysicalTotal(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+        record.setLaborTotal(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+        record.setGrandTotal(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+        record.setSubmittedAt(null);
+        record.setConfirmedAt(null);
+        record.setConfirmComment(null);
+        record.setVersion(0L);
+        record.setCreatedAt(now);
+        record.setUpdatedAt(now);
+        return record;
+    }
+
+    private LectureImportedComponentRow toComponentRow(Long finalRecordId,
+                                                       String lectureBatchId,
+                                                       LectureImportedComponent component,
+                                                       LocalDateTime now) {
+        LectureImportedComponentRow row = new LectureImportedComponentRow();
+        row.setFinalRecordId(finalRecordId);
+        row.setCategoryCode(CATEGORY_CODE);
+        row.setItemCode(ITEM_CODE);
+        row.setScoreValue(component.scoreValue().setScale(2, RoundingMode.HALF_UP));
+        row.setDisplayText(component.displayText());
+        row.setSourceRefId(lectureBatchId);
+        row.setCreatedAt(now);
+        return row;
+    }
+
+    private LectureImportFailedRow lockedFailure(LectureImportedComponent component) {
+        Map<String, String> rawValue = new LinkedHashMap<>();
+        rawValue.put("studentNo", String.valueOf(component.studentUserId()));
+        rawValue.put("scoreValue", component.scoreValueText());
+        rawValue.put("displayText", component.displayText());
+        return new LectureImportFailedRow(
+                component.rowNo(),
+                "FINAL_RECORD_LOCKED",
+                "已提交或已确认的最终成绩不允许导入覆盖",
+                rawValue
+        );
+    }
+
+    private void updateTotals(Long finalRecordId, LocalDateTime updatedAt) {
+        BigDecimal moral = BigDecimal.ZERO;
+        BigDecimal intellectual = BigDecimal.ZERO;
+        BigDecimal physical = BigDecimal.ZERO;
+        BigDecimal labor = BigDecimal.ZERO;
+
+        for (LectureScoreCategoryTotalRow total : mapper.selectTotals(finalRecordId)) {
+            BigDecimal value = scale(total.getScoreValue());
+            switch (total.getCategoryCode()) {
+                case "MORAL" -> moral = value;
+                case "INTELLECTUAL" -> intellectual = value;
+                case "SPORTS" -> physical = value;
+                case "LABOR" -> labor = value;
+                default -> throw new ConflictException("unsupported final record category: " + total.getCategoryCode());
+            }
+        }
+
+        BigDecimal grand = scale(moral.add(intellectual).add(physical).add(labor));
+        int updated = mapper.updateTotals(finalRecordId, scale(moral), scale(intellectual), scale(physical), scale(labor), grand, updatedAt);
+        if (updated == 0) {
+            throw new ConflictException("最终成绩状态已变更，请刷新后重试");
+        }
+    }
+
+    private BigDecimal scale(BigDecimal value) {
+        return (value == null ? BigDecimal.ZERO : value).setScale(2, RoundingMode.HALF_UP);
+    }
+}
+```
+
+Notes for this implementation:
+
 - `findTarget` maps `LectureImportStudentTargetRow`.
 - `lectureBatchExists` returns `count > 0`.
-- `insertLectureComponents` returns `List<LectureImportFailedRow>` and loops over sorted components. For each component:
-  - locks `final_record`;
-  - inserts a new DRAFT final record if missing;
-  - catches `DataIntegrityViolationException` from the `final_record` unique key race, then immediately reruns `selectFinalRecordForUpdate(studentUserId, academicYear)` once to load the concurrently inserted record; if the reload still returns null, throw `ConflictException("最终成绩保存后读取失败")`;
-  - if locked record status is not `DRAFT`, add `LectureImportFailedRow` with `FINAL_RECORD_LOCKED` and continue; this is a row-level business failure and does not roll back previously inserted DRAFT rows;
-  - insert a new `final_component_score` with `category_code='INTELLECTUAL'`, `item_code='INTELLECTUAL_LECTURE'`, `source_type='IMPORT'`, `source_ref_id=lectureBatchId`;
-  - immediately recalculate totals for that `final_record_id` from all current components while the row is still locked;
-  - persist each total and `grand_total` with scale 2 using `RoundingMode.HALF_UP`, and increment `version` through `updateTotals`.
+- `insertLectureComponents` returns `List<LectureImportFailedRow>` and loops over already sorted components. For each component, it locks `final_record`, inserts or reloads a DRAFT row if missing, records `FINAL_RECORD_LOCKED` as a row-level failure for non-DRAFT records, inserts a new lecture component, and immediately recalculates totals while the row is still locked.
+- The locked-row failure raw value uses `String.valueOf(component.studentUserId())` for `studentNo` because the D-8 `LectureImportedComponent` port intentionally carries the resolved user id, score text, and display text only. Keep this unless Task 1 expands the port to carry the original `studentNo`.
 - Recalculate and update totals after every successful lecture component insertion, not once per distinct `final_record_id`. This preserves the frozen D-8 contract that `final_record.version` increments for every successful row mutation, including multiple successful lecture rows for the same student in one repository call.
 - If any `updateTotals` returns 0 after a DRAFT lock and component insert, throw `ConflictException("最终成绩状态已变更，请刷新后重试")` so the outer transaction rolls back. This path is a persistence consistency failure, not a row-level validation failure, so it must not be represented in the returned failure list.
 - A partial-success batch is intentionally not idempotent in Minimal D-8: if any component already exists for `lectureBatchId`, `lectureBatchExists` makes a later same-batch request return 409. Operators must change `title` or `heldAt` to create a new deterministic batch id for a retry; D-8 does not add batch deletion or patch-retry semantics.
