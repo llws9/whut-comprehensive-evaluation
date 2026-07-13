@@ -48,6 +48,7 @@ Create:
 - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/PoiFinalScoreExportWorkbookWriterTest.java`
 - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalScoreExportControllerWebMvcTest.java`
 - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminFinalScoreExportControllerSecurityAnnotationTest.java`
+- `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalScoreExportHttpIntegrationTest.java`
 - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalScoreExportApplicationContextSmokeTest.java`
 
 Modify:
@@ -363,6 +364,14 @@ Import `FinalScoreExportQuery` and `FinalScoreExportRow`.
 - `FinalRecordQueryRepository`
 - `FinalScoreExportWorkbookWriter`
 
+Annotate `FinalScoreExportApplicationService` with `@Service`.
+
+Public method signature:
+
+```java
+public FinalScoreExportFile export(FinalScoreExportQuery query)
+```
+
 Define the synchronous row cap as one public service-owned constant and use it everywhere in the application-service implementation:
 
 ```java
@@ -418,7 +427,7 @@ Create `PoiFinalScoreExportWorkbookWriterTest` that opens the returned bytes wit
 - filename is `final-scores-2025-2026.xlsx`;
 - one sheet named `final-scores`;
 - first row is frozen;
-- header row exactly matches A-P;
+- header row exactly matches these A-P literal values: `最终成绩ID`, `学年`, `学号`, `姓名`, `年级编码`, `年级`, `班级编码`, `班级`, `状态`, `德育总分`, `智育总分`, `体育总分`, `劳育总分`, `总分`, `提交时间`, `确认时间`;
 - data region row count equals input size;
 - A-P values and cell types for two representative rows, including a row with null grade/class/timestamps and null totals;
 - `finalRecordId` is a string cell;
@@ -543,9 +552,11 @@ Provider requirements:
 
 - base `final_record fr`;
 - `INNER JOIN iam_user u ON u.id = fr.student_user_id`;
-- `LEFT OUTER JOIN org_membership om` with the smallest active primary membership id per user;
-- `LEFT OUTER JOIN org_unit class_ou` with `unit_type = 'CLASS' AND status = 'ACTIVE'`;
-- `LEFT OUTER JOIN org_unit grade_ou` with `unit_type = 'GRADE' AND status = 'ACTIVE'`;
+- `LEFT OUTER JOIN org_membership om ON om.user_id = fr.student_user_id AND om.status = 'ACTIVE' AND om.is_primary = 1 AND om.id = (SELECT MIN(om2.id) FROM org_membership om2 WHERE om2.user_id = fr.student_user_id AND om2.status = 'ACTIVE' AND om2.is_primary = 1)`;
+- `LEFT OUTER JOIN org_unit class_ou ON class_ou.id = om.org_unit_id AND class_ou.unit_type = 'CLASS' AND class_ou.status = 'ACTIVE'`;
+- `LEFT OUTER JOIN org_unit grade_ou ON grade_ou.id = class_ou.parent_id AND grade_ou.unit_type = 'GRADE' AND grade_ou.status = 'ACTIVE'`;
+- keep all join-key, `status`, `is_primary`, and `unit_type` predicates above inside the `LEFT OUTER JOIN ... ON` clauses. Do not move them into `WHERE`, because rows with no derived class must remain available to `ALL` scope when no grade/classes filters are present;
+- repository integration data must include at least two potentially confusable organization branches, for example two active `GRADE` rows and two active `CLASS` rows with overlapping names/codes in different branches, so an incorrect join key such as joining `grade_ou` by path text or joining `class_ou` without `class_ou.id = om.org_unit_id` fails deterministically;
 - replace only the final-record scope aliases emitted by `FinalRecordScopePredicateBuilder`: `applicant_user_id` -> `fr.student_user_id`, `org_unit_id` -> `class_ou.id`, and `org_path` -> `class_ou.path`;
 - do not replace `category_code`, `item_code`, or unrelated aliases with `fr.status` for D-10 export. The final-record scope builder emits only `ORG_UNIT`/`ORG_SUBTREE` clauses for this resource; unsupported or empty predicates must continue through the existing deny/empty-result semantics from `SqlPredicateFragment.denyAll()` / `1 = 0`;
 - implement case-sensitive grade/class predicates with explicit helpers in `FinalRecordQuerySqlProvider`:
@@ -623,7 +634,7 @@ Use `@WebMvcTest(controllers = AdminFinalScoreExportController.class)` and mock 
 - unknown query parameter is ignored;
 - service `ResourceNotFoundException("无匹配导出数据")` maps to `404 / RES-4040`;
 - service `FinalScoreExportGenerationException("Excel 生成失败")` maps to `503 / EXT-5033`;
-- unauthenticated request is rejected with filters enabled without freezing a new response body;
+- unauthenticated request is rejected by the existing Spring Security filter chain; D-10 must not introduce a new 401/403 response contract beyond the global security layer behavior;
 - authenticated user without `SCORE_EXPORT_ASSIGNED` receives `403`.
 
 - [ ] **Step 3: Run failing controller tests**
@@ -748,7 +759,54 @@ git add docs/team-delivery/group-d-score-finalization-import-export.safe-init.sq
 git commit -m "feat: seed final score export scopes"
 ```
 
-### Task 7: Wiring Smoke And Focused Verification
+### Task 7: HTTP Export Integration
+
+**Files:**
+
+- Create: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalScoreExportHttpIntegrationTest.java`
+
+- [ ] **Step 1: Write failing full-chain HTTP integration test**
+
+Create a Spring integration test that uses the real production beans for controller, application service, repository, SQL provider, and workbook writer with an H2 MySQL-mode database. Use `MockMvc` against `GET /api/admin/exports/final-scores`, then open the response bytes with `XSSFWorkbook`.
+
+Minimum assertions:
+
+- request `academicYear=2025-2026&classes=CS2201` with an authenticated admin authority `score.export.assigned`;
+- the test authorization context has an active export `ALL` or matching `ORG_SUBTREE` scope rule;
+- seeded H2 rows include one matching `SUBMITTED` final record and one non-matching row filtered by class or year;
+- HTTP status is `200`;
+- `Content-Type` is xlsx;
+- `Content-Disposition` is an attachment filename ending in `final-scores-2025-2026.xlsx`;
+- workbook sheet `final-scores` exists;
+- header row contains the frozen A-P literal labels;
+- first data row contains the expected final record id, academic year, student number, student name, class code, status, and total cells from the seeded database.
+
+The test may disable servlet security filters only if it supplies `UserAuthorizationContextAssembler` through the same production-facing security-context adapter path used by existing integration tests; it must not mock `FinalScoreExportApplicationService`, `FinalRecordQueryRepository`, or `FinalScoreExportWorkbookWriter`.
+
+- [ ] **Step 2: Run failing full-chain integration test**
+
+Run:
+
+```bash
+mvn -pl whut-eval-app,whut-eval-interfaces -am -Dtest=FinalScoreExportHttpIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Expected: fails until the controller, service, repository SQL, safe-init-related test schema, and workbook writer are all implemented and wired.
+
+- [ ] **Step 3: Make the integration test pass without test-only production substitutions**
+
+If the full-chain test fails because a production bean is missing, fix production `src/main` wiring as described in Task 8. If it fails because seed/test schema data is incomplete, add only the minimum H2 setup needed by this test. Do not mock the service/repository/writer to make this test pass.
+
+- [ ] **Step 4: Commit HTTP integration test**
+
+```bash
+git add whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalScoreExportHttpIntegrationTest.java
+git commit -m "test: cover final score export http integration"
+```
+
+If Step 3 required a production wiring change, include only that production file in this commit.
+
+### Task 8: Wiring Smoke And Focused Verification
 
 **Files:**
 
@@ -782,7 +840,7 @@ If the POI writer or controller is not discovered, fix only production `src/main
 Run:
 
 ```bash
-mvn -pl whut-eval-app,whut-eval-interfaces -am -Dtest=FinalScoreExport*Test,*FinalScoreExportWorkbookWriterTest,AdminFinalScoreExportControllerWebMvcTest,AdminFinalScoreExportControllerSecurityAnnotationTest,FinalRecordControllerSecurityAnnotationTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,TeamDeliverySqlConsistencyTest,GroupAIdentitySqlSeedConsistencyTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app,whut-eval-interfaces -am -Dtest=FinalScoreExportQueryTest,FinalScoreExportApplicationServiceTest,PoiFinalScoreExportWorkbookWriterTest,FinalScoreExportHttpIntegrationTest,FinalScoreExportApplicationContextSmokeTest,AdminFinalScoreExportControllerWebMvcTest,AdminFinalScoreExportControllerSecurityAnnotationTest,FinalRecordControllerSecurityAnnotationTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,TeamDeliverySqlConsistencyTest,GroupAIdentitySqlSeedConsistencyTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: all focused D-10 tests pass and output includes `AdminFinalScoreExportControllerWebMvcTest` plus `AdminFinalScoreExportControllerSecurityAnnotationTest`.
@@ -809,7 +867,7 @@ If Step 3 required a real wiring change, add only the production configuration f
 
 ## Self-Review Checklist
 
-- Spec coverage: Tasks 1-7 cover query normalization, raw HTTP shape validation, export authorization, repository filtering/scope/order/limit, workbook A-P mapping, safe-init rules, and verification commands.
+- Spec coverage: Tasks 1-8 cover query normalization, raw HTTP shape validation, export authorization, repository filtering/scope/order/limit, workbook A-P mapping, safe-init rules, full-chain HTTP-to-xlsx integration, and verification commands.
 - Type consistency: repository method uses `FinalRecordAccessContext`, `FinalScoreExportQuery`, `FinalScoreExportRow`, and `int limit` consistently across application, infra repository, mapper, and tests.
 - TDD order: every implementation task starts with a failing test and a targeted Maven command.
 - Placeholder scan: this plan contains no `TBD`, no open implementation choices, and no "write tests for the above" placeholder steps.
