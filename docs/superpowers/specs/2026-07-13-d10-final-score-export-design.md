@@ -106,6 +106,7 @@ No-data semantics:
 - D-10 returns `404 / RES-4040` when all filters and scopes are applied and the resulting export row list is empty.
 - D-10 does not return an empty workbook.
 - If an authorized caller has only unsupported scope rules for `score.export.assigned`, the repository returns no rows and the service returns `404 / RES-4040`, matching the D-5 unsupported-scope empty-result behavior.
+- If an authorized caller has no active scope rules for `score.export.assigned`, the behavior is the same empty-result authorization path: the repository returns no rows and the service returns `404 / RES-4040`.
 
 ## Authorization and Scope
 
@@ -124,16 +125,19 @@ The repository must:
 - Filter `fr.academic_year = query.academicYear`.
 - Export only `fr.status IN ('SUBMITTED', 'CONFIRMED')` when `status` is absent. If `status` is present, additionally filter to that single status. `DRAFT` must not be exported in either branch.
 - Use the student's active primary membership only: `org_membership.status = 'ACTIVE' AND is_primary = 1`.
-- Preserve visible final records that have no active primary class membership when no grade/class filter is present. The export SQL must use `LEFT OUTER JOIN` from `final_record` to `org_membership`, `class_ou`, and `grade_ou`, and place `ACTIVE`, `is_primary`, and `unit_type` predicates inside the join conditions rather than in the `WHERE` clause.
+- Use `LEFT OUTER JOIN` from `final_record` to `org_membership`, `class_ou`, and `grade_ou`, and place `ACTIVE`, `is_primary`, and `unit_type` predicates inside the join conditions rather than in the `WHERE` clause.
+- Preserve final records that have no active primary class membership only for callers whose `score.export.assigned` scope resolves to `ALL`, and only when no grade/class filter is present. Organization-scoped callers (`ORG_UNIT` or `ORG_SUBTREE`) must not see no-membership rows because the translated scope predicate compares `org_path`/`org_unit_id` against `class_ou.path`/`class_ou.id`, which are `NULL` for those rows and therefore do not match.
 - Apply grade/class predicates only when the corresponding filter is present.
+- When `grade` is present, append `(grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})`.
+- When normalized `classes` is non-empty, append `(class_ou.unit_code IN (...) OR class_ou.unit_name IN (...))` using safe MyBatis/provider parameters for every token. If normalized `classes` is empty, append no class predicate.
 
 D safe-init must add scope rules for default export accounts:
 
-| Reserved id | Assignment | Permission | Scope | Org |
-|---:|---:|---|---|---:|
-| `8023` | `7010` counselor | `score.export.assigned` | `ORG_SUBTREE` | `2002` |
-| `8024` | `7011` college reviewer | `score.export.assigned` | `ORG_SUBTREE` | `2002` |
-| `8025` | `7012` platform admin | `score.export.assigned` | `ALL` | `NULL` |
+| Reserved id | Assignment | Permission | Scope | Org | Expression JSON | Priority | Status | Created at |
+|---:|---:|---|---|---:|---|---:|---|---|
+| `8023` | `7010` counselor | `score.export.assigned` | `ORG_SUBTREE` | `2002` | `{"scoreRole":"counselor"}` | `80` | `ACTIVE` | `CURRENT_TIMESTAMP()` |
+| `8024` | `7011` college reviewer | `score.export.assigned` | `ORG_SUBTREE` | `2002` | `{"scoreRole":"college_reviewer"}` | `70` | `ACTIVE` | `CURRENT_TIMESTAMP()` |
+| `8025` | `7012` platform admin | `score.export.assigned` | `ALL` | `NULL` | `{"superAdmin":true}` | `1000` | `ACTIVE` | `CURRENT_TIMESTAMP()` |
 
 The collision guard must fail deterministically if any reserved id is already occupied by an unrelated row. The inserts must include every non-null IAM column required by the documented A schema, including `created_at`.
 
@@ -239,7 +243,7 @@ Numeric totals are written as numeric cells using `BigDecimal.setScale(2).double
 
 New application classes:
 
-- `FinalScoreExportQuery`: validates and normalizes query parameters.
+- `FinalScoreExportQuery`: validates and normalizes export filters. Fields are `String academicYear` (required, normalized), `String status` (nullable; absent means `SUBMITTED` plus `CONFIRMED`), `String grade` (nullable), and immutable `List<String> classes` (never null; empty means absent). It must not contain `pageNo` or `pageSize`.
 - `FinalScoreExportRow`: row view consumed by the workbook writer.
 - `FinalScoreExportFile`: immutable filename, content type, and byte array.
 - `FinalScoreExportWorkbookWriter`: application port with method `FinalScoreExportFile write(String academicYear, List<FinalScoreExportRow> rows)`.
@@ -261,7 +265,8 @@ Interface:
 
 - Add `AdminFinalScoreExportController` under `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin`.
 - Return `ResponseEntity<byte[]>` with explicit headers by calling `FinalScoreExportApplicationService`, receiving `FinalScoreExportFile`, and copying its `filename`, `contentType`, and `content` into the response.
-- Convert `classes` query params from `List<String>` to the application query; splitting and trimming can live in `FinalScoreExportQuery` so MVC and service tests share behavior.
+- Reject `pageNo` and `pageSize` in the controller by binding them as optional raw request parameters or inspecting the request parameter map before service execution. `FinalScoreExportQuery` must not own this validation.
+- Convert `classes` query params from `List<String>` to the application query; splitting and trimming live in `FinalScoreExportQuery` so MVC and service tests share behavior.
 
 Configuration:
 
@@ -270,16 +275,15 @@ Configuration:
 
 ## Validation
 
-`FinalScoreExportQuery` owns parameter validation:
+`FinalScoreExportQuery` owns filter validation:
 
 - `academicYear` is required and must match `^\d{4}-\d{4}$`.
 - The academic-year end must equal start + 1.
 - `status` is optional and must be `SUBMITTED` or `CONFIRMED` after trimming.
 - `grade` is optional. Blank becomes `null`.
-- `classes` is optional. Each raw value may contain comma-separated tokens. Trim tokens, drop blanks, de-duplicate preserving encounter order, and store an immutable list. An empty normalized list is equivalent to an absent `classes` parameter.
-- `pageNo` and `pageSize` are rejected if present, because the export endpoint is unpaged.
+- `classes` is optional. Normalize by iterating raw repeated parameters in request encounter order, splitting each raw value by comma, trimming every token, dropping blanks, and de-duplicating by first appearance. For example, `classes=A,B&classes=B,C` normalizes to `[A, B, C]`. Store the result as an immutable list. An empty normalized list is equivalent to an absent `classes` parameter.
 
-The controller must bind `pageNo` and `pageSize` as optional raw request parameters or otherwise inspect the request parameter map, so their presence can be rejected before service execution.
+`pageNo` and `pageSize` are not `FinalScoreExportQuery` fields. The controller rejects their presence with `400 / VAL-4001` because the export endpoint is unpaged.
 
 ## Error Mapping
 
@@ -297,8 +301,10 @@ The application service must catch only workbook generation failures from the wr
 
 Spec-phase acceptance tests for the implementation plan:
 
-- Query normalization rejects missing/invalid `academicYear`, rejects `DRAFT`, rejects present `pageNo/pageSize`, normalizes repeated `classes=CS2201&classes=CS2202` and comma-separated `classes=CS2201,CS2202`, drops blank class tokens, and treats an empty normalized class list as no class filter.
+- Query normalization rejects missing/invalid `academicYear`, rejects `DRAFT`, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance, and treats an empty normalized class list as no class filter.
+- Controller rejects present `pageNo/pageSize` with `400 / VAL-4001` before service execution.
 - Controller security annotation requires `SCORE_EXPORT_ASSIGNED`.
+- `AdminFinalScoreExportControllerWebMvcTest` covers unauthenticated/unauthorized export requests returning `403`, proving the new D-10 controller is protected by `SCORE_EXPORT_ASSIGNED`.
 - Controller returns xlsx content type, attachment filename, and workbook bytes for a successful export.
 - Controller returns `404 / RES-4040` when the service reports no matching data.
 - Workbook writer creates the exact header row, writes numeric total cells, writes timestamp text using `Instant.toString()`, and emits no formulas.
@@ -309,18 +315,21 @@ Spec-phase acceptance tests for the implementation plan:
 - Repository export query applies status, grade, class, and scope filters together.
 - Repository defaults absent `status` to `SUBMITTED` plus `CONFIRMED`, and verifies `DRAFT` rows are excluded from exports even when matching academic year and scope.
 - Repository keeps records with no primary membership exportable to ALL scope when no grade/class filter is present, with blank grade/class fields.
+- Repository excludes no-primary-membership records for ORG_UNIT and ORG_SUBTREE callers because `class_ou.id`/`class_ou.path` are `NULL` and cannot satisfy organization predicates.
 - Repository excludes no-membership records when grade or class filters are present.
 - Repository covers ambiguous `grade` values that match one grade code and another grade name, proving both matching grade rows are included.
 - Repository verifies portable null ordering for both `gradeCode` and `classCode`.
-- Repository returns an empty list for unsupported-scope-only callers.
-- D safe-init consistency tests verify `score.export.assigned` scope rules `8023`, `8024`, and `8025`, deterministic collision guards, rerunnable inserts, and the complete `iam_scope_rule` column contract including required non-null `id`, `assignment_id`, `permission_code`, `scope_type`, `priority`, `status`, and `created_at`.
+- Repository returns an empty list for unsupported-scope-only callers and callers with no active `score.export.assigned` scope rules.
+- D safe-init consistency tests verify `score.export.assigned` scope rules `8023`, `8024`, and `8025`, deterministic collision guards, rerunnable inserts, and the complete `iam_scope_rule` column contract including required non-null `id`, `assignment_id`, `permission_code`, `scope_type`, `priority`, `status`, and `created_at`. The tests must assert the exact priority/status/expression values from the safe-init table above.
 - Spring context smoke test verifies `FinalScoreExportApplicationService` and the POI writer are wired.
 
 Focused implementation verification should include at least:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=FinalScoreExport*Test,AdminFinalScoreExportControllerWebMvcTest,FinalRecordControllerSecurityAnnotationTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,TeamDeliverySqlConsistencyTest,GroupAIdentitySqlSeedConsistencyTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=FinalScoreExport*Test,AdminFinalScoreExportControllerWebMvcTest,AdminFinalScoreExportControllerSecurityAnnotationTest,FinalRecordControllerSecurityAnnotationTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,TeamDeliverySqlConsistencyTest,GroupAIdentitySqlSeedConsistencyTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
+
+`FinalRecordControllerSecurityAnnotationTest` remains in the focused command because D-10 extends the shared final-record query repository path; this guards the existing D-5/D-6/D-12 controller annotations while D-10 adds export-specific security tests.
 
 Before merge, also run the D-7/D-8/D-9 import regression command used for D-9 plus D-10 export tests, because D-10 will touch shared final-record query repository code.
 
