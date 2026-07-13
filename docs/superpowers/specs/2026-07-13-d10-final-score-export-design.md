@@ -143,7 +143,7 @@ D safe-init must add scope rules for default export accounts:
 | `8025` | `7012` platform admin | `score.export.assigned` | `ALL` | `NULL` | `NULL` | `NULL` | `{"superAdmin":true}` | `1000` | `ACTIVE` | `CURRENT_TIMESTAMP()` |
 
 The collision guard must fail deterministically if any reserved id is already occupied by an unrelated row. The inserts must include every non-null IAM column required by the documented A schema, including `created_at`.
-Deterministic failure means the SQL script must raise a database error, not only log or return a warning. Use the existing guard-table pattern or an equivalent H2/MySQL-portable duplicate-primary-key insert so application/database initialization aborts with a `SQLException`/duplicate-key style failure before any D-10 export scope rows are inserted.
+Deterministic failure means the SQL script must raise a database error, not only log or return a warning. Use the existing temporary guard-table pattern: seed one guard row, then insert the same guard primary key only when a reserved id is occupied by an unrelated row. Re-running the script after successful D-10 inserts must not trip the guard because the existing rows match the expected natural keys and column values. Application/database initialization must abort with a `SQLException`/duplicate-key style failure before any D-10 export scope rows are inserted when a real collision exists.
 The priority values intentionally mirror existing A seed conventions; larger priority numbers sort later in the current evaluator but D-10 scope rows are additive OR clauses, so the values are for consistency and auditability rather than conflict resolution.
 
 For `iam_scope_rule`, the safe-init insert statements must use the documented column list exactly:
@@ -244,7 +244,7 @@ Columns are frozen in this exact order:
 
 Timestamp cells use UTC `Instant` text truncated to seconds, for example `2026-07-07T12:00:00Z`. If a source value has milliseconds or nanoseconds, truncate rather than round before calling `Instant.toString()`. This avoids server-timezone drift and sub-second test flakiness.
 
-Numeric totals are written as numeric cells using `BigDecimal.setScale(2).doubleValue()` and a `0.00` cell style. D-owned totals are persisted as `DECIMAL(10,2) NOT NULL`, so repository rows should never contain null totals. The workbook writer must still be null-safe: if a row model contains a null total, write a blank cell rather than `0` or throwing `NullPointerException`. The exported workbook does not contain calculated formulas; persisted totals are the source of truth.
+Numeric totals are written as numeric cells using `BigDecimal.setScale(2, RoundingMode.HALF_UP).doubleValue()` and a `0.00` cell style. D-owned totals are persisted as `DECIMAL(10,2) NOT NULL`, so repository rows should never contain null totals. The workbook writer must still be null-safe: if a row model contains a null total, write a blank cell rather than `0` or throwing `NullPointerException`. The exported workbook does not contain calculated formulas; persisted totals are the source of truth.
 
 Operational capacity assumption:
 
@@ -295,6 +295,7 @@ Configuration:
 - `status` is optional. Trim first; blank becomes `null`/absent. If non-blank, it must be `SUBMITTED` or `CONFIRMED`.
 - `grade` is optional. Blank becomes `null`.
 - `classes` is optional. Normalize by iterating raw repeated parameters in request encounter order, splitting each raw value by comma, trimming every token, dropping blanks, and de-duplicating by first appearance. For example, `classes=A,B&classes=B,C` normalizes to `[A, B, C]`. Store the result as an immutable list. An empty normalized list is equivalent to an absent `classes` parameter.
+- If the request contains `classes` but every token is blank, the normalized list is empty and the request behaves exactly as if `classes` were absent. This is not a `400` and does not force a no-data `404`.
 - `pageNo` and `pageSize` are optional raw presence markers. If either is present, even blank, throw `ValidationException("导出接口不支持分页参数")`.
 
 The controller converts HTTP parameters into `FinalScoreExportQuery` and lets the query object reject `pageNo/pageSize`, so direct service tests and controller tests share the same pagination-parameter behavior.
@@ -315,19 +316,20 @@ The application service must catch only workbook generation failures from the wr
 
 Spec-phase acceptance tests for the implementation plan:
 
-- Query normalization trims `academicYear`, rejects missing/invalid `academicYear`, treats blank `status` as absent, rejects `DRAFT`, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance, and treats an empty normalized class list as no class filter.
+- Query normalization trims `academicYear`, rejects missing/invalid `academicYear`, treats blank `status` as absent, rejects lowercase/non-exact `status` values and `DRAFT`, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance, and treats `classes=,,` or `classes=&classes= ` as an absent class filter.
 - Query normalization rejects present `pageNo/pageSize` with `ValidationException`, and controller/WebMvc tests verify the HTTP response is `400 / VAL-4001`.
 - Controller security annotation requires `SCORE_EXPORT_ASSIGNED`.
 - `AdminFinalScoreExportControllerWebMvcTest` proves unauthenticated requests are rejected by the existing security filter chain without freezing a new D-10-specific 401/403 contract.
 - `AdminFinalScoreExportControllerWebMvcTest` covers authenticated users without `SCORE_EXPORT_ASSIGNED` returning `403`, proving the new D-10 controller is protected by the export authority.
 - Controller returns xlsx content type, attachment filename, and workbook bytes for a successful export.
 - Controller returns `404 / RES-4040` when the service reports no matching data.
-- Workbook writer creates exactly one worksheet named `final-scores`, freezes the first row, creates the exact header row, writes numeric total cells, writes blank cells for unexpected null totals, writes UTC timestamp text truncated to seconds, emits no formulas, and applies readable column widths or autosizing.
+- Workbook writer creates exactly one worksheet named `final-scores`, freezes the first row, creates the exact header row, writes numeric total cells with `RoundingMode.HALF_UP`, writes blank cells for unexpected null totals, writes UTC timestamp text truncated to seconds, emits no formulas, and applies readable column widths or autosizing.
 - Application service uses `score.export.assigned`, not `score.view.assigned`, when building the access context.
 - Application service returns `FinalScoreExportFile`, and controller copies its filename, content type, and bytes into the response.
 - Application service wraps workbook writer failures as `FinalScoreExportGenerationException`; controller/WebMvc or global exception tests verify the public response remains `503 / EXT-5033`.
 - Application service returns `RES-4040` for an empty authorized row list.
 - Application service returns `RES-4040` when unknown `grade` or unknown `classes` values produce an empty authorized row list.
+- Application service and workbook writer preserve repository row order in the generated workbook, including rows whose `gradeCode` or `classCode` sort last because of portable `NULLS LAST` ordering.
 - Repository export query applies status, grade, class, and scope filters together.
 - Repository uses the explicit `org_membership` -> `class_ou` -> `grade_ou` join path above, including `class_ou.parent_id` for grade lookup.
 - Repository defaults absent `status` to `SUBMITTED` plus `CONFIRMED`, and verifies `DRAFT` rows are excluded from exports even when matching academic year and scope.
@@ -338,7 +340,7 @@ Spec-phase acceptance tests for the implementation plan:
 - Repository covers ambiguous `classes` tokens that match one class code and another class name, proving both matching class rows are included.
 - Repository verifies portable null ordering for both `gradeCode` and `classCode`.
 - Repository returns an empty list for unsupported-scope-only callers and callers with no active `score.export.assigned` scope rules.
-- D safe-init consistency tests verify `score.export.assigned` scope rules `8023`, `8024`, and `8025`, deterministic collision guards, rerunnable inserts, and the complete `iam_scope_rule` column contract including required non-null `id`, `assignment_id`, `permission_code`, `scope_type`, `priority`, `status`, and `created_at`. The tests must assert the exact priority/status/expression values from the safe-init table above and that an unrelated reserved-id collision raises a SQL duplicate-key/database error instead of continuing with warnings.
+- D safe-init consistency tests verify `score.export.assigned` scope rules `8023`, `8024`, and `8025`, deterministic guard-table collision checks, rerunnable inserts, and the complete `iam_scope_rule` column contract including required non-null `id`, `assignment_id`, `permission_code`, `scope_type`, `priority`, `status`, and `created_at`. The tests must assert the exact priority/status/expression values from the safe-init table above, prove a second clean run is a no-op success, and prove an unrelated reserved-id collision raises a SQL duplicate-key/database error instead of continuing with warnings.
 - Spring context smoke test verifies `FinalScoreExportApplicationService` and the POI writer are wired.
 
 Focused implementation verification should include at least:
