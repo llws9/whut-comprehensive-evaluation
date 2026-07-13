@@ -138,9 +138,10 @@ The repository must:
 - Filter `fr.academic_year = query.academicYear`.
 - Export only `fr.status IN ('SUBMITTED', 'CONFIRMED')` when `status` is absent. If `status` is present, additionally filter to that single status. `DRAFT` must not be exported in either branch.
 - Use the student's active primary membership only: `org_membership.status = 'ACTIVE' AND is_primary = 1`.
-- Keep the existing base query join from `final_record fr` to `iam_user iu` so `studentUserNo` and `studentUserName` come from `iu.user_no` and `iu.user_name`.
+- If dirty data contains more than one active primary membership for the same student, D-10 deterministically uses the row with the smallest `org_membership.id`. It must not duplicate a `final_record` row, must not make row-cap detection depend on duplicated joins, and must not rely on undefined SQL row order.
+- Keep the existing base query `INNER JOIN iam_user iu ON iu.id = fr.student_user_id` so `studentUserNo` and `studentUserName` come from non-null `iu.user_no` and `iu.user_name`.
 - Use `LEFT OUTER JOIN` from that `final_record` + `iam_user` base query to `org_membership`, `class_ou`, and `grade_ou`, and place `ACTIVE`, `is_primary`, `unit_type`, and org status predicates inside the join conditions rather than in the `WHERE` clause.
-- The full D-10 join path is fixed: base `final_record fr` plus `iam_user iu` on `iu.id = fr.student_user_id`; `LEFT OUTER JOIN org_membership om ON om.user_id = fr.student_user_id AND om.status = 'ACTIVE' AND om.is_primary = 1`; `LEFT OUTER JOIN org_unit class_ou ON class_ou.id = om.org_unit_id AND class_ou.unit_type = 'CLASS' AND class_ou.status = 'ACTIVE'`; `LEFT OUTER JOIN org_unit grade_ou ON grade_ou.id = class_ou.parent_id AND grade_ou.unit_type = 'GRADE' AND grade_ou.status = 'ACTIVE'`.
+- The full D-10 join path is fixed: base `final_record fr`; `INNER JOIN iam_user iu ON iu.id = fr.student_user_id`; `LEFT OUTER JOIN org_membership om ON om.user_id = fr.student_user_id AND om.status = 'ACTIVE' AND om.is_primary = 1 AND om.id = (SELECT MIN(om2.id) FROM org_membership om2 WHERE om2.user_id = fr.student_user_id AND om2.status = 'ACTIVE' AND om2.is_primary = 1)` or an equivalent derived-table strategy that selects the smallest active primary membership id per user; `LEFT OUTER JOIN org_unit class_ou ON class_ou.id = om.org_unit_id AND class_ou.unit_type = 'CLASS' AND class_ou.status = 'ACTIVE'`; `LEFT OUTER JOIN org_unit grade_ou ON grade_ou.id = class_ou.parent_id AND grade_ou.unit_type = 'GRADE' AND grade_ou.status = 'ACTIVE'`.
 - Preserve final records that have no derived active CLASS organization unit only for callers whose `score.export.assigned` scope resolves to `ALL`, and only when no grade/class filter is present. This includes students with no active primary membership and students whose active primary membership is not attached to an active `unit_type = 'CLASS'` org unit. Organization-scoped callers (`ORG_UNIT` or `ORG_SUBTREE`) must not see no-derived-class rows because the translated scope predicate compares `org_path`/`org_unit_id` against `class_ou.path`/`class_ou.id`, which are `NULL` for those rows and therefore do not match.
 - Apply grade/class predicates only when the corresponding filter is present. These filter predicates must be appended to the `WHERE` clause, not to the `LEFT OUTER JOIN ... ON` conditions, so rows with missing derived grade/class fields are excluded when a grade or class filter exists.
 - When `grade` is present, append `(grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})` in `WHERE`, using the repository's case-sensitive comparison helper for both MySQL and H2 so collation differences cannot make lowercase or mixed-case values match.
@@ -214,15 +215,15 @@ Create an application-level row model for export, for example `FinalScoreExportR
 | `submittedAt` | nullable `Instant` | `final_record.submitted_at` |
 | `confirmedAt` | nullable `Instant` | `final_record.confirmed_at` |
 
-Ordering is deterministic:
+Ordering contract, independent of SQL dialect syntax:
 
 1. `gradeCode ASC NULLS LAST`
 2. `classCode ASC NULLS LAST`
 3. `studentUserNo ASC`
 4. `finalRecordId ASC`
 
-For H2/MySQL compatibility, express null ordering with portable SQL such as `CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END`.
-Apply that portable `NULLS LAST` pattern to both `gradeCode` and `classCode`, for example sort by `CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `grade_ou.unit_code`, then `CASE WHEN class_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `class_ou.unit_code`, before `studentUserNo` and `finalRecordId`. `studentUserNo` does not need a null-ordering expression because `iam_user.user_no` is non-null in the A-group IAM schema.
+For H2/MySQL compatibility, implement that null-last ordering with portable SQL such as `CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END`.
+Apply the portable implementation to both `gradeCode` and `classCode`, for example sort by `CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `grade_ou.unit_code`, then `CASE WHEN class_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `class_ou.unit_code`, before `studentUserNo` and `finalRecordId`. `studentUserNo` does not need a null-ordering expression because `iam_user.user_no` is non-null in the A-group IAM schema.
 
 ## Workbook Contract
 
@@ -370,7 +371,8 @@ Spec-phase acceptance tests for the implementation plan:
 - Repository export query applies status, grade, class, and scope filters together.
 - Repository export-row tests verify `studentUserNo` and `studentUserName` exactly match the joined `iam_user.user_no` and `iam_user.user_name` for known test users, and verify normal matched records return non-null values for both fields.
 - Repository H2 MySQL-mode integration tests explicitly freeze case-sensitive grade/class filtering: lowercase or mixed-case `grade` values must not match grade `unit_code` or `unit_name` values that differ only by case, and lowercase or mixed-case `classes` tokens must not match class `unit_code` or `unit_name` values that differ only by case.
-- Repository uses the explicit `org_membership` -> `class_ou` -> `grade_ou` join path above, including `class_ou.parent_id` for grade lookup.
+- Repository uses the explicit `INNER JOIN iam_user` and `org_membership` -> `class_ou` -> `grade_ou` join path above, including `class_ou.parent_id` for grade lookup.
+- Repository covers dirty data with multiple active primary `org_membership` rows for one student, proving the export returns one row for the final record and uses the smallest `org_membership.id` to derive grade/class fields and scope matching.
 - Repository defaults absent `status` to `SUBMITTED` plus `CONFIRMED`, and verifies `DRAFT` rows are excluded from exports even when matching academic year and scope.
 - Repository keeps records with no derived active CLASS organization unit exportable to ALL scope when no grade/class filter is present, with blank grade/class fields; tests must cover both no active primary membership and active primary membership attached to a non-CLASS org unit.
 - Repository excludes no-derived-class records for ORG_UNIT and ORG_SUBTREE callers because `class_ou.id`/`class_ou.path` are `NULL` and cannot satisfy organization predicates.
