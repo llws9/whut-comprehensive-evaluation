@@ -77,7 +77,7 @@ Query parameters:
 | Parameter | Required | Rule |
 |---|---:|---|
 | `academicYear` | yes | Trimmed, non-blank, must match `yyyy-yyyy`, and second year must equal first year + 1. |
-| `status` | no | Trimmed, blank becomes absent. If absent, exports both `SUBMITTED` and `CONFIRMED`. If present, must be `SUBMITTED` or `CONFIRMED`. `DRAFT` is never exportable. |
+| `status` | no | Trimmed, blank becomes absent. If absent, exports both `SUBMITTED` and `CONFIRMED`. If present, it is case-sensitive and must exactly equal uppercase `SUBMITTED` or `CONFIRMED`. Lowercase, mixed-case, and `DRAFT` values are invalid and never exportable. |
 | `grade` | no | Trimmed, blank becomes absent. Matches the current primary class's parent GRADE by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404`. |
 | `classes` | no | May be sent as repeated query params (`classes=CS2201&classes=CS2202`) or comma-separated tokens (`classes=CS2201,CS2202`). Normalize by processing the received `classes` value list, splitting each by comma, trimming, dropping blanks, and de-duplicating by first appearance in that received list. If all tokens are blank, `classes` is equivalent to absent and does not force `404`. The normalized token count must be at most `500`; more tokens fail with `400 / VAL-4001` and message `classes 参数过多`. Non-blank tokens match current primary CLASS by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404` if nothing else matches. |
 
@@ -267,7 +267,7 @@ New application classes:
 - `FinalScoreExportQuery`: immutable value object that validates and normalizes semantic export request parameters after raw HTTP shape has been validated by the controller. Fields are `String academicYear` (required, normalized), `String status` (nullable; absent means `SUBMITTED` plus `CONFIRMED`), `String grade` (nullable), and immutable `List<String> classes` (never null; empty means absent). It does not accept `pageNo` or `pageSize`, because those are rejected before query construction.
 - `FinalScoreExportRow`: row view consumed by the workbook writer.
 - `FinalScoreExportFile`: immutable filename, content type, and workbook bytes. Because `byte[]` is mutable in Java, construct and expose it with defensive copies or an equivalent immutable byte container.
-- `FinalScoreExportWorkbookWriter`: application port under `whut-eval-application`, with method `FinalScoreExportFile write(String academicYear, List<FinalScoreExportRow> rows)`. The returned `FinalScoreExportFile.contentType` is fixed to `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`.
+- `FinalScoreExportWorkbookWriter`: application port under `whut-eval-application`, with method `FinalScoreExportFile write(String academicYear, List<FinalScoreExportRow> rows)`. The returned `FinalScoreExportFile.contentType` is fixed to `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, and the returned `FinalScoreExportFile.filename` must be `final-scores-{academicYear}.xlsx` using the already-normalized `academicYear` method argument.
 - `FinalScoreExportApplicationService`: application service under `whut-eval-application`, orchestrating auth, query, no-data handling, and workbook generation; its public export method is `FinalScoreExportFile export(FinalScoreExportQuery query)`.
 - `FinalScoreExportGenerationException`: extends `BaseAppException`, uses `CommonErrorCode.FILE_STORAGE_FAILED`, and maps workbook write failures to `EXT-5033`.
 
@@ -309,7 +309,7 @@ After raw request-shape validation passes, semantic validation order is fixed so
 
 - `academicYear` is required, trimmed, non-blank, and must match `^\d{4}-\d{4}$`.
 - The academic-year end must equal start + 1.
-- `status` is optional. Trim first; blank becomes `null`/absent. If non-blank, it must be `SUBMITTED` or `CONFIRMED`.
+- `status` is optional. Trim first; blank becomes `null`/absent. If non-blank, matching is exact and case-sensitive: only uppercase `SUBMITTED` or `CONFIRMED` is valid. Lowercase or mixed-case variants fail with `ValidationException("status 仅允许 SUBMITTED 或 CONFIRMED")`.
 - `grade` is optional. Blank becomes `null`.
 - `classes` is optional. Normalize by iterating the received repeated-parameter value list, splitting each raw value by comma, trimming every token, dropping blanks, and de-duplicating by first appearance in that list. For example, `classes=A,B&classes=B,C` normalizes to `[A, B, C]` when the MVC layer supplies values in that order. Store the result as an immutable list. An empty normalized list is equivalent to an absent `classes` parameter.
 - If the request contains `classes` but every token is blank, the normalized list is empty and the request behaves exactly as if `classes` were absent. This is not a `400` and does not force a no-data `404`.
@@ -349,8 +349,8 @@ Spec-phase acceptance tests for the implementation plan:
 - Application service uses `score.export.assigned`, not `score.view.assigned`, when building the access context.
 - Application service returns `FinalScoreExportFile`, and controller copies its filename, content type, and bytes into the response.
 - Application service wraps workbook writer failures as `FinalScoreExportGenerationException`; controller/WebMvc or global exception tests verify the public response remains `503 / EXT-5033`.
-- Application service returns `RES-4040` for an empty authorized row list.
-- Application service returns `RES-4040` when unknown `grade` or unknown `classes` values produce an empty authorized row list.
+- Application service throws `ResourceNotFoundException("无匹配导出数据")` for an empty authorized row list; the global exception handler maps it to `404 / RES-4040`.
+- Application service throws `ResourceNotFoundException("无匹配导出数据")` when unknown `grade` or unknown `classes` values produce an empty authorized row list; the global exception handler maps it to `404 / RES-4040`.
 - Application service calls `listAdminFinalScoreExportRows(..., FinalScoreExportApplicationService.MAX_SYNC_EXPORT_ROWS + 1)` and rejects more than `FinalScoreExportApplicationService.MAX_SYNC_EXPORT_ROWS` returned export rows with `FinalScoreExportGenerationException`, mapping to `503 / EXT-5033`, before calling the workbook writer.
 - Application service tests derive their row counts from `FinalScoreExportApplicationService.MAX_SYNC_EXPORT_ROWS` or a service-owned accessor, not numeric literals, and verify the off-by-one boundary: exactly `MAX_SYNC_EXPORT_ROWS` returned rows are passed to the workbook writer and export successfully, while `MAX_SYNC_EXPORT_ROWS + 1` returned rows fail before workbook generation.
 - Application service and workbook writer preserve repository row order in the generated workbook, including rows whose `gradeCode` or `classCode` sort last because of portable `NULLS LAST` ordering.
