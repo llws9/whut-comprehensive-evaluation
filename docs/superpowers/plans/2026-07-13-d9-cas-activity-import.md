@@ -711,18 +711,19 @@ Create `ActivityImportApplicationServiceTest` with fakes for `ActivityImportPars
   - item definition not found or invalid cap metadata: `对应项目定义不存在`;
   - in-progress batch: `同一活动批次正在导入，请稍后重试`;
   - already imported batch: `同一活动批次已导入`;
-  - multipart byte read failure is controller-owned and maps to `文件处理失败，请稍后重试`;
-  - propagated `DataAccessException` maps through the existing handler to `数据访问异常，请稍后重试`;
+  - multipart byte read failure is controller-owned and is covered only by MVC tests, where it maps to `文件处理失败，请稍后重试`;
+  - propagated `DataAccessException` is covered at service level as propagation only; HTTP `500 / SYS-5000 / 数据访问异常，请稍后重试` mapping is covered by MVC/global-handler tests;
 - title length > 255, itemCode length > 64, and academicYear values that do not match `YYYY-YYYY` or whose end year is not start year + 1;
 - strict `scoreValue` ordering: non-decimal, `>99999999.99`, scale > 2, item cap when `allowOverflow = false`;
 - active SPORTS item required: missing item rows and invalid cap metadata are both exposed by repository as `Optional.empty()` and service tests must assert `ResourceNotFoundException("对应项目定义不存在")`, which the global handler maps to `404 / RES-4040`;
 - deterministic `activityBatchId` format `^ACTIVITY-[0-9]{8}-[0-9]{14}-[0-9A-F]{12}$`;
 - exact deterministic `activityBatchId` hash contract from the frozen spec: hash input segments are ordered normalized `academicYear`, normalized `heldAt` formatted `yyyyMMddHHmmss`, normalized `title`, canonical `itemCode`, then normalized scale-2 `scoreValue.toPlainString()`;
 - fixed UTF-8 hash sample: title `校运会志愿服务`, item `SPORTS_COMPETITION`, score `0.50`, heldAt `2026-05-18T14:30`, academicYear `2025-2026` produces `ACTIVITY-20252026-20260518143000-F0B289881AE3`;
-- length-prefixed hash input by asserting titles containing `|` and `:` generate distinct ids and by testing `encodeHashPart("A|B:中")` returns the Unicode-code-point count prefix followed by `:` and the original value;
-- error priority combination cases: malformed workbook content with invalid `itemCode` returns `400 / VAL-4001 / 导入模板错误：文件不可解析` before item lookup; valid workbook with missing/invalid item returns `ResourceNotFoundException("对应项目定义不存在")`; valid item metadata then applies item-specific maxPoints validation;
+- length-prefixed hash input by asserting titles containing `|` and `:` generate distinct ids, titles that differ only by internal whitespace or Unicode code points are not further normalized into the same id, and by testing `encodeHashPart("A|B:中")` returns the Unicode-code-point count prefix followed by `:` and the original value;
+- error priority combination cases: malformed workbook content with itemCode that is syntactically valid but unavailable as an active SPORTS item returns `400 / VAL-4001 / 导入模板错误：文件不可解析` before item lookup; syntactically invalid itemCode parameters are still rejected by `normalizeItemCode` before workbook parsing; valid workbook with missing item, wrong category, inactive item, or invalid cap metadata returns `ResourceNotFoundException("对应项目定义不存在")`; valid item metadata then applies item-specific maxPoints validation;
 - canonical item code used in response, duplicate detection, and persisted components;
 - header-only import returns zero counts and releases lock;
+- non-empty workbook where every parsed row fails row-level validation, target lookup, scope, or locked-record checks returns `successCount == 0`, persists no `final_component_score`, creates no durable batch marker, releases the lock, and accepts a later retry with the same deterministic `activityBatchId`;
 - partial success rejects same-batch retry when repository duplicate check is true with `409 / BIZ-4090 / 同一活动批次已导入`;
 - batch lock timeout (`tryAcquire == false`) maps to `409 / BIZ-4090 / 同一活动批次正在导入，请稍后重试`, while `tryAcquire` and pre-commit lock adapter `DataAccessException` paths propagate to the existing database-access failure handler;
 - successful rows use normalized request title as persisted display text when row `displayText` is blank, while failed-row raw values still return blank as `null`;
@@ -767,7 +768,7 @@ Expected: compilation fails because `ActivityImportApplicationService` is missin
 Implement `ActivityImportApplicationService` with these concrete rules:
 
 - `normalize(command)` validates request parameters in this order: file, title, itemCode, scoreValue, heldAt, academicYear.
-- `normalizeTitle` rejects null/blank title with `ValidationException("title 不能为空")` and title values over 255 Unicode code points after Java `String.trim()` with `ValidationException("title 长度不能超过 255")`.
+- `normalizeTitle` rejects null/blank title with `ValidationException("title 不能为空")` and title values over 255 Unicode code points after Java `String.trim()` with `ValidationException("title 长度不能超过 255")`. The normalized title is exactly `title.trim()`; do not collapse internal whitespace, change case, remove control or zero-width characters, or apply Unicode normalization.
 - `normalizeItemCode` rejects null/blank itemCode with `ValidationException("itemCode 不能为空")` and itemCode values over 64 Unicode code points after Java `String.trim()` with `ValidationException("itemCode 长度不能超过 64")`.
 - `normalizeAcademicYear` requires `^(\\d{4})-(\\d{4})$` and rejects values whose end year is not start year + 1; every invalid or missing value uses `ValidationException("academicYear 不合法")`.
 - Inject `UserAuthorizationContextAssembler`, call `requiredAuthorizationContext()`, and defensively require `AuthorizationPermissionCodes.SCORE_IMPORT`; missing authority throws `AccessDeniedAppException("当前用户无导入权限")`.
@@ -1173,6 +1174,7 @@ git commit -m "feat: add activity import batch lock"
 Add tests for:
 
 - route `POST /api/admin/imports/cas-activities`;
+- controller file-layer validation order is fixed: first reject missing/null file or empty file bytes with `上传文件不能为空`, then reject `file.getSize() > 5 MB` with `文体活动导入文件最多支持 5000 行且不超过 5MB` before `getBytes()`, then validate original filename/extension with `导入模板错误：文件不可解析`, then call `getBytes()` and wrap `IOException` as `FileStorageException("文件处理失败，请稍后重试", exception)`;
 - request-level validation returns these exact `VAL-4001` messages through MVC/global exception handling:
   - missing or empty file: `上传文件不能为空`;
   - missing or blank title: `title 不能为空`;
@@ -1188,7 +1190,7 @@ Add tests for:
   - workbook bytes over 5 MB or more than 5000 non-blank data rows: `文体活动导入文件最多支持 5000 行且不超过 5MB`;
   - missing header, header mismatch, no sheet, unreadable workbook, unsupported filename, blank filename, missing filename, or extensionless filename: message starts with `导入模板错误：`, with filename parsing failures using `导入模板错误：文件不可解析`;
 - unsupported, blank, missing, and extensionless filenames rejected before service invocation with `400 / VAL-4001 / 导入模板错误：文件不可解析`; accepted filename extensions are exactly `.xls` and `.xlsx`, compared case-insensitively after Java `String.trim()`;
-- file > 5 MB rejected before `getBytes()`;
+- file > 5 MB rejected before `getBytes()`, and at least one MVC combination test must prove an empty file with an invalid filename returns `上传文件不能为空` before filename validation;
 - multipart read failure maps to `503 / EXT-5033 / 文件处理失败，请稍后重试`;
 - missing/invalid `itemCode` definition from service `ResourceNotFoundException("对应项目定义不存在")` maps through MVC/global exception handling to `404 / RES-4040 / 对应项目定义不存在`;
 - duplicate-batch `ConflictException("同一活动批次已导入")` maps through MVC/global exception handling to `409 / BIZ-4090 / 同一活动批次已导入`;
