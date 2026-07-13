@@ -138,6 +138,16 @@ class FinalScoreExportQueryTest {
     }
 
     @Test
+    void shouldRejectMissingOrBlankAcademicYear() {
+        assertThatThrownBy(() -> new FinalScoreExportQuery(null, null, null, List.of()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("academicYear 不合法");
+        assertThatThrownBy(() -> new FinalScoreExportQuery("   ", null, null, List.of()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("academicYear 不合法");
+    }
+
+    @Test
     void shouldRejectNonConsecutiveAcademicYear() {
         assertThatThrownBy(() -> new FinalScoreExportQuery("2025-2027", null, null, List.of()))
                 .isInstanceOf(ValidationException.class)
@@ -191,9 +201,34 @@ Expected: compilation fails because `FinalScoreExportQuery` does not exist.
 
 - [ ] **Step 3: Implement query/file contracts**
 
-Create `FinalScoreExportQuery` as a Java record. Use `List.copyOf(...)` for immutable classes and validate in the order `academicYear`, `status`, `grade`, `classes`.
+Create `FinalScoreExportQuery` as a Java record. Use `List.copyOf(...)` for immutable classes and process fields in this order: validate `academicYear`, validate `status`, normalize `grade`, then normalize and cap `classes`.
 
-Create `FinalScoreExportRow` as an immutable record with the exact fields from the spec. Use nullable object references for grade/class/timestamps and totals so the writer can be null-safe.
+Create `FinalScoreExportRow` as an immutable record with the exact fields and order below. Use nullable object references for grade/class/timestamps and totals so the writer can be null-safe.
+
+```java
+public record FinalScoreExportRow(
+        Long finalRecordId,
+        Long studentUserId,
+        String studentUserNo,
+        String studentUserName,
+        String gradeCode,
+        String gradeName,
+        String classCode,
+        String className,
+        String academicYear,
+        String status,
+        BigDecimal moralTotal,
+        BigDecimal intellectualTotal,
+        BigDecimal physicalTotal,
+        BigDecimal laborTotal,
+        BigDecimal grandTotal,
+        Instant submittedAt,
+        Instant confirmedAt
+) {
+}
+```
+
+The workbook writer maps this row to columns A-P as: A `finalRecordId`, B `academicYear`, C `studentUserNo`, D `studentUserName`, E `gradeCode`, F `gradeName`, G `classCode`, H `className`, I `status`, J `moralTotal`, K `intellectualTotal`, L `physicalTotal`, M `laborTotal`, N `grandTotal`, O `submittedAt`, P `confirmedAt`. `studentUserId` remains part of the export row contract for service/repository completeness and joins, but D-10's frozen A-P workbook layout does not add a column for it.
 
 Create `FinalScoreExportFile` with defensive copies:
 
@@ -201,6 +236,7 @@ Create `FinalScoreExportFile` with defensive copies:
 package edu.whut.eval.application.finalrecord.exporting;
 
 import java.util.Arrays;
+import java.util.Objects;
 
 public final class FinalScoreExportFile {
     private final String filename;
@@ -208,8 +244,8 @@ public final class FinalScoreExportFile {
     private final byte[] content;
 
     public FinalScoreExportFile(String filename, String contentType, byte[] content) {
-        this.filename = filename;
-        this.contentType = contentType;
+        this.filename = Objects.requireNonNull(filename, "filename must not be null");
+        this.contentType = Objects.requireNonNull(contentType, "contentType must not be null");
         this.content = content == null ? new byte[0] : Arrays.copyOf(content, content.length);
     }
 
@@ -277,6 +313,7 @@ Create tests that verify:
 - an empty row list throws `ResourceNotFoundException("无匹配导出数据")`;
 - `MAX_SYNC_EXPORT_ROWS + 1` rows throw `FinalScoreExportGenerationException("Excel 生成失败")` before writer invocation;
 - writer runtime failures are wrapped as `FinalScoreExportGenerationException`;
+- row-cap overflow and writer runtime failure preserve the same public exception type/message but emit distinct log branches: row-cap logs academic year, normalized filters, returned row count, and `MAX_SYNC_EXPORT_ROWS`; writer failure logs academic year, row count, and original exception type/message;
 - exactly `MAX_SYNC_EXPORT_ROWS` rows are passed to the writer;
 - two calls with the same query call the repository twice, documenting current-snapshot semantics.
 
@@ -293,6 +330,8 @@ verify(repository).listAdminFinalScoreExportRows(
 assertThat(accessContextCaptor.getValue().getPermissionCode())
         .isEqualTo(AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED);
 ```
+
+Use Spring Boot's existing `OutputCaptureExtension` / `CapturedOutput` test support, as already used in `AuthControllerWebMvcTest`, to assert the two internal log branches. The row-cap test should assert a stable event name such as `final-score-export.row-cap-exceeded` plus the academic year, normalized `status`, normalized `grade`, normalized class list, returned row count, and `MAX_SYNC_EXPORT_ROWS`. The writer-failure test should assert a different stable event name such as `final-score-export.workbook-writer-failed` plus academic year, row count, and the original exception type/message.
 
 - [ ] **Step 2: Run failing service tests**
 
@@ -331,6 +370,8 @@ public static final int MAX_SYNC_EXPORT_ROWS = 20_000;
 ```
 
 Use `MAX_SYNC_EXPORT_ROWS + 1` only as the repository probe limit. Do not introduce separate hard-coded `20_000` or `20_001` values in service code or service tests.
+
+Row-cap overflow intentionally reuses `FinalScoreExportGenerationException("Excel 生成失败")`, mapping to the frozen public `503 / EXT-5033 / Excel 生成失败` response. Do not replace this with a 4xx validation or payload-too-large response in D-10; the distinction between row-cap overflow and workbook failure is internal logging only.
 
 Implementation behavior:
 
@@ -454,6 +495,7 @@ Add integration tests covering:
 - ambiguous grade code/name and class code/name matches;
 - token matching both `classCode` and `className` on the same row returns one final record;
 - no active primary membership and non-CLASS primary membership remain visible only to `ALL` scope with blank grade/class fields;
+- those same no-derived-class rows are excluded even for `ALL` scope when `grade` or `classes` filters are present;
 - ORG_SUBTREE callers cannot see no-derived-class rows;
 - multiple active primary memberships use the smallest `org_membership.id` and return one row;
 - `studentUserNo` and `studentUserName` come from `iam_user`;
@@ -519,9 +561,12 @@ private String caseSensitiveIn(String column, String collectionExpression) {
 ```
 
 For class tokens, build `collectionExpression` from `CAST(#{query.classes[0]} AS BINARY)`, `CAST(#{query.classes[1]} AS BINARY)`, and so on for the normalized query size, then pass it to `caseSensitiveIn(...)`. The H2/MySQL-mode verification for this plan showed `CAST(column AS BINARY)` executes and is case-sensitive; do not use MySQL-only `BINARY column` syntax or `COLLATE`, because the existing H2 path rejects them.
+- when `query.grade` is present, append `(` + `caseSensitiveEquals("grade_ou.unit_code", "#{query.grade}")` + ` OR ` + `caseSensitiveEquals("grade_ou.unit_name", "#{query.grade}")` + `)` in the `WHERE` clause;
+- when `query.classes` is non-empty, append `(` + `caseSensitiveIn("class_ou.unit_code", collectionExpression)` + ` OR ` + `caseSensitiveIn("class_ou.unit_name", collectionExpression)` + `)` in the `WHERE` clause;
+- grade and classes predicates must be added to `WHERE`, not to any `LEFT OUTER JOIN ... ON` condition. This ensures rows with no derived grade/class are excluded whenever grade/classes filters are present, while still preserving those rows for `ALL` scope when no grade/classes filters are present;
 - always filter `fr.academic_year = #{query.academicYear}`;
 - default absent status to `fr.status IN ('SUBMITTED', 'CONFIRMED')`, explicit status to `fr.status = #{query.status}`;
-- order with portable null-last expressions, then `u.user_no`, then `fr.id`;
+- order exactly by `CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `grade_ou.unit_code`, then `CASE WHEN class_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `class_ou.unit_code`, then `u.user_no`, then `fr.id`;
 - `LIMIT #{limit}`;
 - select columns matching `FinalScoreExportRow` constructor/property names.
 
@@ -570,8 +615,8 @@ Use `@WebMvcTest(controllers = AdminFinalScoreExportController.class)` and mock 
 
 - successful response status, xlsx content type, attachment filename, and workbook bytes;
 - raw `classes=A,B&classes=B,C` results in service query classes `[A, B, C]`;
-- `pageNo`, blank `pageNo`, repeated `pageNo`, `pageSize`, blank `pageSize`, repeated `pageSize` fail with `导出接口不支持分页参数`;
-- repeated `academicYear`, `status`, or `grade` fail with `导出接口不支持重复单值参数`;
+- `pageNo`, blank `pageNo`, repeated `pageNo`, `pageSize`, blank `pageSize`, repeated `pageSize` fail with `400 / VAL-4001 / 导出接口不支持分页参数`;
+- repeated `academicYear`, `status`, or `grade` fail with `400 / VAL-4001 / 导出接口不支持重复单值参数`;
 - invalid `academicYear` fails through the real endpoint with `400 / VAL-4001 / academicYear 不合法`;
 - invalid lowercase or `DRAFT` `status` fails through the real endpoint with `400 / VAL-4001 / status 仅允许 SUBMITTED 或 CONFIRMED`;
 - more than `500` normalized `classes` tokens fail through the real endpoint with `400 / VAL-4001 / classes 参数过多`;
