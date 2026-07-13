@@ -194,7 +194,7 @@ Create an application-level row model for export, for example `FinalScoreExportR
 |---|---|---|
 | `finalRecordId` | `Long` | `final_record.id` |
 | `studentUserId` | `Long` | `final_record.student_user_id` |
-| `studentUserNo` | `String` | `iam_user.user_no` |
+| `studentUserNo` | non-null `String` | `iam_user.user_no`, which is `NOT NULL` in the A-group IAM schema |
 | `studentUserName` | `String` | `iam_user.user_name` |
 | `gradeCode` | nullable `String` | parent GRADE `org_unit.unit_code`, nullable |
 | `gradeName` | nullable `String` | parent GRADE `org_unit.unit_name`, nullable |
@@ -218,7 +218,7 @@ Ordering is deterministic:
 4. `finalRecordId ASC`
 
 For H2/MySQL compatibility, express null ordering with portable SQL such as `CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END`.
-Apply that portable `NULLS LAST` pattern to both `gradeCode` and `classCode`, for example sort by `CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `grade_ou.unit_code`, then `CASE WHEN class_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `class_ou.unit_code`, before `studentUserNo` and `finalRecordId`.
+Apply that portable `NULLS LAST` pattern to both `gradeCode` and `classCode`, for example sort by `CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `grade_ou.unit_code`, then `CASE WHEN class_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `class_ou.unit_code`, before `studentUserNo` and `finalRecordId`. `studentUserNo` does not need a null-ordering expression because `iam_user.user_no` is non-null in the A-group IAM schema.
 
 ## Workbook Contract
 
@@ -265,7 +265,7 @@ Operational capacity assumption:
 
 New application classes:
 
-- `FinalScoreExportQuery`: immutable value object that validates and normalizes semantic export request parameters after raw HTTP shape has been validated by the controller. Fields are `String academicYear` (required, normalized), `String status` (nullable; absent means `SUBMITTED` plus `CONFIRMED`), `String grade` (nullable), and immutable `List<String> classes` (never null; empty means absent). It does not accept `pageNo` or `pageSize`, because those are rejected before query construction.
+- `FinalScoreExportQuery`: immutable value object that validates and normalizes semantic export request parameters after raw HTTP shape has been validated by the controller. Fields are `String academicYear` (required, normalized), `String status` (nullable; absent means `SUBMITTED` plus `CONFIRMED`), `String grade` (nullable), and immutable `List<String> classes` (never null; empty means absent). A missing `classes` key and a present-but-all-blank `classes` key both normalize to the same empty immutable list. It does not accept `pageNo` or `pageSize`, because those are rejected before query construction.
 - `FinalScoreExportRow`: row view consumed by the workbook writer.
 - `FinalScoreExportFile`: immutable filename, content type, and workbook bytes. Because `byte[]` is mutable in Java, construct and expose it with defensive copies or an equivalent immutable byte container.
 - `FinalScoreExportWorkbookWriter`: application port under `whut-eval-application`, with method `FinalScoreExportFile write(String academicYear, List<FinalScoreExportRow> rows)`. The returned `FinalScoreExportFile.contentType` is fixed to `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, and the returned `FinalScoreExportFile.filename` must be `final-scores-{academicYear}.xlsx` using the already-normalized `academicYear` method argument.
@@ -313,7 +313,7 @@ After raw request-shape validation passes, semantic validation order is fixed so
 - `status` is optional. Trim first; blank becomes `null`/absent. If non-blank, matching is exact and case-sensitive: only uppercase `SUBMITTED` or `CONFIRMED` is valid. Lowercase or mixed-case variants fail with `ValidationException("status 仅允许 SUBMITTED 或 CONFIRMED")`.
 - `grade` is optional. Trim first; blank becomes `null`. D-10 applies no `grade` format, length, or dictionary validation; any non-blank value is passed to the repository filter and unknown values produce `404` only after query execution returns no rows.
 - `classes` is optional. Normalize by iterating the received repeated-parameter value list in the order supplied by Spring MVC from the request query string, splitting each raw value by comma, trimming every token, dropping blanks, and de-duplicating by first appearance in the flattened trimmed token sequence. For example, `classes=A,B&classes=B,C` normalizes to `[A, B, C]` when the MVC layer supplies values in that order. Store the result as an immutable list. An empty normalized list is equivalent to an absent `classes` parameter.
-- If the request contains `classes` but every token is blank, the normalized list is empty and the request behaves exactly as if `classes` were absent. This is not a `400` and does not force a no-data `404`.
+- If the request contains `classes` but every token is blank, the normalized list is the same empty immutable list used when the `classes` key is absent, and the request behaves exactly as if `classes` were absent. This is not a `400` and does not force a no-data `404`.
 - If normalized `classes` contains more than `500` tokens, throw `ValidationException("classes 参数过多")` and map it to `400 / VAL-4001`.
 - `FinalScoreExportQuery` must not define `pageNo` or `pageSize` fields. Pagination-parameter validation is complete before the query object is created.
 - Repeated `academicYear`, `status`, or `grade` parameters are invalid HTTP request shape. The controller detects them before query construction and throws `ValidationException("导出接口不支持重复单值参数")`, mapping to `400 / VAL-4001`.
@@ -337,7 +337,7 @@ Although row-cap overflow and workbook writer failure share the same public resp
 
 Spec-phase acceptance tests for the implementation plan:
 
-- Query normalization trims `academicYear`, rejects missing/invalid `academicYear`, treats blank `status` as absent, rejects lowercase/non-exact `status` values and `DRAFT`, treats blank `grade` as absent, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance in the MVC-supplied query-string value order, rejects more than `500` normalized class tokens with `classes 参数过多`, and treats `classes=,,` or `classes=&classes= ` as an absent class filter.
+- Query normalization trims `academicYear`, rejects missing/invalid `academicYear`, treats blank `status` as absent, rejects lowercase/non-exact `status` values and `DRAFT`, treats blank `grade` as absent, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance in the MVC-supplied query-string value order, rejects more than `500` normalized class tokens with `classes 参数过多`, treats `classes=,,` or `classes=&classes= ` as an absent class filter, and verifies a missing `classes` key and present-but-all-blank `classes` key produce the same empty immutable list representation.
 - Query normalization tests cover the fixed semantic validation priority after raw shape checks, including a request with invalid `academicYear`, invalid `status`, and too many `classes` returning `academicYear 不合法`.
 - Controller/WebMvc tests verify present `pageNo/pageSize`, including `pageNo=`, `pageSize=`, and repeated `pageNo/pageSize`, return `400 / VAL-4001` with message `导出接口不支持分页参数` because the pagination-parameter branch has priority.
 - Controller/WebMvc tests verify repeated non-pagination single-value parameters (`academicYear`, `status`, `grade`) return `400 / VAL-4001` with message `导出接口不支持重复单值参数`.
