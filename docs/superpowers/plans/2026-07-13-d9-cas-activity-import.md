@@ -27,8 +27,11 @@
 - Existing shared application/common types:
   - `whut-eval-application/src/main/java/edu/whut/eval/application/auth/service/UserAuthorizationContextAssembler.java`
   - `whut-eval-application/src/main/java/edu/whut/eval/application/auth/AuthorizationPermissionCodes.java`
+  - `whut-eval-domain/src/main/java/edu/whut/eval/domain/auth/model/UserAuthorizationContext.java`
   - `whut-eval-common/src/main/java/edu/whut/eval/common/exception/AccessDeniedAppException.java`
   - `whut-eval-common/src/main/java/edu/whut/eval/common/exception/FileStorageException.java`
+  - `whut-eval-common/src/main/java/edu/whut/eval/common/exception/ValidationException.java`
+  - `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/dataobject/FinalRecordDO.java`
 - Existing D-8 tests:
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportParserTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportApplicationServiceTest.java`
@@ -320,6 +323,12 @@ public interface ActivityImportBatchLock {
     void release(String activityBatchId);
 }
 ```
+
+Lock port contract:
+
+- `tryAcquire(...) == true`: lock acquired.
+- `tryAcquire(...) == false`: lock was not acquired because the same exact activity batch is already running; the service maps this to `409 / BIZ-4090 / 同一活动批次正在导入，请稍后重试`.
+- Storage-unavailable paths, including MySQL `GET_LOCK` returning `NULL` or unexpected SQL errors, must not return `false`; the adapter throws a Spring `DataAccessException` so the existing data-access handler maps it to `500 / SYS-5000 / 数据访问异常，请稍后重试`.
 
 Create `ActivityImportStudentTarget`:
 
@@ -644,8 +653,10 @@ Create `ActivityImportApplicationServiceTest` with fakes for `ActivityImportPars
 - length-prefixed hash input by asserting titles containing `|` and `:` generate distinct ids;
 - canonical item code used in response, duplicate detection, and persisted components;
 - header-only import returns zero counts and releases lock;
-- partial success rejects same-batch retry when repository duplicate check is true;
+- partial success rejects same-batch retry when repository duplicate check is true with `409 / BIZ-4090 / 同一活动批次已导入`;
+- batch lock timeout (`tryAcquire == false`) maps to `409 / BIZ-4090 / 同一活动批次正在导入，请稍后重试`, while lock adapter `DataAccessException` propagates to the existing database-access failure handler;
 - successful rows use normalized request title as persisted display text when row `displayText` is blank, while failed-row raw values still return blank as `null`;
+- duplicate `studentNo` handling: field-invalid rows do not consume a duplicate key; the first field-valid row consumes `studentNo.trim()` even if later target lookup, scope, or final-record lock processing fails; later field-valid rows with the same normalized key fail with `DUPLICATE_STUDENT`;
 - row-level failures for blank `studentNo`, over-64 `studentNo`, over-1000-code-point `displayText` after trim, duplicate student, missing target, out of scope, locked final record;
 - unsupported or empty scope grants no rows;
 - defensive service-level missing authority maps through `AccessDeniedAppException`;
@@ -681,22 +692,36 @@ Expected: compilation fails because `ActivityImportApplicationService` is missin
 
 Implement `ActivityImportApplicationService` with these concrete rules:
 
-- `normalize(command)` validates request parameters in the spec order.
+- `normalize(command)` validates request parameters in this order: file, title, itemCode, scoreValue, heldAt, academicYear.
 - `normalizeTitle` rejects null/blank title and title values over 255 Unicode code points after Java `String.trim()`.
 - `normalizeItemCode` rejects null/blank itemCode and itemCode values over 64 Unicode code points after Java `String.trim()`.
 - `normalizeAcademicYear` requires `^(\\d{4})-(\\d{4})$` and rejects values whose end year is not start year + 1.
 - Inject `UserAuthorizationContextAssembler`, call `requiredAuthorizationContext()`, and defensively require `AuthorizationPermissionCodes.SCORE_IMPORT`; missing authority throws `AccessDeniedAppException("当前用户无导入权限")`.
 - `scoreValue` uses `STRICT_DECIMAL_PATTERN = Pattern.compile("^[0-9]+(\\.[0-9]+)?$")`, parses to `BigDecimal`, and stores scale 2 via `setScale(2, RoundingMode.HALF_UP)` only after scale validation.
-- `heldAt` parses through `LocalDateTime.parse(heldAt.trim())`, rejects date-only and date-hour strings by parse failure, and uses `.withNano(0)`.
+- `heldAt` parses ISO-8601 datetime strings through `LocalDateTime.parse(heldAt.trim())` such as `2026-05-18T14:30:00`, rejects date-only and date-hour strings by parse failure, and uses `.withNano(0)`.
 - `itemCode` lookup calls `repository.findActiveSportsItem(trimmedItemCode)` after request syntax validation.
 - `activityBatchId` hash input uses `len:value` segments joined by `|`.
-- Lock orchestration follows D-8: enter `transactionOperations.execute(...)`, acquire lock, register release through `TransactionSynchronizationManager` when synchronization is active, run authoritative duplicate check, process rows, and release in `finally` if synchronization registration did not happen.
-- Duplicate check calls `repository.activityBatchExists(academicYear, "SPORTS", canonicalItemCode, activityBatchId)`.
+- Lock orchestration follows D-8: enter `transactionOperations.execute(...)`, acquire lock, map `tryAcquire == false` to `ConflictException("同一活动批次正在导入，请稍后重试")`, let `DataAccessException` from the lock adapter propagate, register release through `TransactionSynchronizationManager` when synchronization is active, run authoritative duplicate check, process rows, and release in `finally` if synchronization registration did not happen.
+- Duplicate check calls `repository.activityBatchExists(academicYear, "SPORTS", canonicalItemCode, activityBatchId)` and maps a positive result to `ConflictException("同一活动批次已导入")`.
+- Duplicate-student detection runs after `validateFields(row)` passes. It uses `studentNo.trim()` as the key, first field-valid row wins and consumes the key, field-invalid rows do not consume the key, and later field-valid duplicates fail even when the first field-valid row later fails lookup, scope, or locked-record processing.
 - Field-valid rows are sorted by `studentUserId ASC`, then `rowNo ASC` before persistence.
 - For each successful row, `displayText` is `row.displayText().trim()` when present, otherwise the normalized request `title`.
-- `validateFields(row)` rejects `displayText` over 1000 Unicode code points after trim with code `DISPLAY_TEXT_TOO_LONG` and message `displayText 长度不能超过 1000`.
+- `validateFields(row)` covers only row field validation: blank `studentNo`, `studentNo` over 64 Unicode code points after trim, and `displayText` over 1000 Unicode code points after trim with code `DISPLAY_TEXT_TOO_LONG` and message `displayText 长度不能超过 1000`.
 - `canAccess` copies D-8 current-org scope semantics and uses real org paths for `ORG_SUBTREE`.
 - `rawValue` contains exactly `studentNo` and `displayText`, with blank values as `null`.
+
+Use this private request shape:
+
+```java
+private record NormalizedRequest(
+        String title,
+        String itemCode,
+        BigDecimal scoreValue,
+        LocalDateTime heldAt,
+        String academicYear
+) {
+}
+```
 
 Important helper signatures:
 
@@ -745,6 +770,7 @@ Use D-8 repository tests as the base and add D-9-specific cases:
 - null, malformed, non-object, missing-field, wrong-type, negative/out-of-bound `cap_rule_json` returns `Optional.empty()`;
 - valid `{"maxPoints": 1.5, "allowOverflow": false}` maps to `ActivityImportItemDefinition`;
 - target lookup requires active user, active primary membership, and active org;
+- `findActiveOrgPath` returns active org path and returns `Optional.empty()` for missing or inactive org units;
 - duplicate-batch check filters by academic year, `SPORTS`, canonical item code, `IMPORT`, and `activityBatchId`;
 - missing final record creates DRAFT and inserts SPORTS component;
 - existing DRAFT inserts and updates totals/version;
@@ -916,11 +942,13 @@ void shouldReturnFalseWhenNamedLockTimesOut() {
 }
 
 @Test
-void shouldReturnFalseWhenNamedLockReturnsNull() {
+void shouldThrowDataAccessExceptionWhenNamedLockReturnsNull() {
     given(jdbcTemplate.queryForObject(eq("SELECT GET_LOCK(?, ?)"), eq(Integer.class),
             eq("D9_ACTIVITY:batch"), eq(30))).willReturn(null);
 
-    assertThat(lock.tryAcquire("batch", Duration.ofSeconds(30))).isFalse();
+    assertThatThrownBy(() -> lock.tryAcquire("batch", Duration.ofSeconds(30)))
+            .isInstanceOf(DataAccessException.class)
+            .hasMessageContaining("GET_LOCK returned NULL");
 }
 ```
 
@@ -932,6 +960,7 @@ Create `MySqlActivityImportBatchLock`:
 package edu.whut.eval.infra.finalrecord.importing;
 
 import edu.whut.eval.application.finalrecord.importing.ActivityImportBatchLock;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -956,7 +985,10 @@ public class MySqlActivityImportBatchLock implements ActivityImportBatchLock {
                 lockName(activityBatchId),
                 Math.toIntExact(timeout.toSeconds())
         );
-        return result != null && result == 1;
+        if (result == null) {
+            throw new DataAccessResourceFailureException("GET_LOCK returned NULL for activity import batch");
+        }
+        return result == 1;
     }
 
     @Override
