@@ -93,10 +93,10 @@ Request parameters:
 | Parameter | Required | Rule |
 |---|---:|---|
 | `file` | yes | Non-empty `.xlsx` or `.xls` Excel file. Other workbook formats such as `.xlsm`, `.csv`, or text files fail before parsing with `导入模板错误：文件不可解析`. |
-| `title` | yes | Non-blank after trim, max 255 Unicode code points. Leading and trailing whitespace are removed; internal whitespace, control characters, zero-width characters, case, and Unicode normalization form are otherwise preserved. |
+| `title` | yes | Non-blank after trim, max 255 Unicode code points. Leading and trailing whitespace are removed. The trimmed title is used byte-for-byte for display and deterministic batch identity; internal whitespace, control characters, zero-width characters, case, and Unicode normalization form are otherwise preserved. This means duplicate-batch detection is metadata-exact, not visual-similarity based. |
 | `itemCode` | yes | Non-blank after trim, max 64 characters, must resolve to an active `evaluation_item` row whose `category_code = 'SPORTS'`. |
 | `scoreValue` | yes | Trimmed before validation; strict decimal text matching `^[0-9]+(\.[0-9]+)?$`, `0 <= value <= 99999999.99`, at most 2 decimal places. Negative values, thousand separators, percentages, currency symbols, and scientific notation are invalid. |
-| `heldAt` | yes | Trimmed before validation; ISO local date-time parsed with `LocalDateTime.parse(heldAt)`. Omitted seconds default to `00`, fractional seconds are truncated, and timezone offsets are not accepted. The batch id uses whole seconds. |
+| `heldAt` | yes | Trimmed before validation; ISO local date-time parsed with `LocalDateTime.parse(heldAt)`. Minimum accepted precision is `yyyy-MM-ddTHH:mm`; date-only input and date-hour input without minutes are invalid. Omitted seconds default to `00`, fractional seconds are truncated, and timezone offsets are not accepted. The batch id uses whole seconds. |
 | `academicYear` | yes | Trimmed before validation; must match `^\d{4}-\d{4}$`, and the second year must equal first year + 1. |
 
 Successful response:
@@ -130,7 +130,7 @@ Successful response:
 Successful responses return normalized metadata for fields present in the frozen D-9 response:
 
 - `title` is trimmed.
-- `itemCode` is trimmed.
+- `itemCode` is the canonical `evaluation_item.item_code` resolved from the trimmed request value. With the current schema this matches the trimmed request value, because `item_code` is unique and lookup is by exact `item_code`.
 - `scoreValue` is returned at scale 2 as a JSON number.
 - `heldAt` and `academicYear` are validated and normalized for `activityBatchId`, but they are not returned as top-level data fields because the D-9 delivery table does not list them.
 
@@ -148,7 +148,7 @@ Response count semantics:
 - `successCount` is the number of rows that successfully inserted an activity component.
 - `failedCount` is `failedRows.size()`.
 - `successCount + failedCount = totalCount`.
-- A workbook that contains only the header still validates metadata, generates the deterministic batch id, acquires the batch lock, and checks duplicates. If another same-batch import is running, it returns the in-flight `409`; if the same `activityBatchId` already has persisted components, it returns the already-imported `409`. Otherwise it returns `200` with zero counts and persists no batch marker, so retry is allowed.
+- A workbook that contains only the header still validates metadata, generates the deterministic batch id, acquires the batch lock, and checks duplicates. If another same-batch import is running, it returns the in-flight `409`; if the same `activityBatchId` already has persisted components, it returns the already-imported `409`. Otherwise it returns `200` with zero counts and persists no batch marker. See Import Semantics for the authoritative zero-success retry rule.
 
 Request-level failures:
 
@@ -159,10 +159,10 @@ Request-level failures:
 | Title too long | `400` | `VAL-4001` | `title 长度不能超过 255` |
 | Missing or blank `itemCode` | `400` | `VAL-4001` | `itemCode 不能为空` |
 | `itemCode` too long | `400` | `VAL-4001` | `itemCode 长度不能超过 64` |
-| Missing or invalid `scoreValue` | `400` | `VAL-4001` | `scoreValue 必须是数字` |
+| Missing or invalid `scoreValue`, including negative values, thousand separators, percentages, currency symbols, and scientific notation | `400` | `VAL-4001` | `scoreValue 必须是数字` |
 | `scoreValue > 99999999.99` | `400` | `VAL-4001` | `scoreValue 必须在 0 到 99999999.99 之间` |
-| `scoreValue` exceeds item `maxPoints` when `allowOverflow = false` | `400` | `VAL-4001` | `scoreValue 必须在 0 到项目允许范围之间` |
 | `scoreValue` has more than 2 decimal places | `400` | `VAL-4001` | `scoreValue 最多保留 2 位小数` |
+| `scoreValue` exceeds item `maxPoints` when `allowOverflow = false` | `400` | `VAL-4001` | `scoreValue 必须在 0 到项目允许范围之间` |
 | Missing or invalid `heldAt` | `400` | `VAL-4001` | `heldAt 格式非法` |
 | Missing or invalid `academicYear` | `400` | `VAL-4001` | `academicYear 不合法` |
 | File too large or too many data rows | `400` | `VAL-4001` | `文体活动导入文件最多支持 5000 行且不超过 5MB` |
@@ -234,7 +234,7 @@ Header error messages:
 D-9 always writes activity scores as:
 
 - `category_code = evaluation_item.category_code`, after item validation has required it to be `SPORTS`;
-- `item_code = normalized itemCode`;
+- `item_code = canonicalItemCode`, where `canonicalItemCode` is `evaluation_item.item_code` resolved from the trimmed request `itemCode`;
 - `source_type = 'IMPORT'`;
 - `source_ref_id = activityBatchId`.
 
@@ -258,10 +258,12 @@ Normalization is fixed as:
 
 - `normalizedAcademicYear`: request `academicYear` after trim.
 - `normalizedTitle`: request `title` after trim; no internal whitespace collapsing, case folding, or Unicode normalization is applied.
-- `normalizedItemCode`: request `itemCode` after trim.
+- `normalizedItemCode`: canonical `evaluation_item.item_code` resolved from the trimmed request `itemCode`.
 - `normalizedScoreValue`: request `scoreValue` after trim, then parsed and formatted at scale 2 with `toPlainString`.
 - `normalizedHeldAt`: request `heldAt` after trim, then parsed, truncated to whole seconds, and formatted as `yyyyMMddHHmmss`.
 - D-9 does not return `heldAt`; the normalized whole-second value is used only for deterministic batch identity.
+
+`activityBatchId` and duplicate-batch detection are intentionally metadata-exact. The service does not collapse visually similar titles that differ by internal whitespace, control characters, zero-width characters, case, or Unicode normalization form. Such inputs are distinct normalized metadata and therefore distinct activity batches in Minimal D-9.
 
 The generated `activityBatchId` format is `^ACTIVITY-[0-9]{8}-[0-9]{14}-[0-9A-F]{12}$`. Its length is 45 characters, which fits the documented `final_component_score.source_ref_id VARCHAR(64)` constraint.
 
@@ -312,7 +314,7 @@ Batch-level concurrency:
 - Production wiring uses MySQL `GET_LOCK(CONCAT('D9_ACTIVITY:', ?), 30)` and `RELEASE_LOCK(?)` on the request transaction owner connection.
 - H2 tests use an explicit keyed JVM lock fake or mock.
 - The lock must be released on every exit path, including duplicate-batch `409`, zero-row success, row-processing success, rollback, and unexpected persistence failures.
-- If the lock cannot be acquired, return `409 / BIZ-4090` with `同一活动批次正在导入，请稍后重试`.
+- If the lock cannot be acquired, return `409 / BIZ-4090` with `同一活动批次正在导入，请稍后重试`. For MySQL, `GET_LOCK` returning `0` after the 30-second wait is the same external in-flight conflict; `GET_LOCK` returning `NULL` or an unexpected SQL error is a storage failure.
 - If the lock is acquired but persisted components already exist, return `409 / BIZ-4090` with `同一活动批次已导入`.
 
 Per-student final-record concurrency:
@@ -354,7 +356,7 @@ For each successful row, insert into `final_component_score`:
 |---|---|
 | `final_record_id` | Locked or newly created DRAFT final record id. |
 | `category_code` | `evaluation_item.category_code`, already validated as `SPORTS`. |
-| `item_code` | Normalized request `itemCode`. |
+| `item_code` | `canonicalItemCode`, the resolved `evaluation_item.item_code`. |
 | `score_value` | Normalized request `scoreValue` scaled to 2 decimals. |
 | `display_text` | Row `displayText` after trim, or normalized request `title` when blank. |
 | `source_type` | `IMPORT`. |
@@ -437,16 +439,20 @@ Application service tests:
 
 - missing/blank/too-long request parameters map to frozen `ValidationException` messages;
 - `scoreValue` and `heldAt` are trimmed before strict parsing;
+- date-only `heldAt` and date-hour values without minutes fail with `heldAt 格式非法`;
 - invalid `scoreValue` variants map to request-level failures;
 - active SPORTS `evaluation_item` is required;
 - item `cap_rule_json.maxPoints` is enforced when `allowOverflow = false`;
 - null, malformed, missing-field, wrong-type, or out-of-bound `cap_rule_json` returns `ResourceNotFoundException` with `对应项目定义不存在`;
 - inactive, missing, or non-SPORTS item definitions return `ResourceNotFoundException` with `对应项目定义不存在`;
 - deterministic `activityBatchId` uses normalized metadata and score scale;
+- deterministic `activityBatchId`, duplicate-batch detection, persistence, and response all use the canonical item code resolved from `evaluation_item.item_code`;
+- visually similar but byte-different titles are distinct metadata and generate distinct `activityBatchId` values;
 - duplicate existing activity batch returns `ConflictException("同一活动批次已导入")`;
 - partially successful same-batch retries are rejected as duplicate when any component from that batch was persisted;
 - zero-success same-batch retries are accepted because no component marks the batch as imported;
 - same-batch in-flight lock conflict returns `ConflictException("同一活动批次正在导入，请稍后重试")`;
+- MySQL `GET_LOCK` timeout maps to the same in-flight lock conflict, while `NULL` or SQL errors map to storage failure;
 - lock release happens after success, request-level duplicate after lock, row-level failures, and exceptions;
 - field validation ordering matches the frozen failure table;
 - duplicate students are detected only after field validation;
