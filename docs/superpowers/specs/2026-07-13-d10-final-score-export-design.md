@@ -195,7 +195,7 @@ Create an application-level row model for export, for example `FinalScoreExportR
 | `finalRecordId` | `Long` | `final_record.id` |
 | `studentUserId` | `Long` | `final_record.student_user_id` |
 | `studentUserNo` | non-null `String` | `iam_user.user_no`, which is `NOT NULL` in the A-group IAM schema |
-| `studentUserName` | `String` | `iam_user.user_name` |
+| `studentUserName` | non-null `String` | `iam_user.user_name`, which is `NOT NULL` in the A-group IAM schema |
 | `gradeCode` | nullable `String` | parent GRADE `org_unit.unit_code`, nullable |
 | `gradeName` | nullable `String` | parent GRADE `org_unit.unit_name`, nullable |
 | `classCode` | nullable `String` | current primary CLASS `org_unit.unit_code`, nullable |
@@ -228,7 +228,7 @@ Workbook format:
 - Header row at row 1.
 - Freeze the first row.
 - Use a consistent default font. The implementation can rely on POI defaults plus bold header styling; no formulas are required.
-- Set practical fixed column widths or auto-size after writing rows so headers, class names, and timestamps are readable in common spreadsheet tools. Tests only need a minimum usability check: after generation, every column width must be greater than `8 * 256` POI width units; name/class columns must be at least `headerText.length() * 256` POI width units; timestamp columns O/P must be at least `20 * 256` POI width units to fit values like `2026-07-07T12:00:00Z`. Exact widths are not part of the public contract.
+- Set practical fixed column widths or auto-size after writing rows so headers, class names, and timestamps are readable in common spreadsheet tools. Tests only need a minimum usability check: after generation, every column width must be greater than `8 * 256` POI width units; text name columns D (`姓名`), F (`年级`), and H (`班级`) must be at least `headerText.length() * 256` POI width units; timestamp columns O (`提交时间`) and P (`确认时间`) must be at least `20 * 256` POI width units to fit values like `2026-07-07T12:00:00Z`. Exact widths are not part of the public contract.
 - No formulas are written, so formula recalculation is not part of D-10.
 
 Columns are frozen in this exact order:
