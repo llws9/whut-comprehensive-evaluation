@@ -67,6 +67,7 @@ class LectureImportApplicationContextSmokeTest {
         assertThat(service).isNotNull();
         assertThat(parser).isNotNull();
         assertThat(repository).isNotNull();
+        // H2 smoke tests replace the MySQL named-lock adapter at the test boundary.
         assertThat(batchLock).isNotNull();
         assertThat(mapper).isNotNull();
     }

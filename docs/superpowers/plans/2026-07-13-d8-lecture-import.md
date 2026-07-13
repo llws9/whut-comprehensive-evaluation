@@ -453,13 +453,13 @@ class LectureImportParserTest {
 }
 ```
 
-- [ ] **Step 2: Run failing parser test**
+- [ ] **Step 2: Run parser test gate**
 
 ```bash
 mvn -pl whut-eval-app -am -Dtest=LectureImportParserTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: compilation fails because `ExcelLectureImportParser` does not exist.
+Expected on the current branch: parser tests pass. On a pre-D-8 baseline this same gate fails until `ExcelLectureImportParser` is added; do not treat class-missing compilation failures as an expected state after the D-8 implementation exists.
 
 - [ ] **Step 3: Implement parser**
 
@@ -752,13 +752,13 @@ class LectureImportApplicationServiceTest {
 }
 ```
 
-- [ ] **Step 2: Run failing service tests**
+- [ ] **Step 2: Run service test gate**
 
 ```bash
 mvn -pl whut-eval-app -am -Dtest=LectureImportApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: compilation fails because `LectureImportApplicationService` does not exist.
+Expected on the current branch: service tests pass. On a pre-D-8 baseline this same gate fails until `LectureImportApplicationService` and its collaborators are added; do not treat class-missing compilation failures as an expected state after the D-8 implementation exists.
 
 - [ ] **Step 3: Implement request validation and batch id skeleton**
 
@@ -1600,13 +1600,13 @@ void shouldReturnFinalRecordLockedFailureAndLeaveNoComponentForConfirmedRecord()
 
 Do not add a unique key to `final_component_score`; the real D safe-init schema does not define one.
 
-- [ ] **Step 2: Run failing repository tests**
+- [ ] **Step 2: Run repository test gate**
 
 ```bash
 mvn -pl whut-eval-app -am -Dtest=MybatisLectureImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: compilation fails because mapper/repository classes do not exist.
+Expected on the current branch: repository tests pass. On a pre-D-8 baseline this same gate fails until the lecture mapper, repository, and row DTOs are added; do not treat class-missing compilation failures as an expected state after the D-8 implementation exists.
 
 - [ ] **Step 3: Implement mapper**
 
@@ -1988,13 +1988,13 @@ class LectureImportBatchLockTest {
 }
 ```
 
-- [ ] **Step 2: Run failing lock tests**
+- [ ] **Step 2: Run lock adapter test gate**
 
 ```bash
 mvn -pl whut-eval-app -am -Dtest=LectureImportBatchLockTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: compilation fails because `MySqlLectureImportBatchLock` does not exist.
+Expected on the current branch: lock adapter tests pass. On a pre-D-8 baseline this same gate fails until `MySqlLectureImportBatchLock` is added; do not treat class-missing compilation failures as an expected state after the D-8 implementation exists.
 
 - [ ] **Step 3: Implement MySQL lock adapter**
 
@@ -2271,13 +2271,13 @@ void shouldExposeLectureImportOnExactMultipartRoute() throws Exception {
 }
 ```
 
-- [ ] **Step 2: Run failing MVC tests**
+- [ ] **Step 2: Run MVC/controller test gate**
 
 ```bash
 mvn -pl whut-eval-app -am -Dtest=AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: compilation fails because lecture endpoint and response DTOs do not exist.
+Expected on the current branch: MVC and security annotation tests pass. On a pre-D-8 baseline this same gate fails until the lecture endpoint and response DTOs are added; do not treat class-missing compilation failures as an expected state after the D-8 implementation exists.
 
 - [ ] **Step 3: Implement response DTOs and controller method**
 
@@ -2406,7 +2406,7 @@ git commit -m "feat: expose lecture import endpoint"
 
 - Create: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisLectureImportRepositoryTest.java`
 - Create: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportApplicationContextSmokeTest.java`
-- Modify: tests from Tasks 2-7 as needed.
+- Modify: `LectureImportParserTest`, `LectureImportApplicationServiceTest`, `MybatisLectureImportRepositoryIntegrationTest`, `LectureImportBatchLockTest`, `AdminScoreImportControllerWebMvcTest`, and `AdminScoreImportControllerSecurityAnnotationTest` only when the focused assertions listed below expose a missing regression check.
 - No production files unless a verification failure exposes a missing requirement.
 
 - [ ] **Step 1: Add regression tests for core D-8 risks**
@@ -2426,12 +2426,13 @@ Add the focused tests below at the named layer:
 - Repository: two distinct `lectureBatchId` values for the same student/year create two `INTELLECTUAL_LECTURE` components.
 - Repository: duplicate-batch detection joins through `final_record.academic_year`.
 - Repository: the new-record path reloads the inserted DRAFT through `selectFinalRecordForUpdate(...)` before component insert; assert the component and totals update use the reloaded row id, and assert a missing reload throws `ConflictException("最终成绩保存后读取失败")`.
+- Repository: the duplicate-key recovery path catches `DataIntegrityViolationException` for `uk_final_record_student_year`, reloads the concurrently created DRAFT through `selectFinalRecordForUpdate(...)`, then continues with component insert and totals update.
 - Repository: one `insertLectureComponents` request reuses one audit timestamp for newly created `final_record.created_at`, `final_record.updated_at`, inserted `final_component_score.created_at`, and totals `updated_at`.
 - Repository: total recalculation persists scale 2 with `RoundingMode.HALF_UP` and increments `version` once per successful lecture row mutation, not once per distinct `final_record_id`.
 - Repository: a returned `FINAL_RECORD_LOCKED` row-level failure does not roll back earlier successful DRAFT rows. Assert the first DRAFT row's lecture component, `intellectual_total`, and `version` persist while the later SUBMITTED/CONFIRMED row returns only `FINAL_RECORD_LOCKED` and writes no component.
 - Repository: a thrown persistence failure rolls back the whole request transaction. Seed an unsupported component category or force `updateTotals == 0`, assert the repository throws, then assert no lecture component for the batch remains and the original `final_record` totals/version are unchanged.
 - Service: add the same-batch concurrency test to `LectureImportApplicationServiceTest`; use a fake lock plus `CountDownLatch` to hold the first thread after `tryAcquire` and before repository mutation, start a second thread with the same deterministic `lectureBatchId`, assert it gets `ConflictException("同一讲座批次正在导入，请稍后重试")`, then release the first thread and assert no second-call repository mutation occurred.
-- Context: add `LectureImportApplicationContextSmokeTest` with `WhutComprehensiveEvaluationApplication`, `local` profile, H2 datasource, and JWT test properties; assert the real Spring context contains `AdminScoreImportController`, `LectureImportApplicationService`, `LectureImportParser`, `LectureImportRepository`, `LectureImportBatchLock`, and `LectureImportMapper`.
+- Context: add `LectureImportApplicationContextSmokeTest` with `WhutComprehensiveEvaluationApplication`, `local` profile, H2 datasource, JWT test properties, and `@MockBean LectureImportBatchLock`; assert the real Spring context contains `AdminScoreImportController`, `LectureImportApplicationService`, `LectureImportParser`, `LectureImportRepository`, and `LectureImportMapper`, while the lock assertion verifies only that the test boundary mock replaces the production MySQL named-lock adapter.
 - Controller: empty lecture file maps to `400 / VAL-4001`, invalid `heldAt` maps to `400 / VAL-4001`, header-only result maps to `200` with zero counts, multipart `IOException` read failure maps to `503 / EXT-5033`, service conflict `同一讲座批次已导入` maps to `409 / BIZ-4090`, and the route is exactly `POST /api/admin/imports/lectures` with `multipart/form-data` consumes.
 
 Add `MybatisLectureImportRepositoryTest` with the focused unit tests below:
@@ -2522,6 +2523,33 @@ class MybatisLectureImportRepositoryTest {
                 .hasMessageContaining("最终成绩保存后读取失败");
     }
 
+    @Test
+    void shouldReloadDraftAndContinueWhenConcurrentInsertCreatesSameFinalRecord() {
+        LectureImportedComponent component = component();
+        FinalRecordDO lockedDraft = draftRecord(99001L, 1001L, "2025-2026");
+
+        given(mapper.selectFinalRecordForUpdate(1001L, "2025-2026"))
+                .willReturn(null, lockedDraft);
+        given(mapper.insertDraft(any(FinalRecordDO.class)))
+                .willThrow(new DataIntegrityViolationException(
+                        "Duplicate entry '1001-2025-2026' for key 'uk_final_record_student_year'"
+                ));
+        given(mapper.selectTotals(99001L))
+                .willReturn(List.of(total("INTELLECTUAL", "1.25")));
+        given(mapper.updateTotals(eq(99001L), any(), any(), any(), any(), any(), any(LocalDateTime.class)))
+                .willReturn(1);
+
+        repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-DUPRELOAD01", List.of(component));
+
+        ArgumentCaptor<LectureImportedComponentRow> componentCaptor =
+                ArgumentCaptor.forClass(LectureImportedComponentRow.class);
+        verify(mapper).insertLectureComponent(componentCaptor.capture());
+        assertThat(componentCaptor.getValue().getFinalRecordId()).isEqualTo(99001L);
+        verify(mapper, times(2)).selectFinalRecordForUpdate(1001L, "2025-2026");
+        verify(mapper).selectTotals(99001L);
+        verify(mapper).updateTotals(eq(99001L), any(), any(), any(), any(), any(), any(LocalDateTime.class));
+    }
+
     private static LectureImportedComponent component() {
         return new LectureImportedComponent(
                 2L,
@@ -2560,7 +2588,7 @@ class MybatisLectureImportRepositoryTest {
 }
 ```
 
-Add `LectureImportApplicationContextSmokeTest` with `@MockBean LectureImportBatchLock`; this deliberately replaces the production MySQL named-lock adapter in the H2 application context smoke test while keeping the rest of the D-8 slice real:
+Add `LectureImportApplicationContextSmokeTest` with `@MockBean LectureImportBatchLock`; this deliberately replaces the production MySQL named-lock adapter in the H2 application context smoke test while keeping the controller/service/parser/repository/mapper slice real. The separate `LectureImportBatchLockTest` remains responsible for the production `MySqlLectureImportBatchLock` behavior.
 
 ```java
 @SpringBootTest(classes = WhutComprehensiveEvaluationApplication.class)
@@ -2614,7 +2642,7 @@ class LectureImportApplicationContextSmokeTest {
         assertThat(service).isNotNull();
         assertThat(parser).isNotNull();
         assertThat(repository).isNotNull();
-        assertThat(batchLock).isNotNull();
+        assertThat(batchLock).isNotNull(); // Verifies the H2 test boundary mock, not the MySQL lock adapter.
         assertThat(mapper).isNotNull();
     }
 }
