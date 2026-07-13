@@ -1194,6 +1194,60 @@ void shouldApplyOrgUnitScopeAsExactMatchOnly() {
 }
 
 @Test
+void shouldAllowAllScopeWithoutOrgPathLookup() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(new UserAuthorizationContext(
+            1010L,
+            "T1010",
+            "Counselor",
+            "teacher",
+            Set.of("COUNSELOR"),
+            Set.of("score.import"),
+            List.of(new IamScopeRule(7013L, "score.import", "ALL", null, null, null, null, 80, "ACTIVE"))
+    ));
+    given(parser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", null)));
+    given(repository.findTarget(eq("S1"), eq("2025-2026")))
+            .willReturn(Optional.of(new LectureImportStudentTarget(1001L, "S1", 2201L, "/WHUT/CS/CS2022/CS2201")));
+    given(repository.insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components ->
+            components.size() == 1 && components.get(0).studentNo().equals("S1"))))
+            .willReturn(List.of());
+
+    LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+    assertThat(result.successCount()).isEqualTo(1);
+    assertThat(result.failedCount()).isZero();
+    verify(repository, never()).findActiveOrgPath(any());
+}
+
+@Test
+void shouldApplyUnionSemanticsAcrossMultipleScopeRules() {
+    given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(new UserAuthorizationContext(
+            1010L,
+            "T1010",
+            "Counselor",
+            "teacher",
+            Set.of("COUNSELOR"),
+            Set.of("score.import"),
+            List.of(
+                    new IamScopeRule(7014L, "score.import", "MAJOR", 9999L, null, null, null, 80, "ACTIVE"),
+                    new IamScopeRule(7015L, "score.import", "ORG_UNIT", 2202L, null, null, null, 80, "ACTIVE"),
+                    new IamScopeRule(7016L, "score.import", "ORG_SUBTREE", 2002L, null, null, null, 80, "ACTIVE")
+            )
+    ));
+    given(parser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", null)));
+    given(repository.findTarget(eq("S1"), eq("2025-2026")))
+            .willReturn(Optional.of(new LectureImportStudentTarget(1001L, "S1", 2201L, "/WHUT/CS/CS2022/CS2201")));
+    given(repository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+    given(repository.insertLectureComponents(eq("2025-2026"), any(), org.mockito.ArgumentMatchers.argThat(components ->
+            components.size() == 1 && components.get(0).studentNo().equals("S1"))))
+            .willReturn(List.of());
+
+    LectureImportResult result = service.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+
+    assertThat(result.successCount()).isEqualTo(1);
+    assertThat(result.failedCount()).isZero();
+}
+
+@Test
 void shouldReleaseAcquiredLockOnDuplicateConflict() {
     given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
     given(parser.parse(any())).willReturn(List.of());
@@ -1218,6 +1272,71 @@ void shouldReleaseAcquiredLockOnPersistenceFailure() {
             .isInstanceOf(ConflictException.class)
             .hasMessage("最终成绩状态已变更，请刷新后重试");
     assertThat(lock.releases.get()).isEqualTo(1);
+}
+
+@Test
+void shouldRejectConcurrentSameBatchImportBeforeSecondMutation() throws Exception {
+    UserAuthorizationContextAssembler concurrentAuthorizationContextAssembler = mock(UserAuthorizationContextAssembler.class);
+    LectureImportParser concurrentParser = mock(LectureImportParser.class);
+    LectureImportRepository concurrentRepository = mock(LectureImportRepository.class);
+    ConcurrentLock concurrentLock = new ConcurrentLock();
+    LectureImportApplicationService concurrentService = new LectureImportApplicationService(
+            concurrentAuthorizationContextAssembler,
+            concurrentParser,
+            concurrentRepository,
+            concurrentLock,
+            transactionOperations
+    );
+    CountDownLatch firstReachedBatchCheck = new CountDownLatch(1);
+    CountDownLatch allowFirstToContinue = new CountDownLatch(1);
+    AtomicInteger mutations = new AtomicInteger();
+    AtomicBoolean firstBatchCheck = new AtomicBoolean(true);
+    given(concurrentAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
+    given(concurrentParser.parse(any())).willReturn(List.of(new LectureImportRow(2L, "S1", "1.00", null)));
+    given(concurrentRepository.lectureBatchExists(eq("2025-2026"), any())).willAnswer(invocation -> {
+        if (firstBatchCheck.getAndSet(false)) {
+            firstReachedBatchCheck.countDown();
+            assertThat(allowFirstToContinue.await(5, TimeUnit.SECONDS)).isTrue();
+        }
+        return false;
+    });
+    given(concurrentRepository.findTarget(eq("S1"), eq("2025-2026")))
+            .willReturn(Optional.of(target(1001L, "/WHUT/CS/CS2022/CS2201")));
+    given(concurrentRepository.findActiveOrgPath(2002L)).willReturn(Optional.of("/WHUT/CS"));
+    given(concurrentRepository.insertLectureComponents(eq("2025-2026"), any(), any())).willAnswer(invocation -> {
+        mutations.incrementAndGet();
+        return List.of();
+    });
+
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+        CompletableFuture<LectureImportResult> first = CompletableFuture.supplyAsync(
+                () -> concurrentService.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026")),
+                executor
+        );
+        assertThat(firstReachedBatchCheck.await(5, TimeUnit.SECONDS)).isTrue();
+
+        CompletableFuture<Throwable> second = CompletableFuture.supplyAsync(() -> {
+            try {
+                concurrentService.importLectures(command("讲座", "2026-05-18T14:30", "2025-2026"));
+                return null;
+            } catch (Throwable throwable) {
+                return throwable;
+            }
+        }, executor);
+
+        assertThat(second.get(5, TimeUnit.SECONDS))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("同一讲座批次正在导入，请稍后重试");
+        allowFirstToContinue.countDown();
+        assertThat(first.get(5, TimeUnit.SECONDS).successCount()).isEqualTo(1);
+        assertThat(mutations.get()).isEqualTo(1);
+        verify(concurrentRepository, times(1)).insertLectureComponents(eq("2025-2026"), any(), any());
+        verify(concurrentRepository, times(1)).lectureBatchExists(eq("2025-2026"), any());
+    } finally {
+        allowFirstToContinue.countDown();
+        executor.shutdownNow();
+    }
 }
 
 @Test
@@ -1537,13 +1656,20 @@ void shouldDetectExistingLectureBatchByAcademicYearAndSourceRefId() {
 
 @Test
 void shouldInsertLectureComponentsWithoutOverwritingPreviousLectureBatches() {
-    repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-AAAABBBBCCCC", List.of(
-            component(2L, 1001L, "S1001", "1.25", "讲座A"),
-            component(3L, 1001L, "S1001", "2.00", "讲座A second batch row should not happen in service")
+    repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-BATCH0000001", List.of(
+            component(2L, 1001L, "S1001", "1.25", "讲座A")
+    ));
+    repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-BATCH0000002", List.of(
+            component(3L, 1001L, "S1001", "2.00", "讲座B")
     ));
 
     Long recordId = jdbcTemplate.queryForObject("SELECT id FROM final_record WHERE student_user_id = 1001 AND academic_year = '2025-2026'", Long.class);
     assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score WHERE final_record_id = ?", Long.class, recordId)).isEqualTo(2L);
+    assertThat(jdbcTemplate.queryForList("SELECT source_ref_id FROM final_component_score WHERE final_record_id = ? ORDER BY id", String.class, recordId))
+            .containsExactly(
+                    "LECTURE-20252026-20260518143000-BATCH0000001",
+                    "LECTURE-20252026-20260518143000-BATCH0000002"
+            );
     assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
             .isEqualByComparingTo("3.25");
     assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(2L);
@@ -1563,6 +1689,64 @@ void shouldRecalculateTotalsAfterEachSuccessfulLectureRowAndIncrementVersion() {
     assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
             .isEqualByComparingTo("5.25");
     assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(2L);
+}
+
+@Test
+void shouldRoundTotalsHalfUpAndIncrementVersionPerSuccessfulLectureRow() {
+    Long recordId = insertDraftRecord(1001L, "2025-2026");
+    insertComponent(recordId, "INTELLECTUAL", "INTELLECTUAL_APPLICATION", "1.235", "APPLICATION", "app-1");
+
+    repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-ROUND0000001", List.of(
+            component(2L, 1001L, "S1001", "0.001", "讲座A"),
+            component(3L, 1001L, "S1001", "0.004", "讲座B")
+    ));
+
+    assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
+            .isEqualByComparingTo("1.24");
+    assertThat(jdbcTemplate.queryForObject("SELECT grand_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
+            .isEqualByComparingTo("1.24");
+    assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(2L);
+}
+
+@Test
+void shouldKeepEarlierSuccessfulDraftRowsWhenLaterRowIsLocked() {
+    Long draftRecordId = insertDraftRecord(1001L, "2025-2026");
+    insertFinalRecord(1004L, "2025-2026", "SUBMITTED");
+    insertStudent(1004L, "S1004", "ACTIVE");
+    insertMembership(8004L, 1004L, 2010L, true, "ACTIVE");
+
+    List<LectureImportFailedRow> failures = repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-MIXED0000001", List.of(
+            component(2L, 1001L, "S1001", "1.00", "讲座A"),
+            component(3L, 1004L, "S1004", "2.00", "讲座B")
+    ));
+
+    assertThat(failures).extracting("rowNo").containsExactly(3L);
+    assertThat(failures).extracting("code").containsExactly("FINAL_RECORD_LOCKED");
+    assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM final_component_score WHERE final_record_id = ?", Long.class, draftRecordId))
+            .isEqualTo(1L);
+    assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, draftRecordId))
+            .isEqualByComparingTo("1.00");
+}
+
+@Test
+void shouldRollbackAllInsertedComponentsWhenTotalsUpdateFails() {
+    Long draftRecordId = insertDraftRecord(1001L, "2025-2026");
+    insertComponent(draftRecordId, "UNKNOWN", "UNKNOWN_ITEM", "3.00", "APPLICATION", "bad-category");
+
+    assertThatThrownBy(() -> repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-ROLLBACK00001", List.of(
+            component(2L, 1001L, "S1001", "1.00", "讲座A")
+    )))
+            .isInstanceOf(RuntimeException.class)
+            .hasMessageContaining("unsupported final record category");
+
+    assertThat(jdbcTemplate.queryForObject("""
+            SELECT COUNT(*)
+            FROM final_component_score
+            WHERE source_ref_id = 'LECTURE-20252026-20260518143000-ROLLBACK00001'
+            """, Long.class)).isZero();
+    assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, draftRecordId))
+            .isEqualByComparingTo("0.00");
+    assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, draftRecordId)).isZero();
 }
 
 @Test
@@ -1982,6 +2166,14 @@ class LectureImportBatchLockTest {
     void shouldReturnFalseWhenNamedLockTimesOut() {
         given(jdbcTemplate.queryForObject(eq("SELECT GET_LOCK(?, ?)"), eq(Integer.class), eq("D8_LECTURE:batch"), eq(30)))
                 .willReturn(0);
+
+        assertThat(lock.tryAcquire("batch", Duration.ofSeconds(30))).isFalse();
+    }
+
+    @Test
+    void shouldReturnFalseWhenNamedLockReturnsNull() {
+        given(jdbcTemplate.queryForObject(eq("SELECT GET_LOCK(?, ?)"), eq(Integer.class), eq("D8_LECTURE:batch"), eq(30)))
+                .willReturn(null);
 
         assertThat(lock.tryAcquire("batch", Duration.ofSeconds(30))).isFalse();
     }
@@ -2413,27 +2605,27 @@ git commit -m "feat: expose lecture import endpoint"
 
 Add the focused tests below at the named layer:
 
-- Parser: `rowNo` is worksheet physical row number when blank rows exist.
-- Parser: null content, missing header, CSV/text unreadable content, and unsupported workbook-like formats fail as template/unreadable errors.
-- Service: non-strict decimal score formats (`-1`, `1,234.56`, `50%`, `5E-1`) fail with `SCORE_VALUE_INVALID`.
-- Service: `scoreValue` variants `0`, `0.0`, `0.00`, `1`, `1.5`, `00`, and `00.50` are accepted and normalized to scale 2 without rounding.
-- Service: `displayText` with exactly 1000 Unicode code points is accepted and 1001 is rejected.
-- Service: `heldAt` rejects timezone offsets, accepts omitted seconds as `:00`, truncates fractional seconds, and feeds the same whole-second value into the response and `lectureBatchId`.
-- Service: `academicYear` rejects `2025-2027`, `2025-2024`, and `9999-0000`.
-- Service: unsupported-only scope set returns `OUT_OF_SCOPE`; `ALL` scope allows import; `ORG_UNIT` allows exact `orgUnitId` matches only; multiple scopes use union semantics.
-- Service: failedRows are sorted ascending by `rowNo` when failures originate from field validation, duplicate, student lookup, and scope paths.
-- Service: header-only imports and all-failed zero-success imports acquire/release the batch lock, run the authoritative duplicate-batch check, do not call component persistence, and allow same-metadata retry.
-- Repository: two distinct `lectureBatchId` values for the same student/year create two `INTELLECTUAL_LECTURE` components.
-- Repository: duplicate-batch detection joins through `final_record.academic_year`.
-- Repository: the new-record path reloads the inserted DRAFT through `selectFinalRecordForUpdate(...)` before component insert; assert the component and totals update use the reloaded row id, and assert a missing reload throws `ConflictException("最终成绩保存后读取失败")`.
-- Repository: the duplicate-key recovery path catches `DataIntegrityViolationException` for `uk_final_record_student_year`, reloads the concurrently created DRAFT through `selectFinalRecordForUpdate(...)`, then continues with component insert and totals update.
-- Repository: one `insertLectureComponents` request reuses one audit timestamp for newly created `final_record.created_at`, `final_record.updated_at`, inserted `final_component_score.created_at`, and totals `updated_at`.
-- Repository: total recalculation persists scale 2 with `RoundingMode.HALF_UP` and increments `version` once per successful lecture row mutation, not once per distinct `final_record_id`.
-- Repository: a returned `FINAL_RECORD_LOCKED` row-level failure does not roll back earlier successful DRAFT rows. Assert the first DRAFT row's lecture component, `intellectual_total`, and `version` persist while the later SUBMITTED/CONFIRMED row returns only `FINAL_RECORD_LOCKED` and writes no component.
-- Repository: a thrown persistence failure rolls back the whole request transaction. Seed an unsupported component category or force `updateTotals == 0`, assert the repository throws, then assert no lecture component for the batch remains and the original `final_record` totals/version are unchanged.
-- Service: add the same-batch concurrency test to `LectureImportApplicationServiceTest`; use a fake lock plus `CountDownLatch` to hold the first thread after `tryAcquire` and before repository mutation, start a second thread with the same deterministic `lectureBatchId`, assert it gets `ConflictException("同一讲座批次正在导入，请稍后重试")`, then release the first thread and assert no second-call repository mutation occurred.
-- Context: add `LectureImportApplicationContextSmokeTest` with `WhutComprehensiveEvaluationApplication`, `local` profile, H2 datasource, JWT test properties, and `@MockBean LectureImportBatchLock`; assert the real Spring context contains `AdminScoreImportController`, `LectureImportApplicationService`, `LectureImportParser`, `LectureImportRepository`, and `LectureImportMapper`, while the lock assertion verifies only that the test boundary mock replaces the production MySQL named-lock adapter.
-- Controller: empty lecture file maps to `400 / VAL-4001`, invalid `heldAt` maps to `400 / VAL-4001`, header-only result maps to `200` with zero counts, multipart `IOException` read failure maps to `503 / EXT-5033`, service conflict `同一讲座批次已导入` maps to `409 / BIZ-4090`, and the route is exactly `POST /api/admin/imports/lectures` with `multipart/form-data` consumes.
+- Parser: `LectureImportParserTest.shouldSkipBlankRowsAndIgnoreExtraColumns` asserts `rowNo` is worksheet physical row number when blank rows exist.
+- Parser: `LectureImportParserTest.shouldRejectTemplateErrors` covers null content, missing header, CSV/text unreadable content, and unsupported workbook-like formats.
+- Service: `LectureImportApplicationServiceTest.shouldRejectNonStrictDecimalFormats` asserts `-1`, `1,234.56`, `50%`, and `5E-1` fail with `SCORE_VALUE_INVALID`.
+- Service: `LectureImportApplicationServiceTest.shouldTreatZeroUpperBoundAndShortScaleScoresAsValidAndDefaultDisplayText` asserts `0`, `0.0`, `0.00`, `1`, `1.5`, `00`, and `00.50` normalize to scale 2 without rounding.
+- Service: `LectureImportApplicationServiceTest.shouldTreatZeroUpperBoundAndShortScaleScoresAsValidAndDefaultDisplayText` and `shouldCollectFieldFailuresInFrozenOrderAndRawValueShape` cover `displayText` 1000-code-point acceptance and 1001 rejection.
+- Service: `LectureImportApplicationServiceTest.shouldRejectInvalidRequestParametersBeforeParsing` and `shouldGenerateDeterministicBatchIdAndNormalizedMetadata` cover timezone offset rejection, omitted seconds, fractional-second truncation, whole-second response value, and `lectureBatchId`.
+- Service: `LectureImportApplicationServiceTest.shouldRejectInvalidRequestParametersBeforeParsing` covers invalid academic years `2025-2027`, `2025-2024`, and `9999-0000`.
+- Service: `LectureImportApplicationServiceTest.shouldReturnOutOfScopeWhenOnlyUnsupportedScopeRulesExist`, `shouldAllowAllScopeWithoutOrgPathLookup`, `shouldApplyOrgUnitScopeAsExactMatchOnly`, and `shouldApplyUnionSemanticsAcrossMultipleScopeRules` cover unsupported-only, `ALL`, exact `ORG_UNIT`, and multi-rule union semantics.
+- Service: `LectureImportApplicationServiceTest.shouldCollectStudentScopeAndLockFailuresAndSortFailedRowsByRowNo` plus field and duplicate tests cover ascending `failedRows` after field validation, duplicate, student lookup, scope, and repository row-failure paths.
+- Service: `LectureImportApplicationServiceTest.shouldAllowRetryWhenHeaderOnlyImportLeavesNoBatchMarker` and `shouldAllowRetryWhenAllRowsFailBeforePersistenceLeavesNoBatchMarker` assert no component persistence and same-metadata retry for zero-success requests.
+- Service: `LectureImportApplicationServiceTest.shouldRejectConcurrentSameBatchImportBeforeSecondMutation` uses `ConcurrentLock`, `CountDownLatch`, and a two-thread executor to prove the second same-batch import fails before repository mutation.
+- Repository: `MybatisLectureImportRepositoryIntegrationTest.shouldInsertLectureComponentsWithoutOverwritingPreviousLectureBatches` asserts two distinct `lectureBatchId` values for the same student/year create two `INTELLECTUAL_LECTURE` components and preserve both `source_ref_id` values.
+- Repository: `MybatisLectureImportRepositoryIntegrationTest.shouldDetectExistingLectureBatchByAcademicYearAndSourceRefId` asserts duplicate-batch detection joins through `final_record.academic_year`.
+- Repository: `MybatisLectureImportRepositoryTest.shouldReloadInsertedDraftForUpdateBeforeWritingLectureComponent`, `shouldFailDeterministicallyWhenInsertedDraftCannotBeReloadedForUpdate`, and `shouldReloadDraftAndContinueWhenConcurrentInsertCreatesSameFinalRecord` cover new-record reload, missing reload failure, and duplicate-key recovery.
+- Repository: `MybatisLectureImportRepositoryTest.shouldUseOneAuditTimestampForCreatedDraftComponentAndTotalsInSingleRequest` asserts one request timestamp is reused for DRAFT, component, and totals audit fields.
+- Repository: `MybatisLectureImportRepositoryIntegrationTest.shouldRoundTotalsHalfUpAndIncrementVersionPerSuccessfulLectureRow` asserts total rounding with `RoundingMode.HALF_UP` and one `version` increment per successful lecture row mutation.
+- Repository: `MybatisLectureImportRepositoryIntegrationTest.shouldKeepEarlierSuccessfulDraftRowsWhenLaterRowIsLocked` asserts returned `FINAL_RECORD_LOCKED` row-level failure does not roll back an earlier successful DRAFT row.
+- Repository: `MybatisLectureImportRepositoryIntegrationTest.shouldRollbackAllInsertedComponentsWhenTotalsUpdateFails` asserts thrown persistence failure rolls back the whole request transaction and leaves totals/version unchanged.
+- Lock adapter: `LectureImportBatchLockTest.shouldReturnFalseWhenNamedLockReturnsNull` asserts MySQL `GET_LOCK` returning `NULL` is treated as an acquire failure.
+- Context: `LectureImportApplicationContextSmokeTest.shouldAssembleLectureImportBeansThroughRealApplicationContext` verifies controller/service/parser/repository/mapper wiring, with `@MockBean LectureImportBatchLock` replacing the MySQL named-lock adapter only at the H2 test boundary.
+- Controller: `AdminScoreImportControllerWebMvcTest` covers empty lecture file, invalid `heldAt`, header-only success, multipart `IOException`, service conflict, and exact `POST /api/admin/imports/lectures` `multipart/form-data` routing.
 
 Add `MybatisLectureImportRepositoryTest` with the focused unit tests below:
 

@@ -35,4 +35,12 @@ class LectureImportBatchLockTest {
 
         assertThat(lock.tryAcquire("batch", Duration.ofSeconds(30))).isFalse();
     }
+
+    @Test
+    void shouldReturnFalseWhenNamedLockReturnsNull() {
+        given(jdbcTemplate.queryForObject(eq("SELECT GET_LOCK(?, ?)"), eq(Integer.class), eq("D8_LECTURE:batch"), eq(30)))
+                .willReturn(null);
+
+        assertThat(lock.tryAcquire("batch", Duration.ofSeconds(30))).isFalse();
+    }
 }
