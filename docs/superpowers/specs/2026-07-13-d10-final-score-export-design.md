@@ -83,6 +83,8 @@ Query parameters:
 
 `pageNo` and `pageSize` are not accepted for D-10 because exports are unpaged. To keep the frozen delivery document's "pagination parameter error" branch observable, any request containing `pageNo` or `pageSize` fails with `400 / VAL-4001` rather than silently ignoring those parameters.
 
+Single-value query parameters (`academicYear`, `status`, `grade`, `pageNo`, and `pageSize`) must not appear more than once. Repeated single-value parameters fail with `400 / VAL-4001`. `classes` is the only repeatable D-10 query parameter.
+
 Successful response:
 
 - HTTP status: `200`
@@ -144,6 +146,7 @@ D safe-init must add scope rules for default export accounts:
 
 The collision guard must fail deterministically if any reserved id is already occupied by an unrelated row. The inserts must include every non-null IAM column required by the documented A schema, including `created_at`.
 Deterministic failure means the SQL script must raise a database error, not only log or return a warning. Use the existing temporary guard-table pattern: seed one guard row, then insert the same guard primary key only when a reserved id is occupied by an unrelated row. Re-running the script after successful D-10 inserts must not trip the guard because the existing rows match the expected natural keys and column values. Application/database initialization must abort with a `SQLException`/duplicate-key style failure before any D-10 export scope rows are inserted when a real collision exists.
+The guard table name and shape are fixed for D-10: `CREATE TEMPORARY TABLE IF NOT EXISTS d_seed_collision_guard (id BIGINT NOT NULL PRIMARY KEY)`, followed by `DELETE FROM d_seed_collision_guard` and `INSERT INTO d_seed_collision_guard (id) VALUES (1)`. The collision check inserts `SELECT 1` into that table only when a reserved `iam_scope_rule.id` exists with a different expected signature, for example `id = 8023 AND NOT (assignment_id = 7010 AND permission_code = 'score.export.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002 AND category_code IS NULL AND item_code IS NULL AND priority = 80 AND status = 'ACTIVE')`; equivalent checks are required for `8024` and `8025`.
 The priority values intentionally mirror existing A seed conventions; larger priority numbers sort later in the current evaluator but D-10 scope rows are additive OR clauses, so the values are for consistency and auditability rather than conflict resolution.
 
 For `iam_scope_rule`, the safe-init insert statements must use the documented column list exactly:
@@ -249,16 +252,16 @@ Numeric totals are written as numeric cells using `BigDecimal.setScale(2, Roundi
 Operational capacity assumption:
 
 - D-10 is a synchronous MVP export for one required academic year and final-record totals only. The expected deployment size is school cohort scale, not open-ended multi-year platform dumps.
-- D-10 does not add a public row-count or file-size error branch because the frozen delivery contract does not define one. If production data exceeds synchronous in-memory workbook limits, the follow-up path is an out-of-scope async/export-job design rather than adding an undocumented D-10 response.
+- D-10 caps synchronous workbook generation at `20_000` export rows. If the authorized query returns more rows, the service fails before workbook allocation with `FinalScoreExportGenerationException("Excel 生成失败")`, returning the existing `503 / EXT-5033` response branch. The follow-up path for larger exports is an out-of-scope async/export-job design rather than adding a new public D-10 error code.
 
 ## Component Boundaries
 
 New application classes:
 
-- `FinalScoreExportQuery`: immutable value object that validates and normalizes export filters. Fields are `String academicYear` (required, normalized), `String status` (nullable; absent means `SUBMITTED` plus `CONFIRMED`), `String grade` (nullable), immutable `List<String> classes` (never null; empty means absent), and raw optional `String pageNo` / `String pageSize` presence markers used only to reject paginated export requests.
+- `FinalScoreExportQuery`: immutable value object that validates and normalizes export request parameters. Fields are `String academicYear` (required, normalized), `String status` (nullable; absent means `SUBMITTED` plus `CONFIRMED`), `String grade` (nullable), immutable `List<String> classes` (never null; empty means absent), and raw optional `String pageNo` / `String pageSize` presence markers used only to reject paginated export requests.
 - `FinalScoreExportRow`: row view consumed by the workbook writer.
 - `FinalScoreExportFile`: immutable filename, content type, and workbook bytes. Because `byte[]` is mutable in Java, construct and expose it with defensive copies or an equivalent immutable byte container.
-- `FinalScoreExportWorkbookWriter`: application port under `whut-eval-application`, with method `FinalScoreExportFile write(String academicYear, List<FinalScoreExportRow> rows)`.
+- `FinalScoreExportWorkbookWriter`: application port under `whut-eval-application`, with method `FinalScoreExportFile write(String academicYear, List<FinalScoreExportRow> rows)`. The returned `FinalScoreExportFile.contentType` is fixed to `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`.
 - `FinalScoreExportApplicationService`: application service under `whut-eval-application`, orchestrating auth, query, no-data handling, and workbook generation; its public export method returns `FinalScoreExportFile`.
 - `FinalScoreExportGenerationException`: extends `BaseAppException`, uses `CommonErrorCode.FILE_STORAGE_FAILED`, and maps workbook write failures to `EXT-5033`.
 
@@ -279,6 +282,7 @@ Interface:
 - Keep MVC and controller security tests in `whut-eval-app/src/test`, matching the existing controller test pattern, because `whut-eval-app` depends on and compiles `whut-eval-interfaces`.
 - Return `ResponseEntity<byte[]>` with explicit headers by calling `FinalScoreExportApplicationService`, receiving `FinalScoreExportFile`, and copying its `filename`, `contentType`, and `content` into the response.
 - Bind `pageNo` and `pageSize` as optional raw request parameters or inspect the request parameter map, then pass their raw presence into `FinalScoreExportQuery`. The controller must not keep a separate blacklist rule.
+- Detect repeated single-value parameters (`academicYear`, `status`, `grade`, `pageNo`, `pageSize`) from the raw request parameter map and convert them to `ValidationException` before service execution. `classes` remains repeatable.
 - Convert `classes` query params from `List<String>` to the application query; splitting and trimming live in `FinalScoreExportQuery` so MVC and service tests share behavior.
 
 Configuration:
@@ -297,6 +301,7 @@ Configuration:
 - `classes` is optional. Normalize by iterating raw repeated parameters in request encounter order, splitting each raw value by comma, trimming every token, dropping blanks, and de-duplicating by first appearance. For example, `classes=A,B&classes=B,C` normalizes to `[A, B, C]`. Store the result as an immutable list. An empty normalized list is equivalent to an absent `classes` parameter.
 - If the request contains `classes` but every token is blank, the normalized list is empty and the request behaves exactly as if `classes` were absent. This is not a `400` and does not force a no-data `404`.
 - `pageNo` and `pageSize` are optional raw presence markers. If either is present, even blank, throw `ValidationException("导出接口不支持分页参数")`.
+- Repeated single-value parameters are invalid request shape. If `academicYear`, `status`, `grade`, `pageNo`, or `pageSize` has more than one raw value, throw `ValidationException("导出接口不支持重复单值参数")` and map it to `400 / VAL-4001`.
 
 The controller converts HTTP parameters into `FinalScoreExportQuery` and lets the query object reject `pageNo/pageSize`, so direct service tests and controller tests share the same pagination-parameter behavior.
 
@@ -317,18 +322,21 @@ The application service must catch only workbook generation failures from the wr
 Spec-phase acceptance tests for the implementation plan:
 
 - Query normalization trims `academicYear`, rejects missing/invalid `academicYear`, treats blank `status` as absent, rejects lowercase/non-exact `status` values and `DRAFT`, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance, and treats `classes=,,` or `classes=&classes= ` as an absent class filter.
-- Query normalization rejects present `pageNo/pageSize` with `ValidationException`, and controller/WebMvc tests verify the HTTP response is `400 / VAL-4001`.
+- Query normalization rejects present `pageNo/pageSize`, including `pageNo=` or `pageSize=`, with `ValidationException`, and controller/WebMvc tests verify the HTTP response is `400 / VAL-4001` with message `导出接口不支持分页参数`.
+- Controller/WebMvc tests verify repeated single-value parameters return `400 / VAL-4001` with message `导出接口不支持重复单值参数`.
 - Controller security annotation requires `SCORE_EXPORT_ASSIGNED`.
 - `AdminFinalScoreExportControllerWebMvcTest` proves unauthenticated requests are rejected by the existing security filter chain without freezing a new D-10-specific 401/403 contract.
 - `AdminFinalScoreExportControllerWebMvcTest` covers authenticated users without `SCORE_EXPORT_ASSIGNED` returning `403`, proving the new D-10 controller is protected by the export authority.
 - Controller returns xlsx content type, attachment filename, and workbook bytes for a successful export.
 - Controller returns `404 / RES-4040` when the service reports no matching data.
-- Workbook writer creates exactly one worksheet named `final-scores`, freezes the first row, creates the exact header row, writes numeric total cells with `RoundingMode.HALF_UP`, writes blank cells for unexpected null totals, writes UTC timestamp text truncated to seconds, emits no formulas, and applies readable column widths or autosizing.
+- WebMvc/global exception tests assert the frozen public error messages: `academicYear 不合法`, `status 仅允许 SUBMITTED 或 CONFIRMED`, `导出接口不支持分页参数`, `无匹配导出数据`, and `Excel 生成失败`.
+- Workbook writer creates exactly one worksheet named `final-scores`, freezes the first row, creates the exact header row, writes numeric total cells with `RoundingMode.HALF_UP`, writes blank cells for unexpected null totals, writes blank E-H cells for null `gradeCode`/`gradeName`/`classCode`/`className` without shifting columns, writes UTC timestamp text truncated to seconds, emits no formulas, applies readable column widths or autosizing, and returns the fixed xlsx content type.
 - Application service uses `score.export.assigned`, not `score.view.assigned`, when building the access context.
 - Application service returns `FinalScoreExportFile`, and controller copies its filename, content type, and bytes into the response.
 - Application service wraps workbook writer failures as `FinalScoreExportGenerationException`; controller/WebMvc or global exception tests verify the public response remains `503 / EXT-5033`.
 - Application service returns `RES-4040` for an empty authorized row list.
 - Application service returns `RES-4040` when unknown `grade` or unknown `classes` values produce an empty authorized row list.
+- Application service rejects more than `20_000` export rows with `FinalScoreExportGenerationException`, mapping to `503 / EXT-5033`.
 - Application service and workbook writer preserve repository row order in the generated workbook, including rows whose `gradeCode` or `classCode` sort last because of portable `NULLS LAST` ordering.
 - Repository export query applies status, grade, class, and scope filters together.
 - Repository uses the explicit `org_membership` -> `class_ou` -> `grade_ou` join path above, including `class_ou.parent_id` for grade lookup.
