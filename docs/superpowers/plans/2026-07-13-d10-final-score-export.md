@@ -801,7 +801,15 @@ Minimum assertions:
 - first data row contains the expected final record id, academic year, student number, student name, class code, status, and total cells from the seeded database;
 - assert column A `finalRecordId` is a `CellType.STRING` cell whose value equals the seeded final record id string, matching the POI writer contract that uses `row.finalRecordId().toString()`.
 
-The test may disable servlet security filters only if it supplies `UserAuthorizationContextAssembler` through the same production-facing security-context adapter path used by existing integration tests; it must not mock `FinalScoreExportApplicationService`, `FinalRecordQueryRepository`, or `FinalScoreExportWorkbookWriter`.
+Use the same production-facing security-context adapter pattern as `FinalRecordSecurityIntegrationTest` / `SecurityProbeControllerWebMvcTest` instead of a direct mocked `UserAuthorizationContextAssembler`:
+
+- import the JWT security slice used by those tests: `SecurityConfiguration`, `RestAuthenticationEntryPoint`, `RestAccessDeniedHandler`, `JwtAuthenticationFilter`, `JwtTokenResolver`, `JwtClaimsParser`, `JwtClaimsToCurrentUserMapper`, `SecurityContextCurrentUserProvider`, `SecurityContextUserAuthorizationContextAssembler`, and `JwtConfigurationValidator`;
+- set the same `infra.security.jwt.*` test properties and create a valid Bearer access token with user id, user no/name, identity, roles, authorities, session id, and token type claims;
+- mock only `UserAuthorizationContextLoader` and `AccessSessionService` from the security boundary. The loader must return a `UserAuthorizationContext` built from the `UserAuthorizationContextLoadRequest`, with authority `score.export.assigned` and an active export `ALL` or matching `ORG_SUBTREE` `IamScopeRule`;
+- call MockMvc with `Authorization: Bearer <token>` so `JwtAuthenticationFilter` creates `CurrentUser`, `SecurityContextCurrentUserProvider` reads it from `SecurityContextHolder`, and `SecurityContextUserAuthorizationContextAssembler` is the `UserAuthorizationContextAssembler` seen by `FinalScoreExportApplicationService`;
+- do not use `@AutoConfigureMockMvc(addFilters = false)` for this full-chain HTTP test unless the test also proves the service still receives its authorization context through `SecurityContextUserAuthorizationContextAssembler`.
+
+The test must not mock `FinalScoreExportApplicationService`, `FinalRecordQueryRepository`, or `FinalScoreExportWorkbookWriter`.
 
 - [ ] **Step 2: Run failing full-chain integration test**
 
