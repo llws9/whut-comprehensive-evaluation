@@ -104,6 +104,8 @@ Failure responses:
 | Caller has authority but no matching authorized records | `404` | `RES-4040` | `无匹配导出数据` |
 | Workbook generation fails or synchronous row cap is exceeded | `503` | `EXT-5033` | `Excel 生成失败` |
 
+Failure response bodies use the existing global exception handler's standard JSON shape. The table freezes only the D-10-relevant HTTP status, public code, and public message.
+
 Unauthenticated requests are out of D-10's public response contract and follow the existing Spring Security entry-point behavior. D-10 tests only need to prove the endpoint is protected; they must not force a new unauthenticated 401/403 contract unless the global security layer already freezes one.
 
 No-data semantics:
@@ -132,7 +134,7 @@ The repository must:
 - Use the student's active primary membership only: `org_membership.status = 'ACTIVE' AND is_primary = 1`.
 - Use `LEFT OUTER JOIN` from `final_record` to `org_membership`, `class_ou`, and `grade_ou`, and place `ACTIVE`, `is_primary`, `unit_type`, and org status predicates inside the join conditions rather than in the `WHERE` clause.
 - The join path is fixed: `LEFT OUTER JOIN org_membership om ON om.user_id = fr.student_user_id AND om.status = 'ACTIVE' AND om.is_primary = 1`; `LEFT OUTER JOIN org_unit class_ou ON class_ou.id = om.org_unit_id AND class_ou.unit_type = 'CLASS' AND class_ou.status = 'ACTIVE'`; `LEFT OUTER JOIN org_unit grade_ou ON grade_ou.id = class_ou.parent_id AND grade_ou.unit_type = 'GRADE' AND grade_ou.status = 'ACTIVE'`.
-- Preserve final records that have no active primary class membership only for callers whose `score.export.assigned` scope resolves to `ALL`, and only when no grade/class filter is present. Organization-scoped callers (`ORG_UNIT` or `ORG_SUBTREE`) must not see no-membership rows because the translated scope predicate compares `org_path`/`org_unit_id` against `class_ou.path`/`class_ou.id`, which are `NULL` for those rows and therefore do not match.
+- Preserve final records that have no derived active CLASS organization unit only for callers whose `score.export.assigned` scope resolves to `ALL`, and only when no grade/class filter is present. This includes students with no active primary membership and students whose active primary membership is not attached to an active `unit_type = 'CLASS'` org unit. Organization-scoped callers (`ORG_UNIT` or `ORG_SUBTREE`) must not see no-derived-class rows because the translated scope predicate compares `org_path`/`org_unit_id` against `class_ou.path`/`class_ou.id`, which are `NULL` for those rows and therefore do not match.
 - Apply grade/class predicates only when the corresponding filter is present. These filter predicates must be appended to the `WHERE` clause, not to the `LEFT OUTER JOIN ... ON` conditions, so rows with missing derived grade/class fields are excluded when a grade or class filter exists.
 - When `grade` is present, append `(grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})` in `WHERE`.
 - When normalized `classes` is non-empty, append `(class_ou.unit_code IN (...) OR class_ou.unit_name IN (...))` in `WHERE` using safe MyBatis/provider parameters for every token. If normalized `classes` is empty, append no class predicate.
@@ -253,7 +255,7 @@ Numeric totals are written as numeric cells using `BigDecimal.setScale(2, Roundi
 Operational capacity assumption:
 
 - D-10 is a synchronous MVP export for one required academic year and final-record totals only. The expected deployment size is school cohort scale, not open-ended multi-year platform dumps.
-- D-10 caps synchronous workbook generation at `20_000` export rows. The repository must enforce the detection mechanism with a bounded `LIMIT 20001` export-row query, not an unbounded full read followed by an in-memory size check. The service asks for up to `20_001` authorized rows; if the returned list size is greater than `20_000`, the service fails before workbook allocation with `FinalScoreExportGenerationException("Excel 生成失败")`, returning the existing `503 / EXT-5033` response branch. This intentionally merges "too many rows for the synchronous MVP" and workbook-generation failures into the same frozen public response because the D delivery contract only exposes `EXT-5033 / Excel 生成失败` for export generation failure. D-10 must not introduce a distinct public error code, HTTP status, or message for row-cap overflow; the follow-up path for larger exports is an out-of-scope async/export-job design.
+- D-10 caps synchronous workbook generation at `20_000` export rows. Define a single application-layer constant, for example `MAX_SYNC_EXPORT_ROWS = 20_000`, and derive the repository probe limit as `MAX_SYNC_EXPORT_ROWS + 1`; do not scatter hard-coded `20_000`/`20_001` values across service, repository, and tests. The repository must enforce the detection mechanism with a bounded `LIMIT #{limit}` export-row query, not an unbounded full read followed by an in-memory size check. The service asks for up to `MAX_SYNC_EXPORT_ROWS + 1` authorized rows; if the returned list size is greater than `MAX_SYNC_EXPORT_ROWS`, the service fails before workbook allocation with `FinalScoreExportGenerationException("Excel 生成失败")`, returning the existing `503 / EXT-5033` response branch. This intentionally merges "too many rows for the synchronous MVP" and workbook-generation failures into the same frozen public response because the D delivery contract only exposes `EXT-5033 / Excel 生成失败` for export generation failure. D-10 must not introduce a distinct public error code, HTTP status, or message for row-cap overflow; the follow-up path for larger exports is an out-of-scope async/export-job design.
 
 ## Component Boundaries
 
@@ -268,9 +270,9 @@ New application classes:
 
 Repository changes:
 
-- Add `listAdminFinalScoreExportRows(FinalRecordAccessContext accessContext, FinalScoreExportQuery query, int limit)` to `FinalRecordQueryRepository`; D-10 callers pass `20_001` so the service can detect more than `20_000` rows without loading an unbounded result set.
+- Add `listAdminFinalScoreExportRows(FinalRecordAccessContext accessContext, FinalScoreExportQuery query, int limit)` to `FinalRecordQueryRepository`; D-10 callers pass `MAX_SYNC_EXPORT_ROWS + 1` so the service can detect more than `MAX_SYNC_EXPORT_ROWS` rows without loading an unbounded result set.
 - Implement it in `MybatisPlusFinalRecordQueryRepository` using the existing scope-fragment path.
-- Add mapper/provider methods that extend the current final-record admin query with `LEFT OUTER JOIN` aliases for `class_ou` and `grade_ou`, preserving no-membership rows unless grade/class filters are present.
+- Add mapper/provider methods that extend the current final-record admin query with `LEFT OUTER JOIN` aliases for `class_ou` and `grade_ou`, preserving no-derived-class rows unless grade/class filters are present.
 
 Infrastructure:
 
@@ -337,14 +339,15 @@ Spec-phase acceptance tests for the implementation plan:
 - Application service wraps workbook writer failures as `FinalScoreExportGenerationException`; controller/WebMvc or global exception tests verify the public response remains `503 / EXT-5033`.
 - Application service returns `RES-4040` for an empty authorized row list.
 - Application service returns `RES-4040` when unknown `grade` or unknown `classes` values produce an empty authorized row list.
-- Application service calls `listAdminFinalScoreExportRows(..., 20_001)` and rejects more than `20_000` returned export rows with `FinalScoreExportGenerationException`, mapping to `503 / EXT-5033`, before calling the workbook writer.
+- Application service calls `listAdminFinalScoreExportRows(..., MAX_SYNC_EXPORT_ROWS + 1)` and rejects more than `MAX_SYNC_EXPORT_ROWS` returned export rows with `FinalScoreExportGenerationException`, mapping to `503 / EXT-5033`, before calling the workbook writer.
+- Application service verifies the off-by-one boundary: exactly `MAX_SYNC_EXPORT_ROWS` returned rows are passed to the workbook writer and export successfully, while `MAX_SYNC_EXPORT_ROWS + 1` returned rows fail before workbook generation.
 - Application service and workbook writer preserve repository row order in the generated workbook, including rows whose `gradeCode` or `classCode` sort last because of portable `NULLS LAST` ordering.
 - Repository export query applies status, grade, class, and scope filters together.
 - Repository uses the explicit `org_membership` -> `class_ou` -> `grade_ou` join path above, including `class_ou.parent_id` for grade lookup.
 - Repository defaults absent `status` to `SUBMITTED` plus `CONFIRMED`, and verifies `DRAFT` rows are excluded from exports even when matching academic year and scope.
 - Repository keeps records with no primary membership exportable to ALL scope when no grade/class filter is present, with blank grade/class fields.
 - Repository excludes no-primary-membership records for ORG_UNIT and ORG_SUBTREE callers because `class_ou.id`/`class_ou.path` are `NULL` and cannot satisfy organization predicates.
-- Repository excludes no-membership records when grade or class filters are present.
+- Repository excludes no-derived-class records when grade or class filters are present.
 - Repository covers ambiguous `grade` values that match one grade code and another grade name, proving both matching grade rows are included.
 - Repository covers ambiguous `classes` tokens that match one class code and another class name, proving both matching class rows are included.
 - Repository verifies portable null ordering for both `gradeCode` and `classCode`.
