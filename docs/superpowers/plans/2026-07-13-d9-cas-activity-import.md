@@ -135,7 +135,6 @@ package edu.whut.eval.application.finalrecord.importing;
 import edu.whut.eval.domain.finalrecord.importing.ActivityImportFailedRow;
 import edu.whut.eval.domain.finalrecord.importing.ActivityImportResult;
 import edu.whut.eval.domain.finalrecord.importing.ActivityImportRow;
-import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -143,12 +142,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static org.assertj.core.api.Assertions.assertThat;
+final class ActivityImportContractsCompileTest {
+    private ActivityImportContractsCompileTest() {
+    }
 
-class ActivityImportContractsCompileTest {
-
-    @Test
-    void contractsShouldExposeD9Shapes() {
+    static ActivityImportResult constructContracts(ActivityImportParser parser,
+                                                   ActivityImportBatchLock lock,
+                                                   ActivityImportRepository repository) {
         ActivityImportRow row = new ActivityImportRow(2L, "2022305001", "签到");
         ActivityImportFailedRow failure = new ActivityImportFailedRow(
                 2L,
@@ -166,55 +166,46 @@ class ActivityImportContractsCompileTest {
                 1,
                 List.of(failure)
         );
+        ActivityImportedComponent component = new ActivityImportedComponent(
+                row.rowNo(),
+                1001L,
+                row.studentNo(),
+                result.itemCode(),
+                "SPORTS",
+                new BigDecimal("0.50"),
+                row.displayText(),
+                row.displayText(),
+                result.activityBatchId()
+        );
 
-        assertThat(row.rowNo()).isEqualTo(2L);
-        assertThat(result.failedRows()).containsExactly(failure);
-    }
+        List<ActivityImportRow> parsedRows = parser.parse(new byte[]{1});
+        boolean locked = lock.tryAcquire(result.activityBatchId(), Duration.ofSeconds(1));
+        Optional<ActivityImportItemDefinition> item = repository.findActiveSportsItem(result.itemCode());
+        Optional<ActivityImportStudentTarget> target = repository.findTarget(row.studentNo(), "2025-2026");
+        Optional<String> orgPath = repository.findActiveOrgPath(target.map(ActivityImportStudentTarget::orgUnitId).orElse(0L));
+        boolean exists = repository.activityBatchExists("2025-2026", "SPORTS", result.itemCode(), result.activityBatchId());
+        List<ActivityImportFailedRow> repositoryFailures = repository.insertActivityComponents(
+                "2025-2026",
+                List.of(component)
+        );
+        lock.release(result.activityBatchId());
 
-    @Test
-    void portsShouldCompile() {
-        ActivityImportParser parser = fileContent -> List.of(new ActivityImportRow(2L, "2022305001", null));
-        ActivityImportBatchLock lock = new ActivityImportBatchLock() {
-            @Override
-            public boolean tryAcquire(String activityBatchId, Duration timeout) {
-                return true;
-            }
-
-            @Override
-            public void release(String activityBatchId) {
-            }
-        };
-        ActivityImportRepository repository = new ActivityImportRepository() {
-            @Override
-            public Optional<ActivityImportItemDefinition> findActiveSportsItem(String itemCode) {
-                return Optional.empty();
-            }
-
-            @Override
-            public boolean activityBatchExists(String academicYear, String categoryCode, String itemCode, String activityBatchId) {
-                return false;
-            }
-
-            @Override
-            public Optional<ActivityImportStudentTarget> findTarget(String studentNo, String academicYear) {
-                return Optional.empty();
-            }
-
-            @Override
-            public Optional<String> findActiveOrgPath(Long orgUnitId) {
-                return Optional.empty();
-            }
-
-            @Override
-            public List<ActivityImportFailedRow> insertActivityComponents(String academicYear,
-                                                                          List<ActivityImportedComponent> components) {
-                return List.of();
-            }
-        };
-
-        assertThat(parser.parse(new byte[]{1})).hasSize(1);
-        assertThat(lock.tryAcquire("batch", Duration.ofSeconds(1))).isTrue();
-        assertThat(repository.findActiveSportsItem("SPORTS_COMPETITION")).isEmpty();
+        long totalCount = parsedRows.size()
+                + (locked ? 0 : 1)
+                + item.stream().count()
+                + target.stream().count()
+                + orgPath.stream().count()
+                + (exists ? 1 : 0);
+        return new ActivityImportResult(
+                result.activityBatchId(),
+                result.title(),
+                result.itemCode(),
+                result.scoreValue(),
+                totalCount,
+                result.successCount(),
+                repositoryFailures.size() + failure.rowNo(),
+                repositoryFailures
+        );
     }
 }
 ```
@@ -224,7 +215,7 @@ class ActivityImportContractsCompileTest {
 Run:
 
 ```bash
-mvn -pl whut-eval-application -Dtest=ActivityImportContractsCompileTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-application test-compile
 ```
 
 Expected: compilation fails because the `ActivityImport*` domain records and ports do not exist.
@@ -412,7 +403,7 @@ public interface ActivityImportRepository {
 Run:
 
 ```bash
-mvn -pl whut-eval-application -Dtest=ActivityImportContractsCompileTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-application test-compile
 ```
 
 Expected: pass.
@@ -660,8 +651,10 @@ Create `ActivityImportApplicationServiceTest` with fakes for `ActivityImportPars
 - batch lock timeout (`tryAcquire == false`) maps to `409 / BIZ-4090 / 同一活动批次正在导入，请稍后重试`, while lock adapter `DataAccessException` propagates to the existing database-access failure handler;
 - successful rows use normalized request title as persisted display text when row `displayText` is blank, while failed-row raw values still return blank as `null`;
 - duplicate `studentNo` handling: field-invalid rows do not consume a duplicate key; the first field-valid row consumes `studentNo.trim()` even if later target lookup, scope, or final-record lock processing fails; later field-valid rows with the same normalized key fail with `DUPLICATE_STUDENT`;
-- row-level failure code/message table: `STUDENT_NO_REQUIRED` / `studentNo 不能为空`, `STUDENT_NOT_FOUND` / `studentNo 对应学生不存在或未启用`, `DISPLAY_TEXT_TOO_LONG` / `displayText 长度不能超过 1000`, `DUPLICATE_STUDENT` / `同一活动批次中学生重复`, `OUT_OF_SCOPE` / `当前用户无权导入该学生文体活动成绩`, `FINAL_RECORD_LOCKED` / `已提交或已确认的最终成绩不允许导入覆盖`;
+- row-level failure code/message table: blank `studentNo` uses `STUDENT_NO_REQUIRED` / `studentNo 不能为空`; over-64 `studentNo` and missing/inactive student target both use `STUDENT_NOT_FOUND` / `studentNo 对应学生不存在或未启用`; over-1000 `displayText` uses `DISPLAY_TEXT_TOO_LONG` / `displayText 长度不能超过 1000`; duplicate student uses `DUPLICATE_STUDENT` / `同一活动批次中学生重复`; out of scope uses `OUT_OF_SCOPE` / `当前用户无权导入该学生文体活动成绩`; locked final record uses `FINAL_RECORD_LOCKED` / `已提交或已确认的最终成绩不允许导入覆盖`;
 - row-level failures for blank `studentNo`, over-64 `studentNo`, over-1000-code-point `displayText` after trim, duplicate student, missing target, out of scope, locked final record;
+- `failedRows` are sorted by original Excel `rowNo ASC` before building the response, regardless of whether the failure was produced during field validation, lookup/scope checks, or repository locked-record processing.
+- `totalCount` is the number of non-blank parsed data rows and equals `successCount + failedCount`; `failedCount` includes every row-level failure category.
 - unsupported or empty scope grants no rows;
 - defensive service-level missing authority maps through `AccessDeniedAppException`;
 - lock release happens through transaction `afterCompletion` when synchronization is active and through a `finally` fallback when synchronization is inactive.
@@ -705,13 +698,13 @@ Implement `ActivityImportApplicationService` with these concrete rules:
 - `heldAt` parses ISO-8601 datetime strings through `LocalDateTime.parse(heldAt.trim())` such as `2026-05-18T14:30:00`, rejects date-only and date-hour strings by parse failure, and uses `.withNano(0)`.
 - `itemCode` lookup calls `repository.findActiveSportsItem(trimmedItemCode)` after request syntax validation.
 - `activityBatchId` format is `ACTIVITY-` + `academicYear` without hyphen + `-` + `heldAt` formatted `yyyyMMddHHmmss` + `-` + the first 12 uppercase hexadecimal characters of SHA-256 over `hashInput(request, held)`.
-- `hashInput(request, held)` uses length-prefixed segments joined by `|` in this exact order: normalized `title`, canonical `itemCode`, scale-2 plain-string `scoreValue`, normalized `academicYear`, and formatted `held`. Each segment is `codePointCount:value`. Do not use delimiter-only concatenation.
+- `hashInput(request, held)` uses length-prefixed segments joined by `|` in this exact order: normalized `title`, canonical `itemCode`, scale-2 plain-string `scoreValue`, normalized `academicYear`, and `held` formatted as `yyyyMMddHHmmss`. Each segment is `codePointCount:value`. Do not use delimiter-only concatenation.
 - Lock orchestration follows D-8: enter `transactionOperations.execute(...)`, acquire lock on the request transaction owner connection, map `tryAcquire == false` to `ConflictException("同一活动批次正在导入，请稍后重试")`, let `DataAccessException` from the lock adapter propagate, register release through `TransactionSynchronizationManager` when synchronization is active, run authoritative duplicate check, process rows, and release on the same transaction owner connection in `afterCompletion` or in `finally` if synchronization registration did not happen.
 - Duplicate check calls `repository.activityBatchExists(academicYear, "SPORTS", canonicalItemCode, activityBatchId)` and maps a positive result to `ConflictException("同一活动批次已导入")`.
 - Duplicate-student detection runs after `validateFields(row)` passes. It uses `studentNo.trim()` as the key, first field-valid row wins and consumes the key, field-invalid rows do not consume the key, and later field-valid duplicates fail even when the first field-valid row later fails lookup, scope, or locked-record processing.
 - Field-valid rows are sorted by `studentUserId ASC`, then `rowNo ASC` before persistence.
 - For each successful row, `displayText` is `row.displayText().trim()` when present, otherwise the normalized request `title`.
-- `validateFields(row)` covers only row field validation: blank `studentNo`, `studentNo` over 64 Unicode code points after trim, and `displayText` over 1000 Unicode code points after trim with code `DISPLAY_TEXT_TOO_LONG` and message `displayText 长度不能超过 1000`.
+- `validateFields(row)` covers only row field validation: blank `studentNo` with `STUDENT_NO_REQUIRED`, `studentNo` over 64 Unicode code points after trim with `STUDENT_NOT_FOUND`, and `displayText` over 1000 Unicode code points after trim with `DISPLAY_TEXT_TOO_LONG`.
 - `canAccess` copies D-8 current-org scope semantics and uses real org paths for `ORG_SUBTREE`. It supports `GLOBAL`, `ORG_UNIT`, and `ORG_SUBTREE`; unsupported or empty scopes grant no rows. For each target, use `orgPathCache.computeIfAbsent(target.orgUnitId(), repository::findActiveOrgPath)` so missing/inactive orgs fail closed. `ORG_UNIT` matches the target `orgUnitId`; `ORG_SUBTREE` matches when the cached target org path equals the scoped org path or starts with scoped org path plus `/`.
 - `rawValue` contains exactly `studentNo` and `displayText`, with blank values as `null`.
 
