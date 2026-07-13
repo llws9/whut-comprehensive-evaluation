@@ -16,6 +16,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
 
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -179,6 +180,40 @@ class MybatisLectureImportRepositoryTest {
         verify(mapper, times(2)).selectFinalRecordForUpdate(1001L, "2025-2026");
         verify(mapper).selectTotals(99001L);
         verify(mapper).updateTotals(eq(99001L), any(), any(), any(), any(), any(), any(LocalDateTime.class));
+    }
+
+    @Test
+    void shouldRecognizeMysqlDuplicateKeyErrorCodeWhenReloadingConcurrentDraft() {
+        LectureImportedComponent component = new LectureImportedComponent(
+                2L,
+                1001L,
+                "S1001",
+                "1.25",
+                new BigDecimal("1.25"),
+                "讲座",
+                "讲座"
+        );
+        FinalRecordDO lockedDraft = draftRecord(99001L, 1001L, "2025-2026");
+
+        given(mapper.selectFinalRecordForUpdate(1001L, "2025-2026"))
+                .willReturn(null, lockedDraft);
+        given(mapper.insertDraft(any(FinalRecordDO.class)))
+                .willThrow(new DataIntegrityViolationException(
+                        "insert failed",
+                        new SQLException("Duplicate entry", "23000", 1062)
+                ));
+        given(mapper.selectTotals(99001L))
+                .willReturn(List.of(total("INTELLECTUAL", "1.25")));
+        given(mapper.updateTotals(eq(99001L), any(), any(), any(), any(), any(), any(LocalDateTime.class)))
+                .willReturn(1);
+
+        repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-DUPRELOAD02", List.of(component));
+
+        ArgumentCaptor<LectureImportedComponentRow> componentCaptor =
+                ArgumentCaptor.forClass(LectureImportedComponentRow.class);
+        verify(mapper).insertLectureComponent(componentCaptor.capture());
+        assertThat(componentCaptor.getValue().getFinalRecordId()).isEqualTo(99001L);
+        verify(mapper, times(2)).selectFinalRecordForUpdate(1001L, "2025-2026");
     }
 
     private static FinalRecordDO draftRecord(Long id, Long studentUserId, String academicYear) {

@@ -28,6 +28,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Locale;
 
 @RestController
 @Validated
@@ -81,19 +82,26 @@ public class AdminScoreImportController {
     @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_IMPORT)")
     @PostMapping(value = "/lectures", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResponse<LectureImportResultResponse> importLectures(
-            @RequestParam("file") MultipartFile file,
-            @RequestParam("title") String title,
-            @RequestParam("heldAt") String heldAt,
-            @RequestParam("academicYear") String academicYear) {
+            @RequestParam(value = "file", required = false) MultipartFile file,
+            @RequestParam(value = "title", required = false) String title,
+            @RequestParam(value = "heldAt", required = false) String heldAt,
+            @RequestParam(value = "academicYear", required = false) String academicYear) {
         if (file == null || file.isEmpty()) {
             throw new ValidationException("上传文件不能为空");
         }
         if (title == null || title.isBlank()) {
             throw new ValidationException("title 不能为空");
         }
+        if (heldAt == null || heldAt.isBlank()) {
+            throw new ValidationException("heldAt 格式非法");
+        }
+        if (academicYear == null || academicYear.isBlank()) {
+            throw new ValidationException("academicYear 不合法");
+        }
         if (file.getSize() > MAX_LECTURE_IMPORT_BYTES) {
             throw new ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB");
         }
+        validateLectureWorkbookFilename(file);
 
         byte[] bytes;
         try {
@@ -108,6 +116,17 @@ public class AdminScoreImportController {
                 new ImportLecturesCommand(bytes, title, heldAt, academicYear)
         );
         return ApiResponse.success(toResponse(result));
+    }
+
+    private void validateLectureWorkbookFilename(MultipartFile file) {
+        String filename = file.getOriginalFilename();
+        if (filename == null) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
+        String normalized = filename.trim().toLowerCase(Locale.ROOT);
+        if (!normalized.endsWith(".xlsx") && !normalized.endsWith(".xls")) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
     }
 
     private MentorScoreImportResultResponse toResponse(MentorScoreImportResult result) {

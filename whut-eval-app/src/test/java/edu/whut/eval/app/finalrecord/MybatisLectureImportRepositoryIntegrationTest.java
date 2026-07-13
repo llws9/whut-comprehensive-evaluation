@@ -6,10 +6,14 @@ import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import edu.whut.eval.application.finalrecord.importing.LectureImportRepository;
 import edu.whut.eval.application.finalrecord.importing.LectureImportStudentTarget;
 import edu.whut.eval.application.finalrecord.importing.LectureImportedComponent;
+import edu.whut.eval.application.finalrecord.importing.MentorScoreImportRepository;
+import edu.whut.eval.application.finalrecord.importing.MentorScoreImportedComponent;
 import edu.whut.eval.domain.finalrecord.importing.LectureImportFailedRow;
 import edu.whut.eval.infra.config.MybatisPlusConfig;
 import edu.whut.eval.infra.persistence.mapper.LectureImportMapper;
+import edu.whut.eval.infra.persistence.mapper.MentorScoreImportMapper;
 import edu.whut.eval.infra.persistence.repository.MybatisLectureImportRepository;
+import edu.whut.eval.infra.persistence.repository.MybatisMentorScoreImportRepository;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,6 +49,9 @@ class MybatisLectureImportRepositoryIntegrationTest {
 
     @Autowired
     private LectureImportRepository repository;
+
+    @Autowired
+    private MentorScoreImportRepository mentorRepository;
 
     @BeforeEach
     void setUpSchema() {
@@ -89,7 +96,7 @@ class MybatisLectureImportRepositoryIntegrationTest {
                   final_record_id BIGINT NOT NULL,
                   category_code VARCHAR(64) NOT NULL,
                   item_code VARCHAR(64) NOT NULL,
-                  score_value DECIMAL(10,3) NOT NULL,
+                  score_value DECIMAL(10,2) NOT NULL,
                   display_text VARCHAR(1000) NULL,
                   source_type VARCHAR(32) NOT NULL,
                   source_ref_id VARCHAR(64) NULL,
@@ -155,6 +162,54 @@ class MybatisLectureImportRepositoryIntegrationTest {
         assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
                 .isEqualByComparingTo("3.25");
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(2L);
+    }
+
+    @Test
+    void shouldPreserveMentorUpsertAndLectureInsertOnlySemanticsForSameStudent() {
+        mentorRepository.upsertDraftComponent(
+                mentorComponent("INTELLECTUAL", "INTELLECTUAL_MENTOR", "2.00", "mentor-import-1"),
+                "D7-batch"
+        );
+        repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-CROSS000001", List.of(
+                component(2L, 1001L, "S1001", "1.00", "讲座A")
+        ));
+        mentorRepository.upsertDraftComponent(
+                mentorComponent("INTELLECTUAL", "INTELLECTUAL_MENTOR", "3.00", "mentor-import-2"),
+                "D7-batch"
+        );
+        repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-CROSS000002", List.of(
+                component(3L, 1001L, "S1001", "0.50", "讲座B")
+        ));
+
+        Long recordId = jdbcTemplate.queryForObject("SELECT id FROM final_record WHERE student_user_id = 1001 AND academic_year = '2025-2026'", Long.class);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM final_component_score
+                WHERE final_record_id = ?
+                  AND source_type = 'IMPORT'
+                  AND category_code = 'INTELLECTUAL'
+                  AND item_code = 'INTELLECTUAL_MENTOR'
+                """, Long.class, recordId)).isEqualTo(1L);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT source_ref_id
+                FROM final_component_score
+                WHERE final_record_id = ?
+                  AND item_code = 'INTELLECTUAL_MENTOR'
+                """, String.class, recordId)).isEqualTo("mentor-import-2");
+        assertThat(jdbcTemplate.queryForList("""
+                SELECT source_ref_id
+                FROM final_component_score
+                WHERE final_record_id = ?
+                  AND item_code = 'INTELLECTUAL_LECTURE'
+                ORDER BY id
+                """, String.class, recordId))
+                .containsExactly(
+                        "LECTURE-20252026-20260518143000-CROSS000001",
+                        "LECTURE-20252026-20260518143000-CROSS000002"
+                );
+        assertThat(jdbcTemplate.queryForObject("SELECT intellectual_total FROM final_record WHERE id = ?", BigDecimal.class, recordId))
+                .isEqualByComparingTo("4.50");
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM final_record WHERE id = ?", Long.class, recordId)).isEqualTo(4L);
     }
 
     @Test
@@ -310,12 +365,32 @@ class MybatisLectureImportRepositoryIntegrationTest {
         );
     }
 
+    private static MentorScoreImportedComponent mentorComponent(String categoryCode,
+                                                               String itemCode,
+                                                               String scoreValue,
+                                                               String sourceRefId) {
+        return new MentorScoreImportedComponent(
+                2L,
+                1001L,
+                "2025-2026",
+                categoryCode,
+                itemCode,
+                new BigDecimal(scoreValue),
+                "导师评分",
+                sourceRefId
+        );
+    }
+
     @Configuration
     @EnableTransactionManagement
-    @MapperScan(basePackageClasses = LectureImportMapper.class)
+    @MapperScan(basePackageClasses = {
+            LectureImportMapper.class,
+            MentorScoreImportMapper.class
+    })
     @Import({
             MybatisPlusConfig.class,
-            MybatisLectureImportRepository.class
+            MybatisLectureImportRepository.class,
+            MybatisMentorScoreImportRepository.class
     })
     static class TestConfig {
 

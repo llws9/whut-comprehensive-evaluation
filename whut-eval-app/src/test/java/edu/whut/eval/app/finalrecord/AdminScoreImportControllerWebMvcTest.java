@@ -36,6 +36,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -204,6 +205,22 @@ class AdminScoreImportControllerWebMvcTest {
     }
 
     @Test
+    void shouldReturn400WhenLectureTitleParameterIsMissing() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "lectures.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+
+        mockMvc.perform(multipart("/api/admin/imports/lectures")
+                        .file(file)
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("title 不能为空"));
+
+        verifyNoInteractions(lectureImportApplicationService);
+    }
+
+    @Test
     void shouldReturn400WhenLectureFileIsEmpty() throws Exception {
         MockMultipartFile file = new MockMultipartFile("file", "empty.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", new byte[0]);
 
@@ -216,6 +233,37 @@ class AdminScoreImportControllerWebMvcTest {
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.code").value("VAL-4001"))
                 .andExpect(jsonPath("$.message").value("上传文件不能为空"));
+    }
+
+    @Test
+    void shouldReturn400WhenLectureFilePartIsMissing() throws Exception {
+        mockMvc.perform(multipart("/api/admin/imports/lectures")
+                        .param("title", "学院学术讲座")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("上传文件不能为空"));
+
+        verifyNoInteractions(lectureImportApplicationService);
+    }
+
+    @Test
+    void shouldReturn400WhenLectureFileExtensionIsUnsupported() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "lectures.xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12", "excel".getBytes());
+
+        mockMvc.perform(multipart("/api/admin/imports/lectures")
+                        .file(file)
+                        .param("title", "学院学术讲座")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("导入模板错误：文件不可解析"));
+
+        verifyNoInteractions(lectureImportApplicationService);
     }
 
     @Test
@@ -233,6 +281,38 @@ class AdminScoreImportControllerWebMvcTest {
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.code").value("VAL-4001"))
                 .andExpect(jsonPath("$.message").value("heldAt 格式非法"));
+    }
+
+    @Test
+    void shouldReturn400WhenLectureHeldAtParameterIsMissing() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "lectures.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+
+        mockMvc.perform(multipart("/api/admin/imports/lectures")
+                        .file(file)
+                        .param("title", "学院学术讲座")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("heldAt 格式非法"));
+
+        verifyNoInteractions(lectureImportApplicationService);
+    }
+
+    @Test
+    void shouldReturn400WhenLectureAcademicYearParameterIsMissing() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "lectures.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+
+        mockMvc.perform(multipart("/api/admin/imports/lectures")
+                        .file(file)
+                        .param("title", "学院学术讲座")
+                        .param("heldAt", "2026-05-18T14:30"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("academicYear 不合法"));
+
+        verifyNoInteractions(lectureImportApplicationService);
     }
 
     @Test

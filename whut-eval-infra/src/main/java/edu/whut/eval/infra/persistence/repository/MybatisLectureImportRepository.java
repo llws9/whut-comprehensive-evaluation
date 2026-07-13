@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -108,6 +109,14 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
     }
 
     private boolean isDuplicateFinalRecord(DataIntegrityViolationException exception) {
+        Throwable current = exception;
+        while (current != null) {
+            if (current instanceof SQLException sqlException
+                    && (sqlException.getErrorCode() == 1062 || "23000".equals(sqlException.getSQLState()))) {
+                return true;
+            }
+            current = current.getCause();
+        }
         String message = String.valueOf(exception.getMostSpecificCause().getMessage()).toLowerCase(Locale.ROOT);
         return message.contains("uk_final_record_student_year")
                 || (message.contains("duplicate") && message.contains("final_record"));
