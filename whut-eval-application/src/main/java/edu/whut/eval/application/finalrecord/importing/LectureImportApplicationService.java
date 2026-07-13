@@ -142,6 +142,7 @@ public class LectureImportApplicationService {
             ));
         }
 
+        // Keep final_record FOR UPDATE locks in a stable order across concurrent imports.
         resolvedRows.sort(Comparator.comparing(ResolvedLectureRow::studentUserId).thenComparing(ResolvedLectureRow::rowNo));
         List<LectureImportedComponent> components = resolvedRows.stream()
                 .map(row -> new LectureImportedComponent(

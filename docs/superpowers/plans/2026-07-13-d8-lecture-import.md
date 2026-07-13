@@ -1259,7 +1259,7 @@ Expected: several tests fail because `processRows` still returns all failures an
 
 - [ ] **Step 3: Implement row preparation and transactional row processing**
 
-Replace `prepareRows` and `processRows`, then add the helper methods below. `prepareRows` runs before the transaction and handles field validation plus duplicate detection in workbook order. `processRows` runs inside `transactionOperations` after the batch lock is acquired and handles student lookup, scope matching, final-record mutation, and row-failure merging.
+Replace `prepareRows`, `processRows`, and the earlier `PreparedLectureRows` record from Task 3. `PreparedLectureRows.fieldValidRows` must change from `List<LectureImportRow>` to `List<FieldValidLectureRow>` so normalized `studentNo` and `scoreValueText` are carried forward without re-parsing. `prepareRows` runs before the transaction and handles field validation plus duplicate detection in workbook order. `processRows` runs inside `transactionOperations` after the batch lock is acquired and handles student lookup, scope matching, final-record mutation, and row-failure merging.
 
 ```java
 private PreparedLectureRows prepareRows(List<LectureImportRow> rows) {
@@ -1312,6 +1312,7 @@ private LectureImportResult processRows(NormalizedRequest request,
         resolvedRows.add(new ResolvedLectureRow(row.rowNo(), target.get().studentUserId(), candidate.studentNo(), candidate.scoreValueText(), candidate.scoreValue(), rawDisplayText, displayText));
     }
 
+    // Keep final_record FOR UPDATE locks in a stable order across concurrent imports.
     resolvedRows.sort(Comparator.comparing(ResolvedLectureRow::studentUserId).thenComparing(ResolvedLectureRow::rowNo));
     List<LectureImportedComponent> components = resolvedRows.stream()
             .map(row -> new LectureImportedComponent(row.rowNo(), row.studentUserId(), row.studentNo(), row.scoreValueText(), row.scoreValue(), row.rawDisplayText(), row.displayText()))
@@ -1808,17 +1809,21 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
         FinalRecordDO record = newDraftRecord(academicYear, component.studentUserId());
         try {
             mapper.insertDraft(record);
-            return record;
+            return reloadDraftForUpdate(academicYear, component);
         } catch (DataIntegrityViolationException exception) {
             if (!isDuplicateFinalRecord(exception)) {
                 throw exception;
             }
-            FinalRecordDO concurrentRecord = mapper.selectFinalRecordForUpdate(component.studentUserId(), academicYear);
-            if (concurrentRecord == null) {
-                throw new ConflictException("最终成绩保存后读取失败");
-            }
-            return concurrentRecord;
+            return reloadDraftForUpdate(academicYear, component);
         }
+    }
+
+    private FinalRecordDO reloadDraftForUpdate(String academicYear, LectureImportedComponent component) {
+        FinalRecordDO record = mapper.selectFinalRecordForUpdate(component.studentUserId(), academicYear);
+        if (record == null) {
+            throw new ConflictException("最终成绩保存后读取失败");
+        }
+        return record;
     }
 
     private boolean isDuplicateFinalRecord(DataIntegrityViolationException exception) {
@@ -1910,6 +1915,8 @@ Notes for this implementation:
 - `findTarget` maps `LectureImportStudentTargetRow`.
 - `lectureBatchExists` returns `count > 0`.
 - `insertLectureComponents` returns `List<LectureImportFailedRow>` and loops over already sorted components. For each component, it locks `final_record`, inserts or reloads a DRAFT row if missing, records `FINAL_RECORD_LOCKED` as a row-level failure for non-DRAFT records, inserts a new lecture component, and immediately recalculates totals while the row is still locked.
+- Newly inserted DRAFT records are immediately reloaded through `selectFinalRecordForUpdate(...)`, not reused from the insert DTO. This keeps the first row for a student/year on the same explicit lock path as existing and concurrently created records.
+- `isDuplicateFinalRecord` is scoped to the current H2/MySQL driver message format plus the `uk_final_record_student_year` constraint name. Re-verify this guard, or replace it with SQLState/vendor-code handling, before changing database drivers.
 - The locked-row failure raw value uses `component.studentNo()`, `component.scoreValueText()`, and `component.rawDisplayText()` so the response preserves the frozen workbook raw value contract, not internal ids or defaulted display text.
 - Recalculate and update totals after every successful lecture component insertion, not once per distinct `final_record_id`. This preserves the frozen D-8 contract that `final_record.version` increments for every successful row mutation, including multiple successful lecture rows for the same student in one repository call.
 - D-8 has two distinct failure modes inside the single request transaction: expected row-level business failures are collected and allow other rows in the same request to commit; unexpected persistence failures throw and roll back the whole request. This is why `FINAL_RECORD_LOCKED` returns a failed row, while `updateTotals == 0` throws.
@@ -2412,16 +2419,19 @@ Add the focused tests below at the named layer:
 - Service: header-only imports and all-failed zero-success imports acquire/release the batch lock, run the authoritative duplicate-batch check, do not call component persistence, and allow same-metadata retry.
 - Repository: two distinct `lectureBatchId` values for the same student/year create two `INTELLECTUAL_LECTURE` components.
 - Repository: duplicate-batch detection joins through `final_record.academic_year`.
+- Repository: the new-record path reloads the inserted DRAFT through `selectFinalRecordForUpdate(...)` before component insert; assert the component and totals update use the reloaded row id, and assert a missing reload throws `ConflictException("最终成绩保存后读取失败")`.
 - Repository: total recalculation persists scale 2 with `RoundingMode.HALF_UP` and increments `version` once per successful lecture row mutation, not once per distinct `final_record_id`.
-- Repository: a returned `FINAL_RECORD_LOCKED` row-level failure does not roll back earlier successful DRAFT rows, but a thrown persistence failure such as `updateTotals == 0` rolls back the whole request transaction and leaves no inserted lecture component.
+- Repository: a returned `FINAL_RECORD_LOCKED` row-level failure does not roll back earlier successful DRAFT rows. Assert the first DRAFT row's lecture component, `intellectual_total`, and `version` persist while the later SUBMITTED/CONFIRMED row returns only `FINAL_RECORD_LOCKED` and writes no component.
+- Repository: a thrown persistence failure rolls back the whole request transaction. Seed an unsupported component category or force `updateTotals == 0`, assert the repository throws, then assert no lecture component for the batch remains and the original `final_record` totals/version are unchanged.
 - Service: add the same-batch concurrency test to `LectureImportApplicationServiceTest`; use a fake lock plus `CountDownLatch` to hold the first thread after `tryAcquire` and before repository mutation, start a second thread with the same deterministic `lectureBatchId`, assert it gets `ConflictException("同一讲座批次正在导入，请稍后重试")`, then release the first thread and assert no second-call repository mutation occurred.
+- Context: add `LectureImportApplicationContextSmokeTest` with `WhutComprehensiveEvaluationApplication`, `local` profile, H2 datasource, and JWT test properties; assert the real Spring context contains `AdminScoreImportController`, `LectureImportApplicationService`, `LectureImportParser`, `LectureImportRepository`, `LectureImportBatchLock`, and `LectureImportMapper`.
 - Controller: empty lecture file maps to `400 / VAL-4001`, invalid `heldAt` maps to `400 / VAL-4001`, header-only result maps to `200` with zero counts, multipart `IOException` read failure maps to `503 / EXT-5033`, service conflict `同一讲座批次已导入` maps to `409 / BIZ-4090`, and the route is exactly `POST /api/admin/imports/lectures` with `multipart/form-data` consumes.
 
 - [ ] **Step 2: Run targeted D-8 suite**
 
 ```bash
 mvn -pl whut-eval-app -am \
-  -Dtest=LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest \
+  -Dtest=LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,LectureImportApplicationContextSmokeTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest \
   test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 

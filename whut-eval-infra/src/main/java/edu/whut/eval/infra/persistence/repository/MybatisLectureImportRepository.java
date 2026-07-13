@@ -88,17 +88,21 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
         FinalRecordDO record = newDraftRecord(academicYear, component.studentUserId());
         try {
             mapper.insertDraft(record);
-            return record;
+            return reloadDraftForUpdate(academicYear, component);
         } catch (DataIntegrityViolationException exception) {
             if (!isDuplicateFinalRecord(exception)) {
                 throw exception;
             }
-            FinalRecordDO concurrentRecord = mapper.selectFinalRecordForUpdate(component.studentUserId(), academicYear);
-            if (concurrentRecord == null) {
-                throw new ConflictException("最终成绩保存后读取失败");
-            }
-            return concurrentRecord;
+            return reloadDraftForUpdate(academicYear, component);
         }
+    }
+
+    private FinalRecordDO reloadDraftForUpdate(String academicYear, LectureImportedComponent component) {
+        FinalRecordDO record = mapper.selectFinalRecordForUpdate(component.studentUserId(), academicYear);
+        if (record == null) {
+            throw new ConflictException("最终成绩保存后读取失败");
+        }
+        return record;
     }
 
     private boolean isDuplicateFinalRecord(DataIntegrityViolationException exception) {
