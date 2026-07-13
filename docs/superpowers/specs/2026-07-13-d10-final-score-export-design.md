@@ -83,7 +83,7 @@ Query parameters:
 
 `pageNo` and `pageSize` are not accepted for D-10 because exports are unpaged. To keep the frozen delivery document's "pagination parameter error" branch observable, any request containing `pageNo` or `pageSize` fails with `400 / VAL-4001` rather than silently ignoring those parameters.
 
-Single-value query parameters (`academicYear`, `status`, `grade`, `pageNo`, and `pageSize`) must not appear more than once. Repeated single-value parameters fail with `400 / VAL-4001`. `classes` is the only repeatable D-10 query parameter. If a request both repeats and includes `pageNo` or `pageSize`, the pagination-parameter branch wins and the message is `导出接口不支持分页参数`.
+Raw HTTP request-shape validation happens before `FinalScoreExportQuery` construction. The controller first checks `pageNo`/`pageSize` presence; if either key is present, including blank or repeated values, the pagination-parameter branch wins and the message is `导出接口不支持分页参数`. After that, `academicYear`, `status`, and `grade` must not appear more than once. Repeated non-pagination single-value parameters fail with `400 / VAL-4001` and message `导出接口不支持重复单值参数`. `classes` is the only repeatable D-10 query parameter.
 
 Successful response:
 
@@ -99,6 +99,7 @@ Failure responses:
 | Missing or invalid `academicYear` | `400` | `VAL-4001` | `academicYear 不合法` |
 | Invalid `status` | `400` | `VAL-4001` | `status 仅允许 SUBMITTED 或 CONFIRMED` |
 | `pageNo` or `pageSize` is present | `400` | `VAL-4001` | `导出接口不支持分页参数` |
+| Repeated `academicYear`, `status`, or `grade` | `400` | `VAL-4001` | `导出接口不支持重复单值参数` |
 | Authenticated caller lacks `score.export.assigned` authority | `403` | `AUTH-4030` | Existing security error response. |
 | Caller has authority but no matching authorized records | `404` | `RES-4040` | `无匹配导出数据` |
 | Workbook generation fails | `503` | `EXT-5033` | `Excel 生成失败` |
@@ -145,7 +146,7 @@ D safe-init must add scope rules for default export accounts:
 | `8025` | `7012` platform admin | `score.export.assigned` | `ALL` | `NULL` | `NULL` | `NULL` | `{"superAdmin":true}` | `1000` | `ACTIVE` | `CURRENT_TIMESTAMP()` |
 
 The collision guard must fail deterministically if any reserved id is already occupied by an unrelated row. The inserts must include every non-null IAM column required by the documented A schema, including `created_at`.
-Deterministic failure means the SQL script must raise a database error, not only log or return a warning. Use the existing temporary guard-table pattern: seed one guard row, then insert the same guard primary key only when a reserved id is occupied by an unrelated row. Re-running the script after successful D-10 inserts must not trip the guard because the existing rows match the expected natural keys and column values. Application/database initialization must abort with a `SQLException`/duplicate-key style failure before any D-10 export scope rows are inserted when a real collision exists.
+Deterministic failure means the SQL script must raise a database error, not only log or return a warning. Use the existing temporary guard-table pattern: seed one guard row, then insert the same guard primary key only when a reserved id is occupied by an unrelated row. Re-running the script after successful D-10 inserts must not trip the guard because the existing rows match the expected natural keys and column values. Application/database initialization must abort with a `SQLException`/duplicate-key style failure before any D-10 export scope rows are inserted when a real collision exists. The safe-init script must run all `8023`/`8024`/`8025` collision checks before executing any D-10 `iam_scope_rule` insert; guard checks and inserts must not be interleaved. If the initializer runs the script inside a database transaction, a guard failure must roll back the whole D-10 seed block, but the guard-first ordering is still required for non-transactional runners.
 The guard table name and shape are fixed for D-10: `CREATE TEMPORARY TABLE IF NOT EXISTS d_seed_collision_guard (id BIGINT NOT NULL PRIMARY KEY)`, followed by `DELETE FROM d_seed_collision_guard` and `INSERT INTO d_seed_collision_guard (id) VALUES (1)`. The collision check inserts `SELECT 1` into that table only when a reserved `iam_scope_rule.id` exists with a different expected signature. The expected signature must include all frozen semantic columns: `assignment_id`, `permission_code`, `scope_type`, `org_unit_id`, `category_code`, `item_code`, `expression_json`, `priority`, and `status`; `created_at` is excluded because reruns may preserve the original timestamp. For example, `8023` must check `id = 8023 AND NOT (assignment_id = 7010 AND permission_code = 'score.export.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002 AND category_code IS NULL AND item_code IS NULL AND JSON_UNQUOTE(JSON_EXTRACT(expression_json, '$.scoreRole')) = 'counselor' AND priority = 80 AND status = 'ACTIVE')`; equivalent JSON/value checks are required for `8024` and `8025`.
 The priority values intentionally mirror existing A seed conventions; larger priority numbers sort later in the current evaluator but D-10 scope rows are additive OR clauses, so the values are for consistency and auditability rather than conflict resolution.
 
@@ -183,25 +184,25 @@ Filtering rules:
 
 Create an application-level row model for export, for example `FinalScoreExportRow`, with these fields:
 
-| Field | Source |
-|---|---|
-| `finalRecordId` | `final_record.id` |
-| `studentUserId` | `final_record.student_user_id` |
-| `studentUserNo` | `iam_user.user_no` |
-| `studentUserName` | `iam_user.user_name` |
-| `gradeCode` | parent GRADE `org_unit.unit_code`, nullable |
-| `gradeName` | parent GRADE `org_unit.unit_name`, nullable |
-| `classCode` | current primary CLASS `org_unit.unit_code`, nullable |
-| `className` | current primary CLASS `org_unit.unit_name`, nullable |
-| `academicYear` | `final_record.academic_year` |
-| `status` | `final_record.status` |
-| `moralTotal` | `final_record.moral_total` |
-| `intellectualTotal` | `final_record.intellectual_total` |
-| `physicalTotal` | `final_record.physical_total` |
-| `laborTotal` | `final_record.labor_total` |
-| `grandTotal` | `final_record.grand_total` |
-| `submittedAt` | `final_record.submitted_at` |
-| `confirmedAt` | `final_record.confirmed_at` |
+| Field | Java type | Source |
+|---|---|---|
+| `finalRecordId` | `Long` | `final_record.id` |
+| `studentUserId` | `Long` | `final_record.student_user_id` |
+| `studentUserNo` | `String` | `iam_user.user_no` |
+| `studentUserName` | `String` | `iam_user.user_name` |
+| `gradeCode` | nullable `String` | parent GRADE `org_unit.unit_code`, nullable |
+| `gradeName` | nullable `String` | parent GRADE `org_unit.unit_name`, nullable |
+| `classCode` | nullable `String` | current primary CLASS `org_unit.unit_code`, nullable |
+| `className` | nullable `String` | current primary CLASS `org_unit.unit_name`, nullable |
+| `academicYear` | `String` | `final_record.academic_year` |
+| `status` | `String` | `final_record.status` |
+| `moralTotal` | `BigDecimal` | `final_record.moral_total` |
+| `intellectualTotal` | `BigDecimal` | `final_record.intellectual_total` |
+| `physicalTotal` | `BigDecimal` | `final_record.physical_total` |
+| `laborTotal` | `BigDecimal` | `final_record.labor_total` |
+| `grandTotal` | `BigDecimal` | `final_record.grand_total` |
+| `submittedAt` | nullable `Instant` | `final_record.submitted_at` |
+| `confirmedAt` | nullable `Instant` | `final_record.confirmed_at` |
 
 Ordering is deterministic:
 
@@ -252,22 +253,22 @@ Numeric totals are written as numeric cells using `BigDecimal.setScale(2, Roundi
 Operational capacity assumption:
 
 - D-10 is a synchronous MVP export for one required academic year and final-record totals only. The expected deployment size is school cohort scale, not open-ended multi-year platform dumps.
-- D-10 caps synchronous workbook generation at `20_000` export rows. If the authorized query returns more rows, the service fails before workbook allocation with `FinalScoreExportGenerationException("Excel 生成失败")`, returning the existing `503 / EXT-5033` response branch. The follow-up path for larger exports is an out-of-scope async/export-job design rather than adding a new public D-10 error code.
+- D-10 caps synchronous workbook generation at `20_000` export rows. The repository must enforce the detection mechanism with a bounded `LIMIT 20001` export-row query, not an unbounded full read followed by an in-memory size check. The service asks for up to `20_001` authorized rows; if the returned list size is greater than `20_000`, the service fails before workbook allocation with `FinalScoreExportGenerationException("Excel 生成失败")`, returning the existing `503 / EXT-5033` response branch. The follow-up path for larger exports is an out-of-scope async/export-job design rather than adding a new public D-10 error code.
 
 ## Component Boundaries
 
 New application classes:
 
-- `FinalScoreExportQuery`: immutable value object that validates and normalizes export request parameters. Fields are `String academicYear` (required, normalized), `String status` (nullable; absent means `SUBMITTED` plus `CONFIRMED`), `String grade` (nullable), immutable `List<String> classes` (never null; empty means absent), and raw optional `String pageNo` / `String pageSize` presence markers used only to reject paginated export requests.
+- `FinalScoreExportQuery`: immutable value object that validates and normalizes semantic export request parameters after raw HTTP shape has been validated by the controller. Fields are `String academicYear` (required, normalized), `String status` (nullable; absent means `SUBMITTED` plus `CONFIRMED`), `String grade` (nullable), and immutable `List<String> classes` (never null; empty means absent). It does not accept `pageNo` or `pageSize`, because those are rejected before query construction.
 - `FinalScoreExportRow`: row view consumed by the workbook writer.
 - `FinalScoreExportFile`: immutable filename, content type, and workbook bytes. Because `byte[]` is mutable in Java, construct and expose it with defensive copies or an equivalent immutable byte container.
 - `FinalScoreExportWorkbookWriter`: application port under `whut-eval-application`, with method `FinalScoreExportFile write(String academicYear, List<FinalScoreExportRow> rows)`. The returned `FinalScoreExportFile.contentType` is fixed to `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`.
-- `FinalScoreExportApplicationService`: application service under `whut-eval-application`, orchestrating auth, query, no-data handling, and workbook generation; its public export method returns `FinalScoreExportFile`.
+- `FinalScoreExportApplicationService`: application service under `whut-eval-application`, orchestrating auth, query, no-data handling, and workbook generation; its public export method is `FinalScoreExportFile export(FinalScoreExportQuery query)`.
 - `FinalScoreExportGenerationException`: extends `BaseAppException`, uses `CommonErrorCode.FILE_STORAGE_FAILED`, and maps workbook write failures to `EXT-5033`.
 
 Repository changes:
 
-- Add `listAdminFinalScoreExportRows(FinalRecordAccessContext accessContext, FinalScoreExportQuery query)` to `FinalRecordQueryRepository`.
+- Add `listAdminFinalScoreExportRows(FinalRecordAccessContext accessContext, FinalScoreExportQuery query, int limit)` to `FinalRecordQueryRepository`; D-10 callers pass `20_001` so the service can detect more than `20_000` rows without loading an unbounded result set.
 - Implement it in `MybatisPlusFinalRecordQueryRepository` using the existing scope-fragment path.
 - Add mapper/provider methods that extend the current final-record admin query with `LEFT OUTER JOIN` aliases for `class_ou` and `grade_ou`, preserving no-membership rows unless grade/class filters are present.
 
@@ -280,9 +281,9 @@ Interface:
 
 - Add `AdminFinalScoreExportController` under `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin`.
 - Keep MVC and controller security tests in `whut-eval-app/src/test`, matching the existing controller test pattern, because `whut-eval-app` depends on and compiles `whut-eval-interfaces`.
-- Return `ResponseEntity<byte[]>` with explicit headers by calling `FinalScoreExportApplicationService`, receiving `FinalScoreExportFile`, and copying its `filename`, `contentType`, and `content` into the response.
-- Bind `pageNo` and `pageSize` as optional raw request parameters or inspect the request parameter map, then pass their raw presence into `FinalScoreExportQuery`. The controller must not keep a separate blacklist rule.
-- Detect repeated single-value parameters (`academicYear`, `status`, `grade`, `pageNo`, `pageSize`) from the raw request parameter map and convert them to `ValidationException` before service execution. `classes` remains repeatable.
+- Return `ResponseEntity<byte[]>` with explicit headers by calling `FinalScoreExportApplicationService.export(FinalScoreExportQuery query)`, receiving `FinalScoreExportFile`, and copying its `filename`, `contentType`, and `content` into the response.
+- Inspect the raw request parameter map before constructing `FinalScoreExportQuery`. If `pageNo` or `pageSize` is present as a key, including blank or repeated values, throw `ValidationException("导出接口不支持分页参数")`; this branch has priority over repeated-parameter validation.
+- Detect repeated non-pagination single-value parameters (`academicYear`, `status`, `grade`) from the raw request parameter map and convert them to `ValidationException("导出接口不支持重复单值参数")` before service execution. `classes` remains repeatable.
 - Convert `classes` query params from `List<String>` to the application query; splitting and trimming live in `FinalScoreExportQuery` so MVC and service tests share behavior.
 
 Configuration:
@@ -292,7 +293,7 @@ Configuration:
 
 ## Validation
 
-`FinalScoreExportQuery` owns export request validation:
+Raw HTTP request-shape validation is a controller responsibility because only MVC receives the original multi-value parameter map. `FinalScoreExportQuery` owns semantic export request validation after that shape check:
 
 - `academicYear` is required, trimmed, non-blank, and must match `^\d{4}-\d{4}$`.
 - The academic-year end must equal start + 1.
@@ -300,10 +301,10 @@ Configuration:
 - `grade` is optional. Blank becomes `null`.
 - `classes` is optional. Normalize by iterating raw repeated parameters in request encounter order, splitting each raw value by comma, trimming every token, dropping blanks, and de-duplicating by first appearance. For example, `classes=A,B&classes=B,C` normalizes to `[A, B, C]`. Store the result as an immutable list. An empty normalized list is equivalent to an absent `classes` parameter.
 - If the request contains `classes` but every token is blank, the normalized list is empty and the request behaves exactly as if `classes` were absent. This is not a `400` and does not force a no-data `404`.
-- `pageNo` and `pageSize` are optional raw presence markers. If either is present, even blank, throw `ValidationException("导出接口不支持分页参数")`.
-- Repeated single-value parameters are invalid request shape. If `academicYear`, `status`, `grade`, `pageNo`, or `pageSize` has more than one raw value, throw `ValidationException("导出接口不支持重复单值参数")` and map it to `400 / VAL-4001`.
+- `FinalScoreExportQuery` must not define `pageNo` or `pageSize` fields. Pagination-parameter validation is complete before the query object is created.
+- Repeated `academicYear`, `status`, or `grade` parameters are invalid HTTP request shape. The controller detects them before query construction and throws `ValidationException("导出接口不支持重复单值参数")`, mapping to `400 / VAL-4001`.
 
-The controller converts HTTP parameters into `FinalScoreExportQuery` and lets the query object reject `pageNo/pageSize`, so direct service tests and controller tests share the same pagination-parameter behavior.
+The controller converts HTTP parameters into `FinalScoreExportQuery` only after raw request-shape checks pass. Direct query/service tests cover semantic validation; controller/WebMvc tests cover `pageNo`/`pageSize` presence and repeated single-value request-shape errors.
 
 ## Error Mapping
 
@@ -322,21 +323,21 @@ The application service must catch only workbook generation failures from the wr
 Spec-phase acceptance tests for the implementation plan:
 
 - Query normalization trims `academicYear`, rejects missing/invalid `academicYear`, treats blank `status` as absent, rejects lowercase/non-exact `status` values and `DRAFT`, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance, and treats `classes=,,` or `classes=&classes= ` as an absent class filter.
-- Query normalization rejects present `pageNo/pageSize`, including `pageNo=` or `pageSize=`, with `ValidationException`, and controller/WebMvc tests verify the HTTP response is `400 / VAL-4001` with message `导出接口不支持分页参数`.
-- Controller/WebMvc tests verify repeated single-value parameters return `400 / VAL-4001` with message `导出接口不支持重复单值参数`; repeated `pageNo/pageSize` returns `400 / VAL-4001` with message `导出接口不支持分页参数` because the pagination-parameter branch has priority.
+- Controller/WebMvc tests verify present `pageNo/pageSize`, including `pageNo=`, `pageSize=`, and repeated `pageNo/pageSize`, return `400 / VAL-4001` with message `导出接口不支持分页参数` because the pagination-parameter branch has priority.
+- Controller/WebMvc tests verify repeated non-pagination single-value parameters (`academicYear`, `status`, `grade`) return `400 / VAL-4001` with message `导出接口不支持重复单值参数`.
 - Controller security annotation requires `SCORE_EXPORT_ASSIGNED`.
 - `AdminFinalScoreExportControllerWebMvcTest` proves unauthenticated requests are rejected by the existing security filter chain without freezing a new D-10-specific 401/403 contract.
 - `AdminFinalScoreExportControllerWebMvcTest` covers authenticated users without `SCORE_EXPORT_ASSIGNED` returning `403`, proving the new D-10 controller is protected by the export authority.
 - Controller returns xlsx content type, attachment filename, and workbook bytes for a successful export.
 - Controller returns `404 / RES-4040` when the service reports no matching data.
-- WebMvc/global exception tests assert the frozen public error messages: `academicYear 不合法`, `status 仅允许 SUBMITTED 或 CONFIRMED`, `导出接口不支持分页参数`, `无匹配导出数据`, and `Excel 生成失败`.
+- WebMvc/global exception tests assert the frozen public error messages: `academicYear 不合法`, `status 仅允许 SUBMITTED 或 CONFIRMED`, `导出接口不支持分页参数`, `导出接口不支持重复单值参数`, `无匹配导出数据`, and `Excel 生成失败`.
 - Workbook writer creates exactly one worksheet named `final-scores`, freezes the first row, creates the exact header row, writes numeric total cells with `RoundingMode.HALF_UP`, writes blank cells for unexpected null totals, writes blank E-H cells for null `gradeCode`/`gradeName`/`classCode`/`className` without shifting columns, writes UTC timestamp text truncated to seconds, emits no formulas, applies readable column widths or autosizing, and returns the fixed xlsx content type.
 - Application service uses `score.export.assigned`, not `score.view.assigned`, when building the access context.
 - Application service returns `FinalScoreExportFile`, and controller copies its filename, content type, and bytes into the response.
 - Application service wraps workbook writer failures as `FinalScoreExportGenerationException`; controller/WebMvc or global exception tests verify the public response remains `503 / EXT-5033`.
 - Application service returns `RES-4040` for an empty authorized row list.
 - Application service returns `RES-4040` when unknown `grade` or unknown `classes` values produce an empty authorized row list.
-- Application service rejects more than `20_000` export rows with `FinalScoreExportGenerationException`, mapping to `503 / EXT-5033`.
+- Application service calls `listAdminFinalScoreExportRows(..., 20_001)` and rejects more than `20_000` returned export rows with `FinalScoreExportGenerationException`, mapping to `503 / EXT-5033`, before calling the workbook writer.
 - Application service and workbook writer preserve repository row order in the generated workbook, including rows whose `gradeCode` or `classCode` sort last because of portable `NULLS LAST` ordering.
 - Repository export query applies status, grade, class, and scope filters together.
 - Repository uses the explicit `org_membership` -> `class_ou` -> `grade_ou` join path above, including `class_ou.parent_id` for grade lookup.
