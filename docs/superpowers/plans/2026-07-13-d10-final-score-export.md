@@ -202,7 +202,17 @@ Expected: compilation fails because `FinalScoreExportQuery` does not exist.
 
 - [ ] **Step 3: Implement query/file contracts**
 
-Create `FinalScoreExportQuery` as a Java record. Use `List.copyOf(...)` for immutable classes and process fields in this order: validate `academicYear`, validate `status`, normalize `grade`, then normalize and cap `classes`.
+Create `FinalScoreExportQuery` as a Java record:
+
+```java
+public record FinalScoreExportQuery(String academicYear,
+                                    String status,
+                                    String grade,
+                                    List<String> classes) {
+}
+```
+
+Use `List.copyOf(...)` for immutable classes and process fields in this order: validate `academicYear`, validate `status`, normalize `grade`, then normalize and cap `classes`. The `classes` constructor argument is the raw servlet parameter list: each string may contain comma-separated tokens. Normalize `classes` by iterating raw values in order, splitting each raw value by comma, trimming tokens, dropping blank tokens, de-duplicating by first appearance, preserving first-seen order, and storing an immutable list. The allowed normalized token count is at most `500`; `500` is valid, `501` or more throws `ValidationException("classes 参数过多")`.
 
 Create `FinalScoreExportRow` as an immutable record with the exact fields and order below. Use nullable object references for grade/class/timestamps and totals so the writer can be null-safe.
 
@@ -453,10 +463,12 @@ Implementation notes:
 - Annotate with `@Component`.
 - Use `XSSFWorkbook` and `ByteArrayOutputStream`.
 - Build a bold header style and a numeric `0.00` style.
+- Write the fixed filename `final-scores-{academicYear}.xlsx` into `FinalScoreExportFile`; the controller only forwards this filename into `Content-Disposition`.
 - Write string cells with `CellType.STRING`.
 - Use `row.finalRecordId().toString()` for column A.
-- Use `BigDecimal.setScale(2, RoundingMode.HALF_UP).doubleValue()` for totals.
-- Use blank cells for null totals and null grade/class/timestamp fields.
+- After writing the header row, call `sheet.createFreezePane(0, 1)` to freeze the first row.
+- For non-null totals, use `BigDecimal.setScale(2, RoundingMode.HALF_UP).doubleValue()`; for null totals, write blank cells.
+- Use blank cells for null grade/class/timestamp fields.
 - Truncate timestamps with `instant.truncatedTo(ChronoUnit.SECONDS).toString()`.
 - Set fixed widths after writing rows; do not depend on POI auto-size requiring fonts.
 - Wrap `IOException` or POI runtime failures in `FinalScoreExportGenerationException("Excel 生成失败")`.
@@ -509,8 +521,9 @@ Add integration tests covering:
 - multiple active primary memberships use the smallest `org_membership.id` and return one row;
 - `studentUserNo` and `studentUserName` come from `iam_user`;
 - deterministic ordering `gradeCode NULLS LAST`, `classCode NULLS LAST`, `studentUserNo`, `finalRecordId`;
+- ordering tests must include tied fixtures: at least two export rows with identical `gradeCode` and `classCode` but different `studentUserNo` values to prove `studentUserNo ASC`, and at least two export rows tied on `gradeCode`, `classCode`, and `studentUserNo` but with different `finalRecordId` values to prove `finalRecordId ASC`;
 - small local `limit` values apply after filters/scope/order;
-- `500` normalized classes tokens executes in H2 MySQL-mode;
+- `500` normalized classes tokens is the valid upper boundary and executes in H2 MySQL-mode without error; in a known fixture it should return the same matching row count as the equivalent single-token class filter. `501` normalized tokens is rejected by `FinalScoreExportQuery` before repository execution;
 - unsupported-scope-only and no active export scope rules return empty lists.
 
 - [ ] **Step 3: Run failing repository tests**
@@ -628,9 +641,10 @@ Use `@WebMvcTest(controllers = AdminFinalScoreExportController.class)` and mock 
 - raw `classes=A,B&classes=B,C` results in service query classes `[A, B, C]`;
 - `pageNo`, blank `pageNo`, repeated `pageNo`, `pageSize`, blank `pageSize`, repeated `pageSize` fail with `400 / VAL-4001 / 导出接口不支持分页参数`;
 - repeated `academicYear`, `status`, or `grade` fail with `400 / VAL-4001 / 导出接口不支持重复单值参数`;
+- a combined invalid request containing both a pagination parameter and repeated single-value parameters, for example `pageNo=1&academicYear=2025-2026&academicYear=2026-2027`, fails with `400 / VAL-4001 / 导出接口不支持分页参数`, proving pagination-parameter rejection has priority;
 - invalid `academicYear` fails through the real endpoint with `400 / VAL-4001 / academicYear 不合法`;
 - invalid lowercase or `DRAFT` `status` fails through the real endpoint with `400 / VAL-4001 / status 仅允许 SUBMITTED 或 CONFIRMED`;
-- more than `500` normalized `classes` tokens fail through the real endpoint with `400 / VAL-4001 / classes 参数过多`;
+- `501` or more normalized `classes` tokens fail through the real endpoint with `400 / VAL-4001 / classes 参数过多`;
 - unknown query parameter is ignored;
 - service `ResourceNotFoundException("无匹配导出数据")` maps to `404 / RES-4040`;
 - service `FinalScoreExportGenerationException("Excel 生成失败")` maps to `503 / EXT-5033`;
@@ -662,8 +676,8 @@ Implementation requirements:
 - inspect `request.getParameterMap()` before constructing `FinalScoreExportQuery`;
 - reject `pageNo`/`pageSize` presence first;
 - reject repeated `academicYear`, `status`, and `grade`;
-- read `classes` via `request.getParameterValues("classes")` and pass raw values unchanged;
-- construct `FinalScoreExportQuery`. The query object owns splitting/trimming/deduping `classes` and throwing `ValidationException("classes 参数过多")` when normalized tokens exceed `500`; the controller must not duplicate the 500-token validation or pre-normalize class tokens;
+- read `classes` via `request.getParameterValues("classes")`, convert the returned raw `String[]` to a `List<String>` preserving array order, and pass that raw list unchanged into `new FinalScoreExportQuery(academicYear, status, grade, rawClasses)`;
+- construct `FinalScoreExportQuery`. The query object owns splitting/trimming/deduping `classes` and throwing `ValidationException("classes 参数过多")` when the normalized token count is `501` or more; the controller must not duplicate the 500-token validation or pre-normalize class tokens;
 - call service;
 - copy filename/content type/content bytes to `ResponseEntity<byte[]>`;
 - use `Content-Disposition: attachment; filename="..."`;
