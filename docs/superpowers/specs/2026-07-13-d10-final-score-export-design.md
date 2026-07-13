@@ -228,7 +228,7 @@ Workbook format:
 - Header row at row 1.
 - Freeze the first row.
 - Use a consistent default font. The implementation can rely on POI defaults plus bold header styling; no formulas are required.
-- Set practical fixed column widths or auto-size after writing rows so headers, class names, and timestamps are readable in common spreadsheet tools. Tests only need a minimum usability check: after generation, every column width must be greater than `8 * 256` POI width units, and timestamp/name columns must be at least wide enough for their header text. Exact widths are not part of the public contract.
+- Set practical fixed column widths or auto-size after writing rows so headers, class names, and timestamps are readable in common spreadsheet tools. Tests only need a minimum usability check: after generation, every column width must be greater than `8 * 256` POI width units, and timestamp/name columns must be at least `headerText.length() * 256` POI width units. Exact widths are not part of the public contract.
 - No formulas are written, so formula recalculation is not part of D-10.
 
 Columns are frozen in this exact order:
@@ -305,13 +305,13 @@ After raw request-shape validation passes, semantic validation order is fixed so
 
 1. Validate `academicYear`.
 2. Validate `status`.
-3. Normalize and validate `grade`.
-4. Normalize and validate `classes`, including the `500` token limit.
+3. Normalize `grade`.
+4. Normalize `classes` and validate the `500` token limit.
 
 - `academicYear` is required, trimmed, non-blank, and must match `^\d{4}-\d{4}$`.
 - The academic-year end must equal start + 1.
 - `status` is optional. Trim first; blank becomes `null`/absent. If non-blank, matching is exact and case-sensitive: only uppercase `SUBMITTED` or `CONFIRMED` is valid. Lowercase or mixed-case variants fail with `ValidationException("status 仅允许 SUBMITTED 或 CONFIRMED")`.
-- `grade` is optional. Blank becomes `null`.
+- `grade` is optional. Trim first; blank becomes `null`. D-10 applies no `grade` format, length, or dictionary validation; any non-blank value is passed to the repository filter and unknown values produce `404` only after query execution returns no rows.
 - `classes` is optional. Normalize by iterating the received repeated-parameter value list, splitting each raw value by comma, trimming every token, dropping blanks, and de-duplicating by first appearance in the flattened trimmed token sequence. For example, `classes=A,B&classes=B,C` normalizes to `[A, B, C]` when the MVC layer supplies values in that order. Store the result as an immutable list. An empty normalized list is equivalent to an absent `classes` parameter.
 - If the request contains `classes` but every token is blank, the normalized list is empty and the request behaves exactly as if `classes` were absent. This is not a `400` and does not force a no-data `404`.
 - If normalized `classes` contains more than `500` tokens, throw `ValidationException("classes 参数过多")` and map it to `400 / VAL-4001`.
@@ -367,7 +367,7 @@ Spec-phase acceptance tests for the implementation plan:
 - Repository verifies portable null ordering for both `gradeCode` and `classCode`.
 - Repository row-limit tests derive their boundary inputs from `FinalScoreExportApplicationService.MAX_SYNC_EXPORT_ROWS` or the same service-owned accessor used by application service tests; they must not hard-code `20000` or `20001`.
 - Repository returns an empty list for unsupported-scope-only callers and callers with no active `score.export.assigned` scope rules.
-- D safe-init consistency tests verify `score.export.assigned` scope rules `8023`, `8024`, and `8025`, deterministic guard-table collision checks, rerunnable inserts, and the complete `iam_scope_rule` column contract including required non-null `id`, `assignment_id`, `permission_code`, `scope_type`, `priority`, `status`, and `created_at`. The tests must assert the exact priority/status/expression values from the safe-init table above, prove a second clean run is a no-op success, and prove an unrelated reserved-id collision raises a SQL duplicate-key/database error instead of continuing with warnings.
+- D safe-init consistency tests verify `score.export.assigned` scope rules `8023`, `8024`, and `8025`, deterministic guard-table collision checks, rerunnable inserts, and the complete `iam_scope_rule` column contract including required non-null `id`, `assignment_id`, `permission_code`, `scope_type`, `priority`, `status`, and `created_at`. The tests must assert the exact priority/status/expression values from the safe-init table above, prove a second clean run is a no-op success, and prove an unrelated reserved-id collision raises a SQL duplicate-key/database error instead of continuing with warnings. To prove all guards run before all inserts for non-transactional runners, add a middle-id collision case that pre-occupies `8024` with an unrelated row, executes the safe-init script, expects a duplicate-key/database error, and then verifies `8023` and `8025` were not inserted.
 - Spring context smoke test verifies `FinalScoreExportApplicationService` and the POI writer are wired.
 
 Focused implementation verification should include at least:
@@ -380,7 +380,7 @@ The required controller tests live under `whut-eval-app/src/test` and compile th
 
 `FinalRecordControllerSecurityAnnotationTest` remains in the focused command because D-10 extends the shared final-record query repository path; this guards the existing D-5/D-6/D-12 controller annotations while D-10 adds export-specific security tests.
 
-Before merge, also run the D-7/D-8/D-9 import regression command used for D-9 plus D-10 export tests, because D-10 will touch shared final-record query repository code. The canonical command is from [2026-07-13-d9-cas-activity-import.md](/Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/.worktrees/d10-final-record-export/docs/superpowers/plans/2026-07-13-d9-cas-activity-import.md:1296) and is inlined here:
+Before merge, run both command groups below. The focused D-10 command above proves the export path and export-specific tests. The D-7/D-8/D-9 command below is import-only regression coverage for the shared final-record query/import surface that D-10 may touch; it does not replace the focused D-10 export command. The canonical import regression command is from [2026-07-13-d9-cas-activity-import.md](/Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/.worktrees/d10-final-record-export/docs/superpowers/plans/2026-07-13-d9-cas-activity-import.md:1296) and is inlined here:
 
 ```bash
 mvn -pl whut-eval-application -am test-compile
