@@ -404,7 +404,7 @@ Implementation behavior:
 5. Empty rows throw `ResourceNotFoundException("无匹配导出数据")`.
 6. More than `MAX_SYNC_EXPORT_ROWS` rows log row-cap context and throw `FinalScoreExportGenerationException("Excel 生成失败")` before writer call.
 7. Call writer and return `FinalScoreExportFile`.
-8. Catch `FinalScoreExportGenerationException`, log writer-failure context using `exception.getCause()` when present or the exception itself otherwise, then rethrow the same exception; catch other `RuntimeException` from writer, log writer context using that original exception, and wrap with `FinalScoreExportGenerationException("Excel 生成失败", exception)`. This keeps the writer free to wrap POI/IO failures while still letting the service emit the required writer-failure log branch with original exception type/message.
+8. Limit the writer-failure `try/catch` block to the writer invocation in Step 7 only. The row-cap exception thrown in Step 6 must be outside that catch block, must be logged only as `final-score-export.row-cap-exceeded`, and must not also be logged as writer failure. Inside the writer-only catch block, catch `FinalScoreExportGenerationException`, log writer-failure context using `exception.getCause()` when present or the exception itself otherwise, then rethrow the same exception; catch other `RuntimeException` from writer, log writer context using that original exception, and wrap with `FinalScoreExportGenerationException("Excel 生成失败", exception)`. This keeps the writer free to wrap POI/IO failures while still letting the service emit the required writer-failure log branch with original exception type/message.
 
 - [ ] **Step 5: Run service tests**
 
