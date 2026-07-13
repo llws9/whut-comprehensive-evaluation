@@ -58,19 +58,19 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
                                                                 String lectureBatchId,
                                                                 List<LectureImportedComponent> components) {
         List<LectureImportFailedRow> failures = new ArrayList<>();
+        LocalDateTime requestTimestamp = LocalDateTime.now();
         for (LectureImportedComponent component : components) {
             FinalRecordDO record = mapper.selectFinalRecordForUpdate(component.studentUserId(), academicYear);
             if (record == null) {
-                record = insertOrReloadDraft(academicYear, component);
+                record = insertOrReloadDraft(academicYear, component, requestTimestamp);
             }
             if (!"DRAFT".equals(record.getStatus())) {
                 failures.add(lockedFailure(component));
                 continue;
             }
 
-            LocalDateTime now = LocalDateTime.now();
-            mapper.insertLectureComponent(toComponentRow(record.getId(), lectureBatchId, component, now));
-            updateTotals(record.getId(), now);
+            mapper.insertLectureComponent(toComponentRow(record.getId(), lectureBatchId, component, requestTimestamp));
+            updateTotals(record.getId(), requestTimestamp);
         }
         return List.copyOf(failures);
     }
@@ -84,8 +84,10 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
         );
     }
 
-    private FinalRecordDO insertOrReloadDraft(String academicYear, LectureImportedComponent component) {
-        FinalRecordDO record = newDraftRecord(academicYear, component.studentUserId());
+    private FinalRecordDO insertOrReloadDraft(String academicYear,
+                                              LectureImportedComponent component,
+                                              LocalDateTime requestTimestamp) {
+        FinalRecordDO record = newDraftRecord(academicYear, component.studentUserId(), requestTimestamp);
         try {
             mapper.insertDraft(record);
             return reloadDraftForUpdate(academicYear, component);
@@ -111,8 +113,7 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
                 || (message.contains("duplicate") && message.contains("final_record"));
     }
 
-    private FinalRecordDO newDraftRecord(String academicYear, Long studentUserId) {
-        LocalDateTime now = LocalDateTime.now();
+    private FinalRecordDO newDraftRecord(String academicYear, Long studentUserId, LocalDateTime requestTimestamp) {
         FinalRecordDO record = new FinalRecordDO();
         record.setStudentUserId(studentUserId);
         record.setAcademicYear(academicYear);
@@ -126,8 +127,8 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
         record.setConfirmedAt(null);
         record.setConfirmComment(null);
         record.setVersion(0L);
-        record.setCreatedAt(now);
-        record.setUpdatedAt(now);
+        record.setCreatedAt(requestTimestamp);
+        record.setUpdatedAt(requestTimestamp);
         return record;
     }
 

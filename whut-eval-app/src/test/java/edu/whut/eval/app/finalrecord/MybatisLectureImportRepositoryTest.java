@@ -23,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -68,6 +69,57 @@ class MybatisLectureImportRepositoryTest {
         assertThat(componentCaptor.getValue().getFinalRecordId()).isEqualTo(99001L);
         verify(mapper).selectTotals(99001L);
         verify(mapper).updateTotals(eq(99001L), any(), any(), any(), any(), any(), any(LocalDateTime.class));
+    }
+
+    @Test
+    void shouldUseOneAuditTimestampForCreatedDraftComponentAndTotalsInSingleRequest() {
+        LectureImportedComponent component = new LectureImportedComponent(
+                2L,
+                1001L,
+                "S1001",
+                "1.25",
+                new BigDecimal("1.25"),
+                "讲座",
+                "讲座"
+        );
+
+        given(mapper.selectFinalRecordForUpdate(1001L, "2025-2026"))
+                .willReturn(null)
+                .willAnswer(invocation -> {
+                    FinalRecordDO inserted = draftRecord(99001L, 1001L, "2025-2026");
+                    inserted.setCreatedAt(LocalDateTime.now().plusSeconds(1));
+                    inserted.setUpdatedAt(inserted.getCreatedAt());
+                    return inserted;
+                });
+        given(mapper.insertDraft(any(FinalRecordDO.class))).willReturn(1);
+        given(mapper.selectTotals(99001L))
+                .willReturn(List.of(total("INTELLECTUAL", "1.25")));
+        given(mapper.updateTotals(eq(99001L), any(), any(), any(), any(), any(), any(LocalDateTime.class)))
+                .willReturn(1);
+
+        repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-AUDITTIME01", List.of(component));
+
+        ArgumentCaptor<FinalRecordDO> draftCaptor = ArgumentCaptor.forClass(FinalRecordDO.class);
+        ArgumentCaptor<LectureImportedComponentRow> componentCaptor =
+                ArgumentCaptor.forClass(LectureImportedComponentRow.class);
+        ArgumentCaptor<LocalDateTime> totalsUpdatedAtCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(mapper).insertDraft(draftCaptor.capture());
+        verify(mapper).insertLectureComponent(componentCaptor.capture());
+        verify(mapper).updateTotals(
+                eq(99001L),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                totalsUpdatedAtCaptor.capture()
+        );
+
+        LocalDateTime requestTimestamp = draftCaptor.getValue().getCreatedAt();
+        assertThat(draftCaptor.getValue().getUpdatedAt()).isEqualTo(requestTimestamp);
+        assertThat(componentCaptor.getValue().getCreatedAt()).isEqualTo(requestTimestamp);
+        assertThat(totalsUpdatedAtCaptor.getValue()).isEqualTo(requestTimestamp);
+        verify(mapper, times(2)).selectFinalRecordForUpdate(1001L, "2025-2026");
     }
 
     @Test

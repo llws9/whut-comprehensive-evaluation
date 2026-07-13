@@ -9,6 +9,7 @@ import edu.whut.eval.infra.persistence.mapper.LectureImportMapper;
 import edu.whut.eval.interfaces.admin.AdminScoreImportController;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
@@ -54,7 +55,7 @@ class LectureImportApplicationContextSmokeTest {
     @Autowired
     private LectureImportRepository repository;
 
-    @Autowired
+    @MockBean
     private LectureImportBatchLock batchLock;
 
     @Autowired

@@ -65,7 +65,7 @@ Modify:
 - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminScoreImportControllerWebMvcTest.java`
 - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminScoreImportControllerSecurityAnnotationTest.java`
 
-Do not modify `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/config/FinalRecordApplicationConfiguration.java`; the production lock adapter is a `@Component`, and tests should use fakes or `@MockBean` at the test boundary.
+Do not modify `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/config/FinalRecordApplicationConfiguration.java`; the production lock adapter is a `@Component`, and tests should use fakes or `@MockBean` at the test boundary. The H2 Spring context smoke test must declare `@MockBean LectureImportBatchLock` so it verifies controller/service/parser/repository/mapper wiring without executing MySQL `GET_LOCK` / `RELEASE_LOCK` SQL.
 
 Do not modify D-7 mentor import semantics except for shared controller constructor wiring and shared helper extraction that is strictly necessary.
 
@@ -1781,19 +1781,19 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
                                                                 String lectureBatchId,
                                                                 List<LectureImportedComponent> components) {
         List<LectureImportFailedRow> failures = new ArrayList<>();
+        LocalDateTime requestTimestamp = LocalDateTime.now();
         for (LectureImportedComponent component : components) {
             FinalRecordDO record = mapper.selectFinalRecordForUpdate(component.studentUserId(), academicYear);
             if (record == null) {
-                record = insertOrReloadDraft(academicYear, component);
+                record = insertOrReloadDraft(academicYear, component, requestTimestamp);
             }
             if (!"DRAFT".equals(record.getStatus())) {
                 failures.add(lockedFailure(component));
                 continue;
             }
 
-            LocalDateTime now = LocalDateTime.now();
-            mapper.insertLectureComponent(toComponentRow(record.getId(), lectureBatchId, component, now));
-            updateTotals(record.getId(), now);
+            mapper.insertLectureComponent(toComponentRow(record.getId(), lectureBatchId, component, requestTimestamp));
+            updateTotals(record.getId(), requestTimestamp);
         }
         return List.copyOf(failures);
     }
@@ -1807,8 +1807,10 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
         );
     }
 
-    private FinalRecordDO insertOrReloadDraft(String academicYear, LectureImportedComponent component) {
-        FinalRecordDO record = newDraftRecord(academicYear, component.studentUserId());
+    private FinalRecordDO insertOrReloadDraft(String academicYear,
+                                              LectureImportedComponent component,
+                                              LocalDateTime requestTimestamp) {
+        FinalRecordDO record = newDraftRecord(academicYear, component.studentUserId(), requestTimestamp);
         try {
             mapper.insertDraft(record);
             return reloadDraftForUpdate(academicYear, component);
@@ -1834,8 +1836,7 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
                 || (message.contains("duplicate") && message.contains("final_record"));
     }
 
-    private FinalRecordDO newDraftRecord(String academicYear, Long studentUserId) {
-        LocalDateTime now = LocalDateTime.now();
+    private FinalRecordDO newDraftRecord(String academicYear, Long studentUserId, LocalDateTime requestTimestamp) {
         FinalRecordDO record = new FinalRecordDO();
         record.setStudentUserId(studentUserId);
         record.setAcademicYear(academicYear);
@@ -1849,8 +1850,8 @@ public class MybatisLectureImportRepository implements LectureImportRepository {
         record.setConfirmedAt(null);
         record.setConfirmComment(null);
         record.setVersion(0L);
-        record.setCreatedAt(now);
-        record.setUpdatedAt(now);
+        record.setCreatedAt(requestTimestamp);
+        record.setUpdatedAt(requestTimestamp);
         return record;
     }
 
@@ -1917,6 +1918,7 @@ Notes for this implementation:
 - `findTarget` maps `LectureImportStudentTargetRow`.
 - `lectureBatchExists` returns `count > 0`.
 - `insertLectureComponents` returns `List<LectureImportFailedRow>` and loops over already sorted components. For each component, it locks `final_record`, inserts or reloads a DRAFT row if missing, records `FINAL_RECORD_LOCKED` as a row-level failure for non-DRAFT records, inserts a new lecture component, and immediately recalculates totals while the row is still locked.
+- Capture one `requestTimestamp` at the start of `insertLectureComponents` and reuse it for newly created `final_record.created_at`, `final_record.updated_at`, inserted `final_component_score.created_at`, and totals `updated_at`. This preserves the frozen request-transaction timestamp contract across every successful row in the same repository call.
 - Newly inserted DRAFT records are immediately reloaded through `selectFinalRecordForUpdate(...)`, not reused from the insert DTO. This keeps the first row for a student/year on the same explicit lock path as existing and concurrently created records.
 - `isDuplicateFinalRecord` is scoped to the current H2/MySQL driver message format plus the `uk_final_record_student_year` constraint name. Re-verify this guard, or replace it with SQLState/vendor-code handling, before changing database drivers.
 - The locked-row failure raw value uses `component.studentNo()`, `component.scoreValueText()`, and `component.rawDisplayText()` so the response preserves the frozen workbook raw value contract, not internal ids or defaulted display text.
@@ -2424,12 +2426,199 @@ Add the focused tests below at the named layer:
 - Repository: two distinct `lectureBatchId` values for the same student/year create two `INTELLECTUAL_LECTURE` components.
 - Repository: duplicate-batch detection joins through `final_record.academic_year`.
 - Repository: the new-record path reloads the inserted DRAFT through `selectFinalRecordForUpdate(...)` before component insert; assert the component and totals update use the reloaded row id, and assert a missing reload throws `ConflictException("最终成绩保存后读取失败")`.
+- Repository: one `insertLectureComponents` request reuses one audit timestamp for newly created `final_record.created_at`, `final_record.updated_at`, inserted `final_component_score.created_at`, and totals `updated_at`.
 - Repository: total recalculation persists scale 2 with `RoundingMode.HALF_UP` and increments `version` once per successful lecture row mutation, not once per distinct `final_record_id`.
 - Repository: a returned `FINAL_RECORD_LOCKED` row-level failure does not roll back earlier successful DRAFT rows. Assert the first DRAFT row's lecture component, `intellectual_total`, and `version` persist while the later SUBMITTED/CONFIRMED row returns only `FINAL_RECORD_LOCKED` and writes no component.
 - Repository: a thrown persistence failure rolls back the whole request transaction. Seed an unsupported component category or force `updateTotals == 0`, assert the repository throws, then assert no lecture component for the batch remains and the original `final_record` totals/version are unchanged.
 - Service: add the same-batch concurrency test to `LectureImportApplicationServiceTest`; use a fake lock plus `CountDownLatch` to hold the first thread after `tryAcquire` and before repository mutation, start a second thread with the same deterministic `lectureBatchId`, assert it gets `ConflictException("同一讲座批次正在导入，请稍后重试")`, then release the first thread and assert no second-call repository mutation occurred.
 - Context: add `LectureImportApplicationContextSmokeTest` with `WhutComprehensiveEvaluationApplication`, `local` profile, H2 datasource, and JWT test properties; assert the real Spring context contains `AdminScoreImportController`, `LectureImportApplicationService`, `LectureImportParser`, `LectureImportRepository`, `LectureImportBatchLock`, and `LectureImportMapper`.
 - Controller: empty lecture file maps to `400 / VAL-4001`, invalid `heldAt` maps to `400 / VAL-4001`, header-only result maps to `200` with zero counts, multipart `IOException` read failure maps to `503 / EXT-5033`, service conflict `同一讲座批次已导入` maps to `409 / BIZ-4090`, and the route is exactly `POST /api/admin/imports/lectures` with `multipart/form-data` consumes.
+
+Add `MybatisLectureImportRepositoryTest` with the focused unit tests below:
+
+```java
+@ExtendWith(MockitoExtension.class)
+class MybatisLectureImportRepositoryTest {
+
+    @Mock
+    private LectureImportMapper mapper;
+
+    @InjectMocks
+    private MybatisLectureImportRepository repository;
+
+    @Test
+    void shouldReloadInsertedDraftForUpdateBeforeWritingLectureComponent() {
+        LectureImportedComponent component = component();
+        FinalRecordDO lockedDraft = draftRecord(99001L, 1001L, "2025-2026");
+
+        given(mapper.selectFinalRecordForUpdate(1001L, "2025-2026"))
+                .willReturn(null, lockedDraft);
+        given(mapper.insertDraft(any(FinalRecordDO.class)))
+                .willAnswer(invocation -> {
+                    FinalRecordDO inserted = invocation.getArgument(0);
+                    inserted.setId(11001L);
+                    return 1;
+                });
+        given(mapper.selectTotals(99001L))
+                .willReturn(List.of(total("INTELLECTUAL", "1.25")));
+        given(mapper.updateTotals(eq(99001L), any(), any(), any(), any(), any(), any(LocalDateTime.class)))
+                .willReturn(1);
+
+        repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-LOCKRELOAD01", List.of(component));
+
+        ArgumentCaptor<LectureImportedComponentRow> componentCaptor =
+                ArgumentCaptor.forClass(LectureImportedComponentRow.class);
+        verify(mapper).insertLectureComponent(componentCaptor.capture());
+        assertThat(componentCaptor.getValue().getFinalRecordId()).isEqualTo(99001L);
+        verify(mapper).selectTotals(99001L);
+        verify(mapper).updateTotals(eq(99001L), any(), any(), any(), any(), any(), any(LocalDateTime.class));
+    }
+
+    @Test
+    void shouldUseOneAuditTimestampForCreatedDraftComponentAndTotalsInSingleRequest() {
+        LectureImportedComponent component = component();
+
+        given(mapper.selectFinalRecordForUpdate(1001L, "2025-2026"))
+                .willReturn(null)
+                .willAnswer(invocation -> {
+                    FinalRecordDO inserted = draftRecord(99001L, 1001L, "2025-2026");
+                    inserted.setCreatedAt(LocalDateTime.now().plusSeconds(1));
+                    inserted.setUpdatedAt(inserted.getCreatedAt());
+                    return inserted;
+                });
+        given(mapper.insertDraft(any(FinalRecordDO.class))).willReturn(1);
+        given(mapper.selectTotals(99001L))
+                .willReturn(List.of(total("INTELLECTUAL", "1.25")));
+        given(mapper.updateTotals(eq(99001L), any(), any(), any(), any(), any(), any(LocalDateTime.class)))
+                .willReturn(1);
+
+        repository.insertLectureComponents("2025-2026", "LECTURE-20252026-20260518143000-AUDITTIME01", List.of(component));
+
+        ArgumentCaptor<FinalRecordDO> draftCaptor = ArgumentCaptor.forClass(FinalRecordDO.class);
+        ArgumentCaptor<LectureImportedComponentRow> componentCaptor =
+                ArgumentCaptor.forClass(LectureImportedComponentRow.class);
+        ArgumentCaptor<LocalDateTime> totalsUpdatedAtCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(mapper).insertDraft(draftCaptor.capture());
+        verify(mapper).insertLectureComponent(componentCaptor.capture());
+        verify(mapper).updateTotals(eq(99001L), any(), any(), any(), any(), any(), totalsUpdatedAtCaptor.capture());
+
+        LocalDateTime requestTimestamp = draftCaptor.getValue().getCreatedAt();
+        assertThat(draftCaptor.getValue().getUpdatedAt()).isEqualTo(requestTimestamp);
+        assertThat(componentCaptor.getValue().getCreatedAt()).isEqualTo(requestTimestamp);
+        assertThat(totalsUpdatedAtCaptor.getValue()).isEqualTo(requestTimestamp);
+        verify(mapper, times(2)).selectFinalRecordForUpdate(1001L, "2025-2026");
+    }
+
+    @Test
+    void shouldFailDeterministicallyWhenInsertedDraftCannotBeReloadedForUpdate() {
+        given(mapper.insertDraft(any(FinalRecordDO.class))).willReturn(1);
+
+        assertThatThrownBy(() -> repository.insertLectureComponents(
+                "2025-2026",
+                "LECTURE-20252026-20260518143000-LOCKRELOAD02",
+                List.of(component())
+        ))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("最终成绩保存后读取失败");
+    }
+
+    private static LectureImportedComponent component() {
+        return new LectureImportedComponent(
+                2L,
+                1001L,
+                "S1001",
+                "1.25",
+                new BigDecimal("1.25"),
+                "讲座",
+                "讲座"
+        );
+    }
+
+    private static FinalRecordDO draftRecord(Long id, Long studentUserId, String academicYear) {
+        FinalRecordDO record = new FinalRecordDO();
+        record.setId(id);
+        record.setStudentUserId(studentUserId);
+        record.setAcademicYear(academicYear);
+        record.setStatus("DRAFT");
+        record.setMoralTotal(BigDecimal.ZERO);
+        record.setIntellectualTotal(BigDecimal.ZERO);
+        record.setPhysicalTotal(BigDecimal.ZERO);
+        record.setLaborTotal(BigDecimal.ZERO);
+        record.setGrandTotal(BigDecimal.ZERO);
+        record.setVersion(0L);
+        record.setCreatedAt(LocalDateTime.now());
+        record.setUpdatedAt(LocalDateTime.now());
+        return record;
+    }
+
+    private static LectureScoreCategoryTotalRow total(String categoryCode, String scoreValue) {
+        LectureScoreCategoryTotalRow row = new LectureScoreCategoryTotalRow();
+        row.setCategoryCode(categoryCode);
+        row.setScoreValue(new BigDecimal(scoreValue));
+        return row;
+    }
+}
+```
+
+Add `LectureImportApplicationContextSmokeTest` with `@MockBean LectureImportBatchLock`; this deliberately replaces the production MySQL named-lock adapter in the H2 application context smoke test while keeping the rest of the D-8 slice real:
+
+```java
+@SpringBootTest(classes = WhutComprehensiveEvaluationApplication.class)
+@ActiveProfiles("local")
+@TestPropertySource(properties = {
+        "spring.datasource.url=jdbc:h2:mem:lecture_import_context_smoke;MODE=MySQL;DB_CLOSE_DELAY=-1",
+        "spring.datasource.username=sa",
+        "spring.datasource.password=",
+        "spring.datasource.driver-class-name=org.h2.Driver",
+        "infra.security.jwt.enabled=true",
+        "infra.security.jwt.algorithm=HS256",
+        "infra.security.jwt.issuer=whut-eval",
+        "infra.security.jwt.audience=whut-eval-api",
+        "infra.security.jwt.access-token-ttl-seconds=7200",
+        "infra.security.jwt.refresh-token-ttl-seconds=604800",
+        "infra.security.jwt.clock-skew-seconds=60",
+        "infra.security.jwt.secret=test-jwt-secret-should-be-long-enough-1234567890",
+        "infra.security.jwt.user-id-claim=uid",
+        "infra.security.jwt.user-no-claim=uno",
+        "infra.security.jwt.user-name-claim=uname",
+        "infra.security.jwt.identity-claim=identity",
+        "infra.security.jwt.roles-claim=roles",
+        "infra.security.jwt.authorities-claim=authorities",
+        "infra.security.jwt.token-type-claim=token_type",
+        "infra.security.jwt.access-token-type=access",
+        "infra.security.jwt.refresh-token-type=refresh"
+})
+class LectureImportApplicationContextSmokeTest {
+
+    @Autowired
+    private AdminScoreImportController controller;
+
+    @Autowired
+    private LectureImportApplicationService service;
+
+    @Autowired
+    private LectureImportParser parser;
+
+    @Autowired
+    private LectureImportRepository repository;
+
+    @MockBean
+    private LectureImportBatchLock batchLock;
+
+    @Autowired
+    private LectureImportMapper mapper;
+
+    @Test
+    void shouldAssembleLectureImportBeansThroughRealApplicationContext() {
+        assertThat(controller).isNotNull();
+        assertThat(service).isNotNull();
+        assertThat(parser).isNotNull();
+        assertThat(repository).isNotNull();
+        assertThat(batchLock).isNotNull();
+        assertThat(mapper).isNotNull();
+    }
+}
+```
 
 - [ ] **Step 2: Run targeted D-8 suite**
 
