@@ -4,6 +4,8 @@
 
 **Goal:** Build D-10 `GET /api/admin/exports/final-scores` so authorized admins can synchronously export scoped final-score totals as an `.xlsx` workbook.
 
+**Frozen D-10 export contract:** D-10 is an HTTP synchronous download endpoint, not a server-side batch file job. The service must not write a workbook to a local output path or persistent export directory. The POI writer returns bytes in memory with filename `final-scores-{academicYear}.xlsx`, and the controller streams those bytes with `Content-Disposition: attachment; filename="final-scores-{academicYear}.xlsx"`. If the scoped query has no matching rows, the endpoint returns `404 / RES-4040 / 无匹配导出数据`; it must not return an empty workbook.
+
 **Architecture:** Add a narrow D-10 export slice beside the existing final-record query flow. The application layer owns request normalization, authorization, no-data handling, row-cap enforcement, and the workbook writer port; infra owns MyBatis export SQL and Apache POI workbook generation; the interface layer owns raw HTTP parameter-shape validation and file response headers.
 
 **Tech Stack:** Java 21, Spring Boot 3, Spring MVC, Spring Security `@PreAuthorize`, MyBatis/MyBatis-Plus SQL providers, Apache POI `XSSFWorkbook`, H2 MySQL-mode integration tests, existing global `BaseAppException` mapping.
