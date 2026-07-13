@@ -52,6 +52,7 @@ Create:
 
 Modify:
 
+- `whut-eval-application/src/main/java/edu/whut/eval/application/auth/AuthorizationPermissionCodes.java` (verify `SCORE_EXPORT_ASSIGNED`; add only if absent)
 - `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/repository/FinalRecordQueryRepository.java`
 - `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/repository/MybatisPlusFinalRecordQueryRepository.java`
 - `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/FinalRecordQueryMapper.java`
@@ -68,6 +69,14 @@ Do not modify:
 - D-11 unsubmitted roster plan or code.
 - Main checkout dirty file `docs/superpowers/plans/2026-07-12-d11-unsubmitted-final-records.md`.
 - Existing `/api/admin/final-records` JSON list/detail response contracts except shared repository internals needed for D-10.
+
+Pre-implementation verification already found the permission constant present in this branch:
+
+```java
+public static final String SCORE_EXPORT_ASSIGNED = "score.export.assigned";
+```
+
+Task 2 and Task 5 still include explicit checks for this constant. If an implementation checkout lacks it, add exactly that constant to `AuthorizationPermissionCodes`; do not create a duplicate.
 
 ## Implementation Tasks
 
@@ -263,6 +272,7 @@ git commit -m "feat: add final score export contracts"
 Create tests that verify:
 
 - the service requires `score.export.assigned`;
+- it captures the `FinalRecordAccessContext` passed to `FinalRecordQueryRepository.listAdminFinalScoreExportRows(...)` and asserts `captured.getPermissionCode()` equals `AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED`, proving D-10 uses `score.export.assigned` and not `score.view.assigned`;
 - it passes `MAX_SYNC_EXPORT_ROWS + 1` to the repository;
 - an empty row list throws `ResourceNotFoundException("无匹配导出数据")`;
 - `MAX_SYNC_EXPORT_ROWS + 1` rows throw `FinalScoreExportGenerationException("Excel 生成失败")` before writer invocation;
@@ -270,7 +280,19 @@ Create tests that verify:
 - exactly `MAX_SYNC_EXPORT_ROWS` rows are passed to the writer;
 - two calls with the same query call the repository twice, documenting current-snapshot semantics.
 
-Use Mockito as in `FinalRecordQueryApplicationServiceTest`. Build row lists with a helper that references `FinalScoreExportApplicationService.MAX_SYNC_EXPORT_ROWS`, not numeric literals.
+Use Mockito as in `FinalRecordQueryApplicationServiceTest`. Build row lists with a helper that references `FinalScoreExportApplicationService.MAX_SYNC_EXPORT_ROWS`, not numeric literals. Include an `ArgumentCaptor<FinalRecordAccessContext>` assertion like:
+
+```java
+ArgumentCaptor<FinalRecordAccessContext> accessContextCaptor =
+        ArgumentCaptor.forClass(FinalRecordAccessContext.class);
+verify(repository).listAdminFinalScoreExportRows(
+        accessContextCaptor.capture(),
+        same(query),
+        eq(FinalScoreExportApplicationService.MAX_SYNC_EXPORT_ROWS + 1)
+);
+assertThat(accessContextCaptor.getValue().getPermissionCode())
+        .isEqualTo(AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED);
+```
 
 - [ ] **Step 2: Run failing service tests**
 
@@ -301,6 +323,14 @@ Import `FinalScoreExportQuery` and `FinalScoreExportRow`.
 - `UserAuthorizationContextAssembler`
 - `FinalRecordQueryRepository`
 - `FinalScoreExportWorkbookWriter`
+
+Define the synchronous row cap as one public service-owned constant and use it everywhere in the application-service implementation:
+
+```java
+public static final int MAX_SYNC_EXPORT_ROWS = 20_000;
+```
+
+Use `MAX_SYNC_EXPORT_ROWS + 1` only as the repository probe limit. Do not introduce separate hard-coded `20_000` or `20_001` values in service code or service tests.
 
 Implementation behavior:
 
@@ -474,8 +504,21 @@ Provider requirements:
 - `LEFT OUTER JOIN org_membership om` with the smallest active primary membership id per user;
 - `LEFT OUTER JOIN org_unit class_ou` with `unit_type = 'CLASS' AND status = 'ACTIVE'`;
 - `LEFT OUTER JOIN org_unit grade_ou` with `unit_type = 'GRADE' AND status = 'ACTIVE'`;
-- replace translated scope aliases onto `fr.student_user_id`, `class_ou.id`, `class_ou.path`, and harmless status replacements for category/item unsupported-scope behavior;
-- use case-sensitive comparisons for grade/class, following the existing local helper style or adding a small provider helper that works on H2 and MySQL;
+- replace only the final-record scope aliases emitted by `FinalRecordScopePredicateBuilder`: `applicant_user_id` -> `fr.student_user_id`, `org_unit_id` -> `class_ou.id`, and `org_path` -> `class_ou.path`;
+- do not replace `category_code`, `item_code`, or unrelated aliases with `fr.status` for D-10 export. The final-record scope builder emits only `ORG_UNIT`/`ORG_SUBTREE` clauses for this resource; unsupported or empty predicates must continue through the existing deny/empty-result semantics from `SqlPredicateFragment.denyAll()` / `1 = 0`;
+- implement case-sensitive grade/class predicates with explicit helpers in `FinalRecordQuerySqlProvider`:
+
+```java
+private String caseSensitiveEquals(String column, String parameter) {
+    return "CAST(" + column + " AS BINARY) = CAST(" + parameter + " AS BINARY)";
+}
+
+private String caseSensitiveIn(String column, String collectionExpression) {
+    return "CAST(" + column + " AS BINARY) IN (" + collectionExpression + ")";
+}
+```
+
+For class tokens, build `collectionExpression` from `CAST(#{query.classes[0]} AS BINARY)`, `CAST(#{query.classes[1]} AS BINARY)`, and so on for the normalized query size, then pass it to `caseSensitiveIn(...)`. The H2/MySQL-mode verification for this plan showed `CAST(column AS BINARY)` executes and is case-sensitive; do not use MySQL-only `BINARY column` syntax or `COLLATE`, because the existing H2 path rejects them.
 - always filter `fr.academic_year = #{query.academicYear}`;
 - default absent status to `fr.status IN ('SUBMITTED', 'CONFIRMED')`, explicit status to `fr.status = #{query.status}`;
 - order with portable null-last expressions, then `u.user_no`, then `fr.id`;
@@ -519,7 +562,7 @@ Assert:
 - class-level `@RequestMapping("/api/admin/exports")`;
 - method `exportFinalScores(...)` has `@GetMapping("/final-scores")`;
 - method `@PreAuthorize` value equals `hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_EXPORT_ASSIGNED)`;
-- `AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED` equals `score.export.assigned`.
+- `AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED` exists and equals `score.export.assigned`. The current branch already has this constant; if a future implementation checkout does not, add exactly `public static final String SCORE_EXPORT_ASSIGNED = "score.export.assigned";` to `AuthorizationPermissionCodes`.
 
 - [ ] **Step 2: Write failing WebMvc tests**
 
@@ -564,7 +607,7 @@ Implementation requirements:
 - reject `pageNo`/`pageSize` presence first;
 - reject repeated `academicYear`, `status`, and `grade`;
 - read `classes` via `request.getParameterValues("classes")` and pass raw values unchanged;
-- construct `FinalScoreExportQuery`;
+- construct `FinalScoreExportQuery`. The query object owns splitting/trimming/deduping `classes` and throwing `ValidationException("classes 参数过多")` when normalized tokens exceed `500`; the controller must not duplicate the 500-token validation or pre-normalize class tokens;
 - call service;
 - copy filename/content type/content bytes to `ResponseEntity<byte[]>`;
 - use `Content-Disposition: attachment; filename="..."`;
@@ -603,6 +646,14 @@ git commit -m "feat: add final score export controller"
 Add assertions for D-10 `iam_scope_rule` rows `8023`, `8024`, `8025`:
 
 - `assignment_id`, `permission_code`, `scope_type`, `org_unit_id`, `category_code`, `item_code`, `expression_json`, `priority`, `status`;
+- exact expected values:
+
+| id | assignment_id | permission_code | scope_type | org_unit_id | category_code | item_code | expression_json | priority | status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `8023` | `7010` | `score.export.assigned` | `ORG_SUBTREE` | `2002` | `NULL` | `NULL` | `{"scoreRole":"counselor"}` | `80` | `ACTIVE` |
+| `8024` | `7011` | `score.export.assigned` | `ORG_SUBTREE` | `2002` | `NULL` | `NULL` | `{"scoreRole":"college_reviewer"}` | `70` | `ACTIVE` |
+| `8025` | `7012` | `score.export.assigned` | `ALL` | `NULL` | `NULL` | `NULL` | `{"superAdmin":true}` | `1000` | `ACTIVE` |
+
 - `created_at` appears in the insert column list;
 - rerun is a no-op success;
 - unrelated reserved-id collision raises duplicate-key/database error;
@@ -679,7 +730,7 @@ Expected: failure if component scanning or test configuration is missing require
 
 - [ ] **Step 3: Fix production wiring only if the smoke test proves it is needed**
 
-If the POI writer is not discovered, fix the production wiring in a module that can legally see the infra implementation, such as an app-level test/application configuration or an infra-owned configuration class already scanned by the app. Do not add a broad scan root, and do not add an `@Bean` for `PoiFinalScoreExportWorkbookWriter` inside `whut-eval-application`, because that module must not depend on infra classes.
+If the POI writer or controller is not discovered, fix only production `src/main` wiring in a module that can legally see the infra/interface implementation, such as an infra-owned or app-owned production configuration class already scanned by the app. Do not use `@TestConfiguration`, test-scope configuration, test-only `@Import`, or direct test imports to make the smoke test pass. Do not add a broad scan root, and do not add an `@Bean` for `PoiFinalScoreExportWorkbookWriter` inside `whut-eval-application`, because that module must not depend on infra classes.
 
 - [ ] **Step 4: Run focused D-10 verification**
 
