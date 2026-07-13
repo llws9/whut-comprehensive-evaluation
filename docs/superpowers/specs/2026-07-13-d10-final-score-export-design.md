@@ -28,7 +28,7 @@ Current implementation facts:
 In scope:
 
 - Add `GET /api/admin/exports/final-scores`.
-- Accept `academicYear`, optional `status`, optional `grade`, and optional `classes` query parameters.
+- Accept `academicYear`, optional `status`, optional `grade`, and optional `classes` query parameters. `status` is limited to `SUBMITTED` or `CONFIRMED`; `DRAFT` is never exportable.
 - Evaluate `score.export.assigned` authority and data scopes.
 - Export only `SUBMITTED` and `CONFIRMED` final records.
 - Apply grade/class filters against the student's current primary organization path, using existing `org_unit` rows.
@@ -79,11 +79,11 @@ Query parameters:
 | `academicYear` | yes | Trimmed, non-blank, must match `yyyy-yyyy`, and second year must equal first year + 1. |
 | `status` | no | Trimmed, blank becomes absent. If absent, exports both `SUBMITTED` and `CONFIRMED`. If present, must be `SUBMITTED` or `CONFIRMED`. `DRAFT` is never exportable. |
 | `grade` | no | Trimmed, blank becomes absent. Matches the current primary class's parent GRADE by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404`. |
-| `classes` | no | May be sent as repeated query params (`classes=CS2201&classes=CS2202`) or comma-separated tokens (`classes=CS2201,CS2202`). Normalize by processing raw parameters in request order, splitting each by comma, trimming, dropping blanks, and de-duplicating by first appearance. Non-blank tokens match current primary CLASS by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404` if nothing else matches. |
+| `classes` | no | May be sent as repeated query params (`classes=CS2201&classes=CS2202`) or comma-separated tokens (`classes=CS2201,CS2202`). Normalize by processing raw parameters in request order, splitting each by comma, trimming, dropping blanks, and de-duplicating by first appearance. If all tokens are blank, `classes` is equivalent to absent and does not force `404`. Non-blank tokens match current primary CLASS by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404` if nothing else matches. |
 
 `pageNo` and `pageSize` are not accepted for D-10 because exports are unpaged. To keep the frozen delivery document's "pagination parameter error" branch observable, any request containing `pageNo` or `pageSize` fails with `400 / VAL-4001` rather than silently ignoring those parameters.
 
-Single-value query parameters (`academicYear`, `status`, `grade`, `pageNo`, and `pageSize`) must not appear more than once. Repeated single-value parameters fail with `400 / VAL-4001`. `classes` is the only repeatable D-10 query parameter.
+Single-value query parameters (`academicYear`, `status`, `grade`, `pageNo`, and `pageSize`) must not appear more than once. Repeated single-value parameters fail with `400 / VAL-4001`. `classes` is the only repeatable D-10 query parameter. If a request both repeats and includes `pageNo` or `pageSize`, the pagination-parameter branch wins and the message is `导出接口不支持分页参数`.
 
 Successful response:
 
@@ -146,7 +146,7 @@ D safe-init must add scope rules for default export accounts:
 
 The collision guard must fail deterministically if any reserved id is already occupied by an unrelated row. The inserts must include every non-null IAM column required by the documented A schema, including `created_at`.
 Deterministic failure means the SQL script must raise a database error, not only log or return a warning. Use the existing temporary guard-table pattern: seed one guard row, then insert the same guard primary key only when a reserved id is occupied by an unrelated row. Re-running the script after successful D-10 inserts must not trip the guard because the existing rows match the expected natural keys and column values. Application/database initialization must abort with a `SQLException`/duplicate-key style failure before any D-10 export scope rows are inserted when a real collision exists.
-The guard table name and shape are fixed for D-10: `CREATE TEMPORARY TABLE IF NOT EXISTS d_seed_collision_guard (id BIGINT NOT NULL PRIMARY KEY)`, followed by `DELETE FROM d_seed_collision_guard` and `INSERT INTO d_seed_collision_guard (id) VALUES (1)`. The collision check inserts `SELECT 1` into that table only when a reserved `iam_scope_rule.id` exists with a different expected signature, for example `id = 8023 AND NOT (assignment_id = 7010 AND permission_code = 'score.export.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002 AND category_code IS NULL AND item_code IS NULL AND priority = 80 AND status = 'ACTIVE')`; equivalent checks are required for `8024` and `8025`.
+The guard table name and shape are fixed for D-10: `CREATE TEMPORARY TABLE IF NOT EXISTS d_seed_collision_guard (id BIGINT NOT NULL PRIMARY KEY)`, followed by `DELETE FROM d_seed_collision_guard` and `INSERT INTO d_seed_collision_guard (id) VALUES (1)`. The collision check inserts `SELECT 1` into that table only when a reserved `iam_scope_rule.id` exists with a different expected signature. The expected signature must include all frozen semantic columns: `assignment_id`, `permission_code`, `scope_type`, `org_unit_id`, `category_code`, `item_code`, `expression_json`, `priority`, and `status`; `created_at` is excluded because reruns may preserve the original timestamp. For example, `8023` must check `id = 8023 AND NOT (assignment_id = 7010 AND permission_code = 'score.export.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002 AND category_code IS NULL AND item_code IS NULL AND JSON_UNQUOTE(JSON_EXTRACT(expression_json, '$.scoreRole')) = 'counselor' AND priority = 80 AND status = 'ACTIVE')`; equivalent JSON/value checks are required for `8024` and `8025`.
 The priority values intentionally mirror existing A seed conventions; larger priority numbers sort later in the current evaluator but D-10 scope rows are additive OR clauses, so the values are for consistency and auditability rather than conflict resolution.
 
 For `iam_scope_rule`, the safe-init insert statements must use the documented column list exactly:
@@ -312,7 +312,7 @@ Use existing exception flow where possible:
 - Validation failures throw `ValidationException`.
 - No rows throws `ResourceNotFoundException("无匹配导出数据")`.
 - Missing authority throws `AccessDeniedAppException` or is blocked by Spring Security.
-- Workbook writer failures are wrapped in `FinalScoreExportGenerationException`, which is a D-10-specific `BaseAppException` using `CommonErrorCode.FILE_STORAGE_FAILED`, so the HTTP code is `503` and response code is `EXT-5033`. This intentionally reuses the existing file-storage error code because the frozen D-10 delivery contract already names `EXT-5033` for file generation failure; D-10 must not introduce a second public error code for the same response branch.
+- Workbook writer failures are wrapped in `FinalScoreExportGenerationException("Excel 生成失败")`, which is a D-10-specific `BaseAppException` using `CommonErrorCode.FILE_STORAGE_FAILED`, so the HTTP code is `503`, response code is `EXT-5033`, and public message is exactly `Excel 生成失败`. This intentionally reuses the existing file-storage error code because the frozen D-10 delivery contract already names `EXT-5033` for file generation failure; D-10 must not introduce a second public error code for the same response branch.
 - Unexpected `DataAccessException` continues to use existing global DB/system mapping.
 
 The application service must catch only workbook generation failures from the writer. It must not convert authorization or validation failures to `EXT-5033`.
@@ -323,7 +323,7 @@ Spec-phase acceptance tests for the implementation plan:
 
 - Query normalization trims `academicYear`, rejects missing/invalid `academicYear`, treats blank `status` as absent, rejects lowercase/non-exact `status` values and `DRAFT`, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance, and treats `classes=,,` or `classes=&classes= ` as an absent class filter.
 - Query normalization rejects present `pageNo/pageSize`, including `pageNo=` or `pageSize=`, with `ValidationException`, and controller/WebMvc tests verify the HTTP response is `400 / VAL-4001` with message `导出接口不支持分页参数`.
-- Controller/WebMvc tests verify repeated single-value parameters return `400 / VAL-4001` with message `导出接口不支持重复单值参数`.
+- Controller/WebMvc tests verify repeated single-value parameters return `400 / VAL-4001` with message `导出接口不支持重复单值参数`; repeated `pageNo/pageSize` returns `400 / VAL-4001` with message `导出接口不支持分页参数` because the pagination-parameter branch has priority.
 - Controller security annotation requires `SCORE_EXPORT_ASSIGNED`.
 - `AdminFinalScoreExportControllerWebMvcTest` proves unauthenticated requests are rejected by the existing security filter chain without freezing a new D-10-specific 401/403 contract.
 - `AdminFinalScoreExportControllerWebMvcTest` covers authenticated users without `SCORE_EXPORT_ASSIGNED` returning `403`, proving the new D-10 controller is protected by the export authority.
