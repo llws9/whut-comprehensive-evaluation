@@ -209,10 +209,13 @@ public record FinalScoreExportQuery(String academicYear,
                                     String status,
                                     String grade,
                                     List<String> classes) {
+    public FinalScoreExportQuery {
+        // validate and normalize all fields here
+    }
 }
 ```
 
-Use `List.copyOf(...)` for immutable classes and process fields in this order: validate `academicYear`, validate `status`, normalize `grade`, then normalize and cap `classes`. The `classes` constructor argument is the raw servlet parameter list: each string may contain comma-separated tokens. Normalize `classes` by iterating raw values in order, splitting each raw value by comma, trimming tokens, dropping blank tokens, de-duplicating by first appearance, preserving first-seen order, and storing an immutable list. The allowed normalized token count is at most `500`; `500` is valid, `501` or more throws `ValidationException("classes 参数过多")`.
+Use `List.copyOf(...)` for immutable classes and process fields in this order: trim and validate `academicYear`, trim `status`, convert blank `status` to `null`, validate non-null `status`, trim `grade`, convert blank `grade` to `null`, then normalize and cap `classes`. Add a query test that passes `" CS2022 "` as `grade` and asserts `query.grade()` is `"CS2022"`. The `classes` constructor argument is the raw servlet parameter list: each string may contain comma-separated tokens. Normalize `classes` by iterating raw values in order, splitting each raw value by comma, trimming tokens, dropping blank tokens, de-duplicating by first appearance, preserving first-seen order, and storing an immutable list. The allowed normalized token count is at most `500`; `500` is valid, `501` or more throws `ValidationException("classes 参数过多")`.
 
 Create `FinalScoreExportRow` as an immutable record with the exact fields and order below. Use nullable object references for grade/class/timestamps and totals so the writer can be null-safe.
 
@@ -286,7 +289,7 @@ public interface FinalScoreExportWorkbookWriter {
 }
 ```
 
-Create `FinalScoreExportGenerationException` extending `BaseAppException` with `CommonErrorCode.FILE_STORAGE_FAILED` and message constructor.
+Create `FinalScoreExportGenerationException` extending `BaseAppException` with `CommonErrorCode.FILE_STORAGE_FAILED`, a message constructor, and a `(String message, Throwable cause)` constructor that preserves the original writer failure as `getCause()`.
 
 - [ ] **Step 4: Run query tests**
 
@@ -401,7 +404,7 @@ Implementation behavior:
 5. Empty rows throw `ResourceNotFoundException("无匹配导出数据")`.
 6. More than `MAX_SYNC_EXPORT_ROWS` rows log row-cap context and throw `FinalScoreExportGenerationException("Excel 生成失败")` before writer call.
 7. Call writer and return `FinalScoreExportFile`.
-8. Catch `FinalScoreExportGenerationException` and rethrow; catch other `RuntimeException` from writer, log writer context, and wrap with `FinalScoreExportGenerationException("Excel 生成失败")`.
+8. Catch `FinalScoreExportGenerationException`, log writer-failure context using `exception.getCause()` when present or the exception itself otherwise, then rethrow the same exception; catch other `RuntimeException` from writer, log writer context using that original exception, and wrap with `FinalScoreExportGenerationException("Excel 生成失败", exception)`. This keeps the writer free to wrap POI/IO failures while still letting the service emit the required writer-failure log branch with original exception type/message.
 
 - [ ] **Step 5: Run service tests**
 
@@ -471,7 +474,7 @@ Implementation notes:
 - Use blank cells for null grade/class/timestamp fields.
 - Truncate timestamps with `instant.truncatedTo(ChronoUnit.SECONDS).toString()`.
 - Set fixed widths after writing rows; do not depend on POI auto-size requiring fonts.
-- Wrap `IOException` or POI runtime failures in `FinalScoreExportGenerationException("Excel 生成失败")`.
+- Wrap `IOException` or POI runtime failures in `FinalScoreExportGenerationException("Excel 生成失败", exception)`, preserving the original exception as the cause for service-layer logging.
 
 - [ ] **Step 4: Run workbook tests**
 
@@ -647,6 +650,7 @@ Use `@WebMvcTest(controllers = AdminFinalScoreExportController.class)` and mock 
 - `501` or more normalized `classes` tokens fail through the real endpoint with `400 / VAL-4001 / classes 参数过多`;
 - unknown query parameter is ignored;
 - service `ResourceNotFoundException("无匹配导出数据")` maps to `404 / RES-4040`;
+- unknown `grade` or unknown `classes` values are accepted as filters, not rejected as request errors; when they produce no repository rows, the endpoint returns `404 / RES-4040 / 无匹配导出数据`, not `400 / VAL-4001`;
 - service `FinalScoreExportGenerationException("Excel 生成失败")` maps to `503 / EXT-5033`;
 - unauthenticated request is rejected by the existing Spring Security filter chain; D-10 must not introduce a new 401/403 response contract beyond the global security layer behavior;
 - authenticated user without `SCORE_EXPORT_ASSIGNED` receives `403`.
@@ -676,7 +680,7 @@ Implementation requirements:
 - inspect `request.getParameterMap()` before constructing `FinalScoreExportQuery`;
 - reject `pageNo`/`pageSize` presence first;
 - reject repeated `academicYear`, `status`, and `grade`;
-- read `classes` via `request.getParameterValues("classes")`, convert the returned raw `String[]` to a `List<String>` preserving array order, and pass that raw list unchanged into `new FinalScoreExportQuery(academicYear, status, grade, rawClasses)`;
+- read `classes` via `request.getParameterValues("classes")`. If it returns `null`, pass `null` to `FinalScoreExportQuery`; otherwise convert the returned raw `String[]` to a `List<String>` preserving array order and pass that raw list unchanged into `new FinalScoreExportQuery(academicYear, status, grade, rawClasses)`;
 - construct `FinalScoreExportQuery`. The query object owns splitting/trimming/deduping `classes` and throwing `ValidationException("classes 参数过多")` when the normalized token count is `501` or more; the controller must not duplicate the 500-token validation or pre-normalize class tokens;
 - call service;
 - copy filename/content type/content bytes to `ResponseEntity<byte[]>`;
@@ -746,7 +750,8 @@ Patch `group-d-score-finalization-import-export.safe-init.sql`:
 
 - run all `8023`/`8024`/`8025` guard checks before any export scope insert;
 - compare nullable columns with `IS NULL`;
-- compare JSON via compact strings after whitespace normalization;
+- compare JSON via compact strings after whitespace normalization by removing ordinary spaces, tabs, line feeds, and carriage returns before comparing with the fixed compact literals;
+- guard comparisons intentionally exclude `created_at`; compare only `assignment_id`, `permission_code`, `scope_type`, `org_unit_id`, `category_code`, `item_code`, `expression_json`, `priority`, and `status`, because clean reruns may preserve the original timestamp;
 - insert rows conditionally with `WHERE NOT EXISTS`;
 - include column list `id, assignment_id, permission_code, scope_type, org_unit_id, category_code, item_code, expression_json, priority, status, created_at`;
 - use compact JSON literals:
