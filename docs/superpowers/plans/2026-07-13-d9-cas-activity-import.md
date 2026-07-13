@@ -57,6 +57,7 @@ Create:
 - `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/ActivityImportStudentTarget.java`
 - `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/ActivityImportedComponent.java`
 - `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/importing/ActivityImportItemDefinition.java`
+- `whut-eval-application/src/test/java/edu/whut/eval/application/finalrecord/importing/ActivityImportContractsCompileTest.java`
 - `whut-eval-infra/src/main/java/edu/whut/eval/infra/finalrecord/importing/ExcelActivityImportParser.java`
 - `whut-eval-infra/src/main/java/edu/whut/eval/infra/finalrecord/importing/MySqlActivityImportBatchLock.java`
 - `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/mapper/ActivityImportMapper.java`
@@ -621,6 +622,7 @@ git commit -m "feat: parse activity import workbooks"
 Create `ActivityImportApplicationServiceTest` with fakes for `ActivityImportParser`, `ActivityImportRepository`, `ActivityImportBatchLock`, `TransactionOperations`, and `UserAuthorizationContextAssembler`. Cover:
 
 - missing/empty file, title, itemCode, scoreValue, heldAt, and academicYear messages;
+- title length > 255, itemCode length > 64, and academicYear values that do not match `YYYY-YYYY` or whose end year is not start year + 1;
 - strict `scoreValue` ordering: non-decimal, `>99999999.99`, scale > 2, item cap when `allowOverflow = false`;
 - active SPORTS item required, invalid cap metadata exposed by repository as `Optional.empty()`;
 - deterministic `activityBatchId` format `^ACTIVITY-[0-9]{8}-[0-9]{14}-[0-9A-F]{12}$`;
@@ -628,9 +630,11 @@ Create `ActivityImportApplicationServiceTest` with fakes for `ActivityImportPars
 - canonical item code used in response, duplicate detection, and persisted components;
 - header-only import returns zero counts and releases lock;
 - partial success rejects same-batch retry when repository duplicate check is true;
+- successful rows use normalized request title as persisted display text when row `displayText` is blank, while failed-row raw values still return blank as `null`;
 - row-level failures for blank `studentNo`, over-64 `studentNo`, long `displayText`, duplicate student, missing target, out of scope, locked final record;
 - unsupported or empty scope grants no rows;
-- defensive service-level missing authority maps through `AccessDeniedAppException`.
+- defensive service-level missing authority maps through `AccessDeniedAppException`;
+- lock release happens through transaction `afterCompletion` when synchronization is active and through a `finally` fallback when synchronization is inactive.
 
 Use test method names such as:
 
@@ -663,13 +667,17 @@ Expected: compilation fails because `ActivityImportApplicationService` is missin
 Implement `ActivityImportApplicationService` with these concrete rules:
 
 - `normalize(command)` validates request parameters in the spec order.
+- `normalizeTitle` rejects null/blank title and title values over 255 Unicode code points after Java `String.trim()`.
+- `normalizeItemCode` rejects null/blank itemCode and itemCode values over 64 Unicode code points after Java `String.trim()`.
+- `normalizeAcademicYear` requires `^(\\d{4})-(\\d{4})$` and rejects values whose end year is not start year + 1.
 - `scoreValue` uses `STRICT_DECIMAL_PATTERN = Pattern.compile("^[0-9]+(\\.[0-9]+)?$")`, parses to `BigDecimal`, and stores scale 2 via `setScale(2, RoundingMode.HALF_UP)` only after scale validation.
 - `heldAt` parses through `LocalDateTime.parse(heldAt.trim())`, rejects date-only and date-hour strings by parse failure, and uses `.withNano(0)`.
 - `itemCode` lookup calls `repository.findActiveSportsItem(trimmedItemCode)` after request syntax validation.
 - `activityBatchId` hash input uses `len:value` segments joined by `|`.
-- Lock orchestration follows D-8: enter `transactionOperations.execute(...)`, acquire lock, register release through `TransactionSynchronizationManager`, run authoritative duplicate check, process rows.
+- Lock orchestration follows D-8: enter `transactionOperations.execute(...)`, acquire lock, register release through `TransactionSynchronizationManager` when synchronization is active, run authoritative duplicate check, process rows, and release in `finally` if synchronization registration did not happen.
 - Duplicate check calls `repository.activityBatchExists(academicYear, "SPORTS", canonicalItemCode, activityBatchId)`.
 - Field-valid rows are sorted by `studentUserId ASC`, then `rowNo ASC` before persistence.
+- For each successful row, `displayText` is `row.displayText().trim()` when present, otherwise the normalized request `title`.
 - `canAccess` copies D-8 current-org scope semantics and uses real org paths for `ORG_SUBTREE`.
 - `rawValue` contains exactly `studentNo` and `displayText`, with blank values as `null`.
 
@@ -739,7 +747,45 @@ Expected: compilation fails because mapper/repository files are missing.
 
 - [ ] **Step 3: Implement mapper**
 
-Create `ActivityImportMapper` with methods equivalent to D-8 plus item lookup:
+Create the four row DTO classes first. Use ordinary Java classes with private fields plus getters/setters, matching the existing D-8 row DTO style.
+
+Create `ActivityImportStudentTargetRow` with:
+
+```java
+private Long studentUserId;
+private String studentNo;
+private Long orgUnitId;
+private String orgPath;
+```
+
+Create `ActivityImportedComponentRow` with:
+
+```java
+private Long finalRecordId;
+private String categoryCode;
+private String itemCode;
+private BigDecimal scoreValue;
+private String displayText;
+private String sourceRefId;
+private LocalDateTime createdAt;
+```
+
+Create `ActivityImportItemDefinitionRow` with:
+
+```java
+private String itemCode;
+private String categoryCode;
+private String capRuleJson;
+```
+
+Create `ActivityScoreCategoryTotalRow` with:
+
+```java
+private String categoryCode;
+private BigDecimal scoreValue;
+```
+
+Then create `ActivityImportMapper` with methods equivalent to D-8 plus item lookup:
 
 ```java
 @Mapper
@@ -760,6 +806,7 @@ public interface ActivityImportMapper {
 
     List<ActivityScoreCategoryTotalRow> selectTotals(Long finalRecordId);
 
+    @Update("UPDATE final_record SET moral_total = #{moral}, intellectual_total = #{intellectual}, physical_total = #{physical}, labor_total = #{labor}, grand_total = #{grand}, updated_at = #{updatedAt}, version = version + 1 WHERE id = #{finalRecordId} AND status = 'DRAFT'")
     int updateTotals(Long finalRecordId,
                      BigDecimal moralTotal,
                      BigDecimal intellectualTotal,
@@ -775,7 +822,10 @@ SQL requirements:
 - `selectActiveSportsItem`: `WHERE item_code = #{itemCode} AND category_code = 'SPORTS' AND status = 'ACTIVE'`.
 - `countActivityBatchComponents`: join `final_record fr ON fr.id = fcs.final_record_id`, filter `fr.academic_year`, `fcs.category_code`, `fcs.item_code`, `fcs.source_type = 'IMPORT'`, `fcs.source_ref_id`.
 - `selectTarget`: active `iam_user`, active primary `org_membership`, active `org_unit`, deterministic `ORDER BY om.id ASC LIMIT 1`.
+- `ActivityImportRepository.findTarget(String studentNo, String academicYear)` keeps the `academicYear` argument for parity with D-7/D-8 and a future historical-membership lookup. Minimal D-9 mapper `selectTarget(String studentNo)` intentionally ignores academic year and reads current primary active membership only.
 - `selectFinalRecordForUpdate`: lock by `(student_user_id, academic_year)`.
+- `insertActivityComponent` is intentionally single-row. `MybatisActivityImportRepository.insertActivityComponents(...)` loops over sorted components inside one transaction, matching D-8's per-row lock, insert, and total recalculation semantics.
+- `updateTotals` must increment `version` in SQL using `version = version + 1`, not by requiring a caller-provided version argument.
 
 - [ ] **Step 4: Implement repository**
 
@@ -785,6 +835,7 @@ Implement `MybatisActivityImportRepository` by adapting `MybatisLectureImportRep
 - `findActiveSportsItem` parses `cap_rule_json` with Jackson `ObjectMapper`.
 - invalid cap JSON returns `Optional.empty()`.
 - `insertActivityComponents` is `@Transactional`, creates/reloads DRAFT final records, inserts rows, and updates totals after each successful insert.
+- `toComponentRow(...)` sets `categoryCode`, `itemCode`, `scoreValue`, `displayText`, `sourceType = 'IMPORT'` through SQL, `sourceRefId = activityBatchId`, and `createdAt`.
 - locked records return `ActivityImportFailedRow` with raw values exactly `studentNo` and `displayText`.
 - duplicate final-record insert handling uses SQLState `23000` or MySQL error code `1062`.
 
@@ -932,6 +983,7 @@ Add tests for:
 
 - route `POST /api/admin/imports/cas-activities`;
 - missing `file/title/itemCode/scoreValue/heldAt/academicYear`;
+- title longer than 255 Unicode code points, itemCode longer than 64 Unicode code points, invalid scoreValue variants, invalid heldAt variants, and invalid academicYear variants return the frozen `VAL-4001` messages;
 - unsupported, blank, missing, and extensionless filenames rejected before service invocation;
 - file > 5 MB rejected before `getBytes()`;
 - multipart read failure maps to `503 / EXT-5033 / 文件处理失败，请稍后重试`;
@@ -985,7 +1037,7 @@ Modify `AdminScoreImportController`:
 - inject `ActivityImportApplicationService`;
 - add `MAX_ACTIVITY_IMPORT_BYTES = 5L * 1024 * 1024`;
 - add `importActivities(...)` with `@PostMapping(value = "/cas-activities", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)`;
-- validate request params in frozen order;
+- validate request params in frozen order before byte reading where possible: file presence/size/filename, title blank/length, itemCode blank/length, scoreValue blank/syntax/range/scale, heldAt blank/parse shape, academicYear blank/regex/year increment;
 - validate original filename using shared helper that rejects null, blank, extensionless, `.xlsm`, `.csv`, and text;
 - wrap `IOException` from `getBytes()` in `FileStorageException("文件处理失败，请稍后重试", exception)`;
 - map `ActivityImportResult` to `ActivityImportResultResponse`.
