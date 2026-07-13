@@ -226,7 +226,7 @@ final class ActivityImportContractsCompileTest {
 Run:
 
 ```bash
-mvn -pl whut-eval-application test-compile
+mvn -pl whut-eval-application -am test-compile
 ```
 
 Expected: compilation fails because the `ActivityImport*` domain records and ports do not exist.
@@ -417,7 +417,7 @@ public interface ActivityImportRepository {
 Run:
 
 ```bash
-mvn -pl whut-eval-application test-compile
+mvn -pl whut-eval-application -am test-compile
 ```
 
 Expected: pass.
@@ -557,7 +557,7 @@ Use helper methods from the D-8 parser test, adjusted to two required columns pl
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=ActivityImportParserTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: compilation fails because `ExcelActivityImportParser` is missing.
@@ -668,7 +668,7 @@ public class ExcelActivityImportParser implements ActivityImportParser {
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=ActivityImportParserTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: pass.
@@ -698,7 +698,9 @@ Create `ActivityImportApplicationServiceTest` with fakes for `ActivityImportPars
 - active SPORTS item required: missing item rows and invalid cap metadata are both exposed by repository as `Optional.empty()` and service tests must assert `ResourceNotFoundException("对应项目定义不存在")`, which the global handler maps to `404 / RES-4040`;
 - deterministic `activityBatchId` format `^ACTIVITY-[0-9]{8}-[0-9]{14}-[0-9A-F]{12}$`;
 - exact deterministic `activityBatchId` hash contract from the frozen spec: hash input segments are ordered normalized `academicYear`, normalized `heldAt` formatted `yyyyMMddHHmmss`, normalized `title`, canonical `itemCode`, then normalized scale-2 `scoreValue.toPlainString()`;
+- fixed UTF-8 hash sample: title `校运会志愿服务`, item `SPORTS_COMPETITION`, score `0.50`, heldAt `2026-05-18T14:30`, academicYear `2025-2026` produces `ACTIVITY-20252026-20260518143000-F0B289881AE3`;
 - length-prefixed hash input by asserting titles containing `|` and `:` generate distinct ids and by testing `encodeHashPart("A|B:中")` returns the Unicode-code-point count prefix followed by `:` and the original value;
+- error priority combination cases: malformed workbook content with invalid `itemCode` returns `400 / VAL-4001 / 导入模板错误：文件不可解析` before item lookup; valid workbook with missing/invalid item returns `ResourceNotFoundException("对应项目定义不存在")`; valid item metadata then applies item-specific maxPoints validation;
 - canonical item code used in response, duplicate detection, and persisted components;
 - header-only import returns zero counts and releases lock;
 - partial success rejects same-batch retry when repository duplicate check is true with `409 / BIZ-4090 / 同一活动批次已导入`;
@@ -734,7 +736,7 @@ void shouldUseCanonicalItemCodeForResponseDuplicateCheckAndPersistence()
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=ActivityImportApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=ActivityImportApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: compilation fails because `ActivityImportApplicationService` is missing.
@@ -749,11 +751,13 @@ Implement `ActivityImportApplicationService` with these concrete rules:
 - `normalizeAcademicYear` requires `^(\\d{4})-(\\d{4})$` and rejects values whose end year is not start year + 1.
 - Inject `UserAuthorizationContextAssembler`, call `requiredAuthorizationContext()`, and defensively require `AuthorizationPermissionCodes.SCORE_IMPORT`; missing authority throws `AccessDeniedAppException("当前用户无导入权限")`.
 - Import and use existing common exceptions only: `ValidationException` for `VAL-4001` request validation, `ResourceNotFoundException` for `RES-4040` item-definition absence, `ConflictException` for `BIZ-4090` duplicate or in-progress batch, `AccessDeniedAppException` for permission failures, and `DataAccessException` propagation for database-access failures.
-- `scoreValue` validation order is: trim and reject blank or non-`STRICT_DECIMAL_PATTERN = Pattern.compile("^[0-9]+(\\.[0-9]+)?$")`, parse to `BigDecimal`, reject values `> 99999999.99`, reject scale greater than 2, then reject values above item `maxPoints` when `allowOverflow = false`. Store scale 2 via `setScale(2, RoundingMode.HALF_UP)` only after scale validation.
+- `scoreValue` basic validation order is: trim and reject blank or non-`STRICT_DECIMAL_PATTERN = Pattern.compile("^[0-9]+(\\.[0-9]+)?$")`, parse to `BigDecimal`, reject values `> 99999999.99`, and reject scale greater than 2. Store scale 2 via `setScale(2, RoundingMode.HALF_UP)` only after scale validation; do not apply item-specific maxPoints until after workbook parsing and item metadata lookup succeed.
 - `heldAt` parses ISO-8601 local date-time strings through `LocalDateTime.parse(heldAt.trim())`; accept `2026-05-18T14:30` and `2026-05-18T14:30:00`, reject date-only and date-hour strings, then use `.withNano(0)` so omitted seconds become `00` and fractional seconds are truncated.
+- After file-layer checks and basic request validation, immediately call `parser.parse(command.fileContent())`. Workbook parse/template failures must surface before `repository.findActiveSportsItem(...)`, cap metadata parsing, duplicate-batch checks, or item-specific score cap validation.
 - `itemCode` lookup calls `repository.findActiveSportsItem(trimmedItemCode)` after request syntax validation. If the repository returns `Optional.empty()` for a missing active SPORTS item or invalid cap metadata, throw `ResourceNotFoundException("对应项目定义不存在")`; do not map this path to `ValidationException` or a generic system error.
+- After item lookup succeeds, reject `scoreValue > item.maxPoints()` with the frozen score-cap validation error only when `allowOverflow = false`.
 - `activityBatchId` format is `ACTIVITY-` + `academicYear` without hyphen + `-` + `heldAt` formatted `yyyyMMddHHmmss` + `-` + the first 12 uppercase hexadecimal characters of SHA-256 over `hashInput(request, held)`.
-- `hashInput(request, held)` uses length-prefixed segments joined by `|` in this exact frozen-spec order: normalized `academicYear`, `held` formatted as `yyyyMMddHHmmss`, normalized `title`, canonical `itemCode`, and normalized scale-2 `scoreValue.toPlainString()`. Do not use `BigDecimal.toString()` or delimiter-only concatenation.
+- `hashInput(request, held)` uses length-prefixed segments joined by `|` in this exact frozen-spec order: normalized `academicYear`, `held` formatted as `yyyyMMddHHmmss`, normalized `title`, canonical `itemCode`, and normalized scale-2 `scoreValue.toPlainString()`. Compute SHA-256 over `hashInput.getBytes(StandardCharsets.UTF_8)`, uppercase the hexadecimal digest, and take the first 12 characters. Do not use platform-default charset, `BigDecimal.toString()`, or delimiter-only concatenation.
 - `encodeHashPart(value)` returns `value.codePointCount(0, value.length()) + ":" + value`. The count is decimal Unicode code points in the normalized Java `String`, not UTF-8 bytes or UTF-16 code units.
 - Lock orchestration follows D-8: enter `transactionOperations.execute(...)`, acquire lock on the request transaction owner connection, map `tryAcquire == false` to `ConflictException("同一活动批次正在导入，请稍后重试")`, let `DataAccessException` from the lock adapter propagate, register release through `TransactionSynchronizationManager` when synchronization is active, run authoritative duplicate check, process rows, and release on the same transaction owner connection in `afterCompletion` or in `finally` if synchronization registration did not happen.
 - Duplicate check calls `repository.activityBatchExists(academicYear, "SPORTS", canonicalItemCode, activityBatchId)` and maps a positive result to `ConflictException("同一活动批次已导入")`.
@@ -793,7 +797,7 @@ private boolean canAccess(UserAuthorizationContext context, ActivityImportStuden
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=ActivityImportApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=ActivityImportApplicationServiceTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: pass.
@@ -839,7 +843,7 @@ Use D-8 repository tests as the base and add D-9-specific cases:
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: compilation fails because mapper/repository files are missing.
@@ -985,7 +989,7 @@ Implement `MybatisActivityImportRepository` by adapting `MybatisLectureImportRep
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: pass.
@@ -1119,7 +1123,7 @@ public class MySqlActivityImportBatchLock implements ActivityImportBatchLock {
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=ActivityImportBatchLockTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=ActivityImportBatchLockTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: pass.
@@ -1155,6 +1159,7 @@ Add tests for:
 - missing/invalid `itemCode` definition from service `ResourceNotFoundException("对应项目定义不存在")` maps through MVC/global exception handling to `404 / RES-4040 / 对应项目定义不存在`;
 - duplicate-batch `ConflictException("同一活动批次已导入")` maps through MVC/global exception handling to `409 / BIZ-4090 / 同一活动批次已导入`;
 - in-progress batch `ConflictException("同一活动批次正在导入，请稍后重试")` maps through MVC/global exception handling to `409 / BIZ-4090 / 同一活动批次正在导入，请稍后重试`;
+- service `DataAccessException` maps through MVC/global exception handling to `500 / SYS-5000 / 数据访问异常，请稍后重试`;
 - successful response fields exactly `activityBatchId`, `title`, `itemCode`, `scoreValue`, `totalCount`, `successCount`, `failedCount`, `failedRows`;
 - failed row `rawValue` contains exactly `studentNo` and `displayText`;
 - security annotation requires `score.import`.
@@ -1215,7 +1220,7 @@ Modify `AdminScoreImportController`:
 Run:
 
 ```bash
-mvn -pl whut-eval-app -Dtest=AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: pass.
@@ -1256,7 +1261,7 @@ Create `ActivityImportApplicationContextSmokeTest` using the same pattern as `Le
 Run:
 
 ```bash
-mvn -pl whut-eval-application test-compile
+mvn -pl whut-eval-application -am test-compile
 mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest,ActivityImportApplicationServiceTest,MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest,ActivityImportBatchLockTest,ActivityImportApplicationContextSmokeTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest,LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,LectureImportApplicationContextSmokeTest,MentorScoreImportParserTest,MentorScoreImportApplicationServiceTest,MybatisMentorScoreImportRepositoryTest,MybatisMentorScoreImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
@@ -1290,7 +1295,7 @@ git commit -m "test: cover activity import wiring"
 After all tasks are complete, run:
 
 ```bash
-mvn -pl whut-eval-application test-compile
+mvn -pl whut-eval-application -am test-compile
 mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest,ActivityImportApplicationServiceTest,MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest,ActivityImportBatchLockTest,ActivityImportApplicationContextSmokeTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest,LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,LectureImportApplicationContextSmokeTest,MentorScoreImportParserTest,MentorScoreImportApplicationServiceTest,MybatisMentorScoreImportRepositoryTest,MybatisMentorScoreImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
