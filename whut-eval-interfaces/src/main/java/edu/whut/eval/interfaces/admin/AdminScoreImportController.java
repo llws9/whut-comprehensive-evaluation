@@ -1,6 +1,8 @@
 package edu.whut.eval.interfaces.admin;
 
 import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
+import edu.whut.eval.application.finalrecord.importing.ActivityImportApplicationService;
+import edu.whut.eval.application.finalrecord.importing.ImportActivitiesCommand;
 import edu.whut.eval.application.finalrecord.importing.ImportLecturesCommand;
 import edu.whut.eval.application.finalrecord.importing.ImportMentorScoresCommand;
 import edu.whut.eval.application.finalrecord.importing.LectureImportApplicationService;
@@ -8,10 +10,14 @@ import edu.whut.eval.application.finalrecord.importing.MentorScoreImportApplicat
 import edu.whut.eval.common.api.ApiResponse;
 import edu.whut.eval.common.exception.FileStorageException;
 import edu.whut.eval.common.exception.ValidationException;
+import edu.whut.eval.domain.finalrecord.importing.ActivityImportFailedRow;
+import edu.whut.eval.domain.finalrecord.importing.ActivityImportResult;
 import edu.whut.eval.domain.finalrecord.importing.LectureImportFailedRow;
 import edu.whut.eval.domain.finalrecord.importing.LectureImportResult;
 import edu.whut.eval.domain.finalrecord.importing.MentorScoreImportFailedRow;
 import edu.whut.eval.domain.finalrecord.importing.MentorScoreImportResult;
+import edu.whut.eval.interfaces.admin.response.ActivityImportFailedRowResponse;
+import edu.whut.eval.interfaces.admin.response.ActivityImportResultResponse;
 import edu.whut.eval.interfaces.admin.response.LectureImportFailedRowResponse;
 import edu.whut.eval.interfaces.admin.response.LectureImportResultResponse;
 import edu.whut.eval.interfaces.admin.response.MentorScoreImportFailedRowResponse;
@@ -36,16 +42,20 @@ import java.util.Locale;
 public class AdminScoreImportController {
 
     private static final long MAX_LECTURE_IMPORT_BYTES = 5L * 1024 * 1024;
+    private static final long MAX_ACTIVITY_IMPORT_BYTES = 5L * 1024 * 1024;
     private static final DateTimeFormatter LECTURE_RESPONSE_TIME_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
     private final MentorScoreImportApplicationService importApplicationService;
     private final LectureImportApplicationService lectureImportApplicationService;
+    private final ActivityImportApplicationService activityImportApplicationService;
 
     public AdminScoreImportController(MentorScoreImportApplicationService importApplicationService,
-                                      LectureImportApplicationService lectureImportApplicationService) {
+                                      LectureImportApplicationService lectureImportApplicationService,
+                                      ActivityImportApplicationService activityImportApplicationService) {
         this.importApplicationService = importApplicationService;
         this.lectureImportApplicationService = lectureImportApplicationService;
+        this.activityImportApplicationService = activityImportApplicationService;
     }
 
     @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_IMPORT)")
@@ -118,7 +128,50 @@ public class AdminScoreImportController {
         return ApiResponse.success(toResponse(result));
     }
 
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_IMPORT)")
+    @PostMapping(value = "/cas-activities", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<ActivityImportResultResponse> importActivities(
+            @RequestParam(value = "file", required = false) MultipartFile file,
+            @RequestParam(value = "title", required = false) String title,
+            @RequestParam(value = "itemCode", required = false) String itemCode,
+            @RequestParam(value = "scoreValue", required = false) String scoreValue,
+            @RequestParam(value = "heldAt", required = false) String heldAt,
+            @RequestParam(value = "academicYear", required = false) String academicYear) {
+        if (file == null || file.isEmpty()) {
+            throw new ValidationException("上传文件不能为空");
+        }
+        if (file.getSize() > MAX_ACTIVITY_IMPORT_BYTES) {
+            throw new ValidationException("文体活动导入文件最多支持 5000 行且不超过 5MB");
+        }
+        validateActivityWorkbookFilename(file);
+
+        byte[] bytes;
+        try {
+            bytes = file.getBytes();
+        } catch (FileStorageException exception) {
+            throw exception;
+        } catch (IOException exception) {
+            throw new FileStorageException("文件处理失败，请稍后重试", exception);
+        }
+
+        ActivityImportResult result = activityImportApplicationService.importActivities(
+                new ImportActivitiesCommand(bytes, title, itemCode, scoreValue, heldAt, academicYear)
+        );
+        return ApiResponse.success(toResponse(result));
+    }
+
     private void validateLectureWorkbookFilename(MultipartFile file) {
+        String filename = file.getOriginalFilename();
+        if (filename == null) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
+        String normalized = filename.trim().toLowerCase(Locale.ROOT);
+        if (!normalized.endsWith(".xlsx") && !normalized.endsWith(".xls")) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
+    }
+
+    private void validateActivityWorkbookFilename(MultipartFile file) {
         String filename = file.getOriginalFilename();
         if (filename == null) {
             throw new ValidationException("导入模板错误：文件不可解析");
@@ -162,6 +215,25 @@ public class AdminScoreImportController {
     private List<LectureImportFailedRowResponse> toLectureFailedRowResponses(List<LectureImportFailedRow> failedRows) {
         return failedRows.stream()
                 .map(row -> new LectureImportFailedRowResponse(row.rowNo(), row.code(), row.message(), row.rawValue()))
+                .toList();
+    }
+
+    private ActivityImportResultResponse toResponse(ActivityImportResult result) {
+        return new ActivityImportResultResponse(
+                result.activityBatchId(),
+                result.title(),
+                result.itemCode(),
+                result.scoreValue(),
+                result.totalCount(),
+                result.successCount(),
+                result.failedCount(),
+                toActivityFailedRowResponses(result.failedRows())
+        );
+    }
+
+    private List<ActivityImportFailedRowResponse> toActivityFailedRowResponses(List<ActivityImportFailedRow> failedRows) {
+        return failedRows.stream()
+                .map(row -> new ActivityImportFailedRowResponse(row.rowNo(), row.code(), row.message(), row.rawValue()))
                 .toList();
     }
 }

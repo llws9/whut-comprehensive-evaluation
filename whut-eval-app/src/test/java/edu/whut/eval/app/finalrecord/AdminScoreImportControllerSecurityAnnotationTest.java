@@ -50,4 +50,29 @@ class AdminScoreImportControllerSecurityAnnotationTest {
         assertThat(AdminScoreImportController.class.getAnnotation(RequestMapping.class).value())
                 .containsExactly("/api/admin/imports");
     }
+
+    @Test
+    void shouldRequireScoreImportAuthorityForActivityImport() throws Exception {
+        PreAuthorize preAuthorize = AdminScoreImportController.class
+                .getMethod("importActivities", MultipartFile.class, String.class, String.class, String.class, String.class, String.class)
+                .getAnnotation(PreAuthorize.class);
+
+        assertThat(preAuthorize).isNotNull();
+        assertThat(preAuthorize.value()).isEqualTo(
+                "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_IMPORT)"
+        );
+    }
+
+    @Test
+    void shouldExposeActivityImportOnExactMultipartRoute() throws Exception {
+        PostMapping postMapping = AdminScoreImportController.class
+                .getMethod("importActivities", MultipartFile.class, String.class, String.class, String.class, String.class, String.class)
+                .getAnnotation(PostMapping.class);
+
+        assertThat(postMapping).isNotNull();
+        assertThat(postMapping.value()).containsExactly("/cas-activities");
+        assertThat(postMapping.consumes()).containsExactly(MediaType.MULTIPART_FORM_DATA_VALUE);
+        assertThat(AdminScoreImportController.class.getAnnotation(RequestMapping.class).value())
+                .containsExactly("/api/admin/imports");
+    }
 }

@@ -2,11 +2,16 @@ package edu.whut.eval.app.finalrecord;
 
 import edu.whut.eval.application.finalrecord.importing.ImportLecturesCommand;
 import edu.whut.eval.application.finalrecord.importing.ImportMentorScoresCommand;
+import edu.whut.eval.application.finalrecord.importing.ImportActivitiesCommand;
+import edu.whut.eval.application.finalrecord.importing.ActivityImportApplicationService;
 import edu.whut.eval.application.finalrecord.importing.LectureImportApplicationService;
 import edu.whut.eval.application.finalrecord.importing.MentorScoreImportApplicationService;
 import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.FileStorageException;
+import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.common.exception.ValidationException;
+import edu.whut.eval.domain.finalrecord.importing.ActivityImportFailedRow;
+import edu.whut.eval.domain.finalrecord.importing.ActivityImportResult;
 import edu.whut.eval.domain.finalrecord.importing.LectureImportFailedRow;
 import edu.whut.eval.domain.finalrecord.importing.LectureImportResult;
 import edu.whut.eval.domain.finalrecord.importing.MentorScoreImportFailedRow;
@@ -22,10 +27,12 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
@@ -58,6 +65,9 @@ class AdminScoreImportControllerWebMvcTest {
 
     @MockBean
     private LectureImportApplicationService lectureImportApplicationService;
+
+    @MockBean
+    private ActivityImportApplicationService activityImportApplicationService;
 
     @Test
     void shouldImportMentorScoresAndReturnResultShape() throws Exception {
@@ -374,6 +384,261 @@ class AdminScoreImportControllerWebMvcTest {
                 .andExpect(jsonPath("$.message").value("文件处理失败，请稍后重试"));
     }
 
+    @Test
+    void shouldImportActivitiesAndReturnResultShape() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "activities.XLSX", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+        Map<String, String> rawValue = new LinkedHashMap<>();
+        rawValue.put("studentNo", "S1002");
+        rawValue.put("displayText", "校运会志愿服务");
+        given(activityImportApplicationService.importActivities(any(ImportActivitiesCommand.class)))
+                .willReturn(new ActivityImportResult(
+                        "ACTIVITY-20252026-20260518143000-F0B289881AE3",
+                        "校运会志愿服务",
+                        "SPORTS_COMPETITION",
+                        new BigDecimal("0.50"),
+                        2,
+                        1,
+                        1,
+                        List.of(new ActivityImportFailedRow(3L, "OUT_OF_SCOPE", "当前用户无权导入该学生文体活动成绩", rawValue))
+                ));
+
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .file(file)
+                        .param("title", "校运会志愿服务")
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "0.50")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.activityBatchId").value("ACTIVITY-20252026-20260518143000-F0B289881AE3"))
+                .andExpect(jsonPath("$.data.title").value("校运会志愿服务"))
+                .andExpect(jsonPath("$.data.itemCode").value("SPORTS_COMPETITION"))
+                .andExpect(jsonPath("$.data.scoreValue").value(0.50))
+                .andExpect(jsonPath("$.data.totalCount").value(2))
+                .andExpect(jsonPath("$.data.successCount").value(1))
+                .andExpect(jsonPath("$.data.failedCount").value(1))
+                .andExpect(jsonPath("$.data.failedRows[0].rowNo").value(3))
+                .andExpect(jsonPath("$.data.failedRows[0].code").value("OUT_OF_SCOPE"))
+                .andExpect(jsonPath("$.data.failedRows[0].message").value("当前用户无权导入该学生文体活动成绩"))
+                .andExpect(jsonPath("$.data.failedRows[0].rawValue.studentNo").value("S1002"))
+                .andExpect(jsonPath("$.data.failedRows[0].rawValue.displayText").value("校运会志愿服务"))
+                .andExpect(jsonPath("$.data.failedRows[0].rawValue.scoreValue").doesNotExist());
+
+        verify(activityImportApplicationService).importActivities(argThat(command ->
+                new String(command.fileContent()).equals("excel")
+                        && "校运会志愿服务".equals(command.title())
+                        && "SPORTS_COMPETITION".equals(command.itemCode())
+                        && "0.50".equals(command.scoreValue())
+                        && "2026-05-18T14:30".equals(command.heldAt())
+                        && "2025-2026".equals(command.academicYear())
+        ));
+    }
+
+    @Test
+    void shouldReturn400WhenActivityFileIsEmptyBeforeFilenameValidation() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "activities.csv", "text/csv", new byte[0]);
+
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .file(file)
+                        .param("title", "校运会志愿服务")
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "0.50")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("上传文件不能为空"));
+
+        verifyNoInteractions(activityImportApplicationService);
+    }
+
+    @Test
+    void shouldReturn400WhenActivityFilePartIsMissing() throws Exception {
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .param("title", "校运会志愿服务")
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "0.50")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("上传文件不能为空"));
+
+        verifyNoInteractions(activityImportApplicationService);
+    }
+
+    @Test
+    void shouldReturn400WhenActivityFileIsTooLargeBeforeReadingBytes() throws Exception {
+        MockMultipartFile file = new OversizedActivityMockMultipartFile();
+
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .file(file)
+                        .param("title", "校运会志愿服务")
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "0.50")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("文体活动导入文件最多支持 5000 行且不超过 5MB"));
+
+        verifyNoInteractions(activityImportApplicationService);
+    }
+
+    @Test
+    void shouldReturn400WhenActivityFilenameIsUnsupportedBeforeServiceInvocation() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "activities.xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12", "excel".getBytes());
+
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .file(file)
+                        .param("title", "校运会志愿服务")
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "0.50")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("导入模板错误：文件不可解析"));
+
+        verifyNoInteractions(activityImportApplicationService);
+    }
+
+    @Test
+    void shouldReturn400WhenActivityBusinessParameterIsMissingThroughServiceValidation() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "activities.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+        given(activityImportApplicationService.importActivities(any(ImportActivitiesCommand.class)))
+                .willThrow(new ValidationException("title 不能为空"));
+
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .file(file)
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "0.50")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("title 不能为空"));
+
+        verify(activityImportApplicationService).importActivities(argThat(command -> command.title() == null));
+    }
+
+    @Test
+    void shouldReturn400WhenActivityScoreExceedsItemCap() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "activities.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+        given(activityImportApplicationService.importActivities(any(ImportActivitiesCommand.class)))
+                .willThrow(new ValidationException("scoreValue 必须在 0 到项目允许范围之间"));
+
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .file(file)
+                        .param("title", "校运会志愿服务")
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "5.00")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VAL-4001"))
+                .andExpect(jsonPath("$.message").value("scoreValue 必须在 0 到项目允许范围之间"));
+    }
+
+    @Test
+    void shouldReturn404WhenActivityItemDefinitionMissing() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "activities.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+        given(activityImportApplicationService.importActivities(any(ImportActivitiesCommand.class)))
+                .willThrow(new ResourceNotFoundException("对应项目定义不存在"));
+
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .file(file)
+                        .param("title", "校运会志愿服务")
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "0.50")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("RES-4040"))
+                .andExpect(jsonPath("$.message").value("对应项目定义不存在"));
+    }
+
+    @Test
+    void shouldReturn409WhenActivityServiceReportsDuplicateBatch() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "activities.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+        given(activityImportApplicationService.importActivities(any(ImportActivitiesCommand.class)))
+                .willThrow(new ConflictException("同一活动批次已导入"));
+
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .file(file)
+                        .param("title", "校运会志愿服务")
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "0.50")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("BIZ-4090"))
+                .andExpect(jsonPath("$.message").value("同一活动批次已导入"));
+    }
+
+    @Test
+    void shouldReturn409WhenActivityServiceReportsInProgressBatch() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "activities.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+        given(activityImportApplicationService.importActivities(any(ImportActivitiesCommand.class)))
+                .willThrow(new ConflictException("同一活动批次正在导入，请稍后重试"));
+
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .file(file)
+                        .param("title", "校运会志愿服务")
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "0.50")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("BIZ-4090"))
+                .andExpect(jsonPath("$.message").value("同一活动批次正在导入，请稍后重试"));
+    }
+
+    @Test
+    void shouldReturn500WhenActivityServiceReportsDataAccessFailure() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "activities.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+        given(activityImportApplicationService.importActivities(any(ImportActivitiesCommand.class)))
+                .willThrow(new DataAccessResourceFailureException("db unavailable"));
+
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .file(file)
+                        .param("title", "校运会志愿服务")
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "0.50")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("SYS-5000"))
+                .andExpect(jsonPath("$.message").value("数据访问异常，请稍后重试"));
+    }
+
+    @Test
+    void shouldReturn503WhenActivityMultipartReadFails() throws Exception {
+        MockMultipartFile file = new FailingActivityMockMultipartFile();
+
+        mockMvc.perform(multipart("/api/admin/imports/cas-activities")
+                        .file(file)
+                        .param("title", "校运会志愿服务")
+                        .param("itemCode", "SPORTS_COMPETITION")
+                        .param("scoreValue", "0.50")
+                        .param("heldAt", "2026-05-18T14:30")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("EXT-5033"))
+                .andExpect(jsonPath("$.message").value("文件处理失败，请稍后重试"));
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     static class TestApplication {
@@ -400,6 +665,35 @@ class AdminScoreImportControllerWebMvcTest {
         @Override
         public byte[] getBytes() throws IOException {
             throw new IOException("read failed");
+        }
+    }
+
+    static class FailingActivityMockMultipartFile extends MockMultipartFile {
+
+        FailingActivityMockMultipartFile() {
+            super("file", "activities.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel".getBytes());
+        }
+
+        @Override
+        public byte[] getBytes() throws IOException {
+            throw new IOException("read failed");
+        }
+    }
+
+    static class OversizedActivityMockMultipartFile extends MockMultipartFile {
+
+        OversizedActivityMockMultipartFile() {
+            super("file", "activities.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", new byte[]{1});
+        }
+
+        @Override
+        public long getSize() {
+            return 5L * 1024 * 1024 + 1;
+        }
+
+        @Override
+        public byte[] getBytes() throws IOException {
+            throw new IOException("should not read oversized file");
         }
     }
 }
