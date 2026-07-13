@@ -54,8 +54,10 @@ Create:
 - `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin/response/LectureImportResultResponse.java`
 - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportParserTest.java`
 - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportApplicationServiceTest.java`
+- `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisLectureImportRepositoryTest.java`
 - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisLectureImportRepositoryIntegrationTest.java`
 - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportBatchLockTest.java`
+- `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportApplicationContextSmokeTest.java`
 
 Modify:
 
@@ -2400,6 +2402,8 @@ git commit -m "feat: expose lecture import endpoint"
 
 **Files:**
 
+- Create: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisLectureImportRepositoryTest.java`
+- Create: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportApplicationContextSmokeTest.java`
 - Modify: tests from Tasks 2-7 as needed.
 - No production files unless a verification failure exposes a missing requirement.
 
