@@ -161,20 +161,21 @@ Request-level failures:
 | `itemCode` too long | `400` | `VAL-4001` | `itemCode 长度不能超过 64` |
 | Missing or invalid `scoreValue` | `400` | `VAL-4001` | `scoreValue 必须是数字` |
 | `scoreValue > 99999999.99` | `400` | `VAL-4001` | `scoreValue 必须在 0 到 99999999.99 之间` |
+| `scoreValue` exceeds item `maxPoints` when `allowOverflow = false` | `400` | `VAL-4001` | `scoreValue 必须在 0 到项目允许范围之间` |
 | `scoreValue` has more than 2 decimal places | `400` | `VAL-4001` | `scoreValue 最多保留 2 位小数` |
 | Missing or invalid `heldAt` | `400` | `VAL-4001` | `heldAt 格式非法` |
 | Missing or invalid `academicYear` | `400` | `VAL-4001` | `academicYear 不合法` |
 | File too large or too many data rows | `400` | `VAL-4001` | `文体活动导入文件最多支持 5000 行且不超过 5MB` |
 | Missing required header, header mismatch, no sheet, unreadable workbook | `400` | `VAL-4001` | Starts with `导入模板错误：` |
 | Active SPORTS `evaluation_item` not found for `itemCode` | `404` | `RES-4040` | `对应项目定义不存在` |
-| Missing authority | `403` | `AUTH-4030` | Existing security handler response. |
+| Missing authority | `403` | `AUTH-4030` | Existing security handler response. Service-level defensive checks must map to the same external HTTP code surface and must not introduce a second public 403 contract. |
 | Same activity batch currently running | `409` | `BIZ-4090` | `同一活动批次正在导入，请稍后重试` |
 | Same activity batch already imported | `409` | `BIZ-4090` | `同一活动批次已导入` |
 | Multipart bytes cannot be read | `503` | `EXT-5033` | `文件处理失败，请稍后重试` |
 
 Row-level validation failures return HTTP 200 and appear in `failedRows`.
 
-For request-level `scoreValue`, evaluate validation in this order: blank or non-strict decimal text, numeric value above `99999999.99`, then scale greater than 2 decimals. `0`, `0.0`, and `0.00` are valid. Negative numbers fail as non-strict decimal text with `scoreValue 必须是数字`.
+For request-level `scoreValue`, evaluate validation in this order: blank or non-strict decimal text, numeric value above `99999999.99`, scale greater than 2 decimals, then item-specific max when `allowOverflow = false`. `0`, `0.0`, and `0.00` are valid. Negative numbers fail as non-strict decimal text with `scoreValue 必须是数字`.
 
 Frozen row-level failure mapping:
 
@@ -185,7 +186,7 @@ Frozen row-level failure mapping:
 | duplicate field-valid `studentNo` in the same workbook | `DUPLICATE_STUDENT` | `同一活动批次中学生重复` |
 | eligible student not found | `STUDENT_NOT_FOUND` | `studentNo 对应学生不存在或未启用` |
 | row target outside `score.import` scope | `OUT_OF_SCOPE` | `当前用户无权导入该学生文体活动成绩` |
-| existing final record is `SUBMITTED` or `CONFIRMED` | `FINAL_RECORD_LOCKED` | `已提交或已确认的最终成绩不允许导入覆盖` |
+| existing final record is not `DRAFT` | `FINAL_RECORD_LOCKED` | `已提交或已确认的最终成绩不允许导入覆盖` |
 
 When more than one row-level condition applies, use the first matching condition in the table above. Duplicate-student detection runs only after `studentNo` and `displayText` field validation pass, so field-invalid rows do not consume the duplicate key. A field-valid row consumes its normalized `studentNo` duplicate key even if it later fails student lookup, scope, or final-record lock checks.
 
@@ -211,6 +212,8 @@ Cell values are read with `DataFormatter`, trimmed, and blank strings become nul
 `normalizedStudentNo` is the trimmed `DataFormatter` string from column A. D-9 does not apply case folding, zero-width/control-character stripping, Unicode normalization, or leading-zero normalization.
 
 D-9 accepts `.xlsx` and `.xls` workbook content. Other uploaded formats are rejected by filename in the controller before byte reading when possible, and by POI/template parsing otherwise.
+
+The controller must reject missing, empty, oversized, or unsupported-extension files before reading multipart bytes, matching D-8's defense-in-depth behavior. The parser must also reject oversized byte arrays before opening the workbook, because it is a public port and may be tested or reused outside the controller.
 
 The 5 MB limit means 5 * 1024 * 1024 bytes and applies to the uploaded file bytes before POI parsing. The parser rejects oversized byte arrays before opening the workbook, and rejects workbooks with more than 5000 non-blank data rows using `ValidationException("文体活动导入文件最多支持 5000 行且不超过 5MB")`. Exactly 5000 non-blank data rows are allowed.
 
@@ -261,7 +264,7 @@ The generated `activityBatchId` format is `^ACTIVITY-[0-9]{8}-[0-9]{14}-[0-9A-F]
 
 The service may perform an optional duplicate-batch fast-path check before acquiring the batch lock. The authoritative duplicate-batch check must run after acquiring the batch lock and before any row mutation. Both checks use the same predicate: any existing `final_component_score` joined to the same `academicYear` with `category_code = 'SPORTS'`, `item_code = normalizedItemCode`, `source_type = 'IMPORT'`, and `source_ref_id = activityBatchId`. If either check finds a match, the whole request fails with `409 / BIZ-4090` and message `同一活动批次已导入`.
 
-Because this phase does not introduce an import batch table, duplicate-batch detection is backed by existing final-component rows. If a previous import had zero successful rows, there is no persisted batch marker and a retry is accepted.
+Because this phase does not introduce an import batch table, duplicate-batch detection is backed by existing final-component rows. If a previous import had zero successful rows, there is no persisted batch marker and a retry is accepted. This zero-success retry exception is intentional: the system treats an upload with no persisted activity components as not imported.
 
 ### Evaluation Item Validation
 
@@ -270,7 +273,8 @@ D-9 reads `evaluation_item` by `item_code`.
 Valid item:
 
 - `status = 'ACTIVE'`;
-- `category_code = 'SPORTS'`.
+- `category_code = 'SPORTS'`;
+- `cap_rule_json` is available to the application layer for score cap validation.
 
 Invalid item:
 
@@ -284,9 +288,11 @@ D-9 does not mutate `evaluation_item`. It does not parse option lists or create 
 
 Score cap rule:
 
-- Minimal D-9 enforces the database-safe upper bound `99999999.99` and two-decimal scale.
-- It does not evaluate all E `cap_rule_json` variants in this phase because the existing D import code has no rules-engine dependency and the frozen D-9 doc does not define a cap-rule error response.
-- If later D/E integration requires item-specific caps, that should be a separate spec update with a frozen message and tests.
+- Minimal D-9 parses only the existing E seed shape: a JSON object with numeric `maxPoints` and boolean `allowOverflow`.
+- The database-safe upper bound `99999999.99` and two-decimal scale are always enforced before item-specific caps.
+- When `allowOverflow = false`, request `scoreValue` must be `<= maxPoints`; otherwise the request fails with `400 / VAL-4001` and message `scoreValue 必须在 0 到项目允许范围之间`.
+- When `allowOverflow = true`, request `scoreValue` may exceed `maxPoints` but must still satisfy the database-safe upper bound and scale.
+- D-9 does not evaluate other `cap_rule_json` variants such as option-level scoring in this phase. If later D/E integration requires richer cap semantics, that should be a separate spec update with frozen messages and tests.
 
 ### Concurrency and Transaction Boundaries
 
@@ -309,7 +315,7 @@ Per-student final-record concurrency:
 - For each row, lock the target `(student_user_id, academic_year)` final record with `SELECT ... FOR UPDATE`.
 - If no final record exists, insert a `DRAFT` record with zero totals and reload it for update.
 - If a concurrent insert creates the same `(student_user_id, academic_year)`, catch duplicate-key errors by SQLState `23000` or MySQL error code `1062`, then reload the row for update.
-- If the locked final record is not `DRAFT`, return row-level `FINAL_RECORD_LOCKED` and do not mutate that student's row.
+- If the locked final record is not `DRAFT`, return row-level `FINAL_RECORD_LOCKED` and do not mutate that student's row. Minimal D-9 only has three supported final-record states, so this includes `SUBMITTED` and `CONFIRMED`; any future non-`DRAFT` state must also fail closed until a later spec explicitly allows it.
 - Successful rows insert components and recalculate totals while the record remains locked.
 
 Transaction semantics:
@@ -324,7 +330,7 @@ Transaction semantics:
 Request-level authority:
 
 - The controller uses `@PreAuthorize`.
-- The application service also checks `UserAuthorizationContext.hasAuthority(SCORE_IMPORT)` and throws `AccessDeniedAppException("当前用户无导入权限")` if absent.
+- The application service also checks `UserAuthorizationContext.hasAuthority(SCORE_IMPORT)` as a defensive guard. If absent, it throws `AccessDeniedAppException("当前用户无导入权限")`, which must still be exposed through the existing `403 / AUTH-4030` handler surface; tests should assert code/status rather than treating the service message as a second public HTTP contract.
 
 Row-level scope:
 
@@ -423,6 +429,7 @@ Application service tests:
 - missing/blank/too-long request parameters map to frozen `ValidationException` messages;
 - invalid `scoreValue` variants map to request-level failures;
 - active SPORTS `evaluation_item` is required;
+- item `cap_rule_json.maxPoints` is enforced when `allowOverflow = false`;
 - inactive, missing, or non-SPORTS item definitions return `ResourceNotFoundException` with `对应项目定义不存在`;
 - deterministic `activityBatchId` uses normalized metadata and score scale;
 - duplicate existing activity batch returns `ConflictException("同一活动批次已导入")`;
@@ -441,7 +448,7 @@ Repository tests:
 - duplicate-batch check filters by academic year, category, item, source type, and source ref;
 - missing final record creates DRAFT record and inserts component;
 - existing DRAFT record inserts component and increments totals/version;
-- SUBMITTED/CONFIRMED final records produce `FINAL_RECORD_LOCKED`;
+- any non-DRAFT final record, including SUBMITTED and CONFIRMED, produces `FINAL_RECORD_LOCKED`;
 - two different activity batches for the same student and item create two components;
 - activity import accumulates with existing D-7 mentor and D-8 lecture components without overwriting them;
 - MySQL duplicate final-record insert errors identified by `1062` / `23000` reload the locked draft;
@@ -452,6 +459,7 @@ Controller/MVC tests:
 - route is exactly `/api/admin/imports/cas-activities`;
 - method consumes multipart;
 - required params missing return `400 / VAL-4001`, not Spring binding `500`;
+- oversized files return `文体活动导入文件最多支持 5000 行且不超过 5MB` before `getBytes()`;
 - unsupported filename extensions return `导入模板错误：文件不可解析` before service invocation;
 - service response maps all frozen D-9 fields and failed-row raw values;
 - service validation/conflict/storage exceptions map through existing handlers;
@@ -476,9 +484,10 @@ mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest,ActivityImportApplicat
 - Unsupported workbook filename extensions are rejected before reading bytes.
 - Activity metadata is validated before row mutation.
 - Only active SPORTS item definitions are importable.
+- `scoreValue` respects item `maxPoints` when `allowOverflow = false`.
 - Valid rows insert `SPORTS/<itemCode>` imported components with `source_ref_id = activityBatchId`.
 - The request-level `scoreValue` is used for every successful row.
-- Separate activity batches accumulate; same deterministic batch is rejected.
+- Separate activity batches accumulate; the same deterministic batch is rejected only when it already has persisted components. Zero-success batches have no persisted marker and remain retryable.
 - Row-level failures do not roll back other valid rows.
 - Unexpected persistence failures roll back the request.
 - D-7 upsert and D-8 insert-only semantics remain unchanged.
