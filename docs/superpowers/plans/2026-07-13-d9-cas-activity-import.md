@@ -487,6 +487,16 @@ void shouldRejectOversizedBytesBeforeOpeningWorkbook() {
 }
 
 @Test
+void shouldParseXlsWorkbookContent() {
+    byte[] workbook = xlsWorkbook("studentNo", "displayText",
+            row("2022305001", "校运会志愿服务"));
+
+    assertThat(parser.parse(workbook)).containsExactly(
+            new ActivityImportRow(2L, "2022305001", "校运会志愿服务")
+    );
+}
+
+@Test
 void shouldReadFormulaCellWithoutEvaluator() {
     byte[] workbook = workbookWithFormulaDisplayText();
 
@@ -497,7 +507,7 @@ void shouldReadFormulaCellWithoutEvaluator() {
 }
 ```
 
-Use helper methods from the D-8 parser test, adjusted to two required columns plus optional ignored extras. Header-only and blank data rows must not count toward `totalCount`.
+Use helper methods from the D-8 parser test, adjusted to two required columns plus optional ignored extras. Header-only and blank data rows must not count toward `totalCount`. Parser tests must cover both OOXML `.xlsx` workbooks and binary `.xls` workbook bytes through `WorkbookFactory`; controller filename validation owns extension rejection, while parser content validation proves both supported workbook formats are readable.
 
 - [ ] **Step 2: Run parser tests and verify failure**
 
@@ -644,7 +654,8 @@ Create `ActivityImportApplicationServiceTest` with fakes for `ActivityImportPars
 - strict `scoreValue` ordering: non-decimal, `>99999999.99`, scale > 2, item cap when `allowOverflow = false`;
 - active SPORTS item required, invalid cap metadata exposed by repository as `Optional.empty()`;
 - deterministic `activityBatchId` format `^ACTIVITY-[0-9]{8}-[0-9]{14}-[0-9A-F]{12}$`;
-- length-prefixed hash input by asserting titles containing `|` and `:` generate distinct ids;
+- exact deterministic `activityBatchId` hash contract from the frozen spec: hash input segments are ordered normalized `academicYear`, normalized `heldAt` formatted `yyyyMMddHHmmss`, normalized `title`, canonical `itemCode`, then normalized scale-2 `scoreValue.toPlainString()`;
+- length-prefixed hash input by asserting titles containing `|` and `:` generate distinct ids and by testing `encodeHashPart("A|B:中")` returns the Unicode-code-point count prefix followed by `:` and the original value;
 - canonical item code used in response, duplicate detection, and persisted components;
 - header-only import returns zero counts and releases lock;
 - partial success rejects same-batch retry when repository duplicate check is true with `409 / BIZ-4090 / 同一活动批次已导入`;
@@ -695,10 +706,11 @@ Implement `ActivityImportApplicationService` with these concrete rules:
 - `normalizeAcademicYear` requires `^(\\d{4})-(\\d{4})$` and rejects values whose end year is not start year + 1.
 - Inject `UserAuthorizationContextAssembler`, call `requiredAuthorizationContext()`, and defensively require `AuthorizationPermissionCodes.SCORE_IMPORT`; missing authority throws `AccessDeniedAppException("当前用户无导入权限")`.
 - `scoreValue` validation order is: trim and reject blank or non-`STRICT_DECIMAL_PATTERN = Pattern.compile("^[0-9]+(\\.[0-9]+)?$")`, parse to `BigDecimal`, reject values `> 99999999.99`, reject scale greater than 2, then reject values above item `maxPoints` when `allowOverflow = false`. Store scale 2 via `setScale(2, RoundingMode.HALF_UP)` only after scale validation.
-- `heldAt` parses ISO-8601 datetime strings through `LocalDateTime.parse(heldAt.trim())` such as `2026-05-18T14:30:00`, rejects date-only and date-hour strings by parse failure, and uses `.withNano(0)`.
+- `heldAt` parses ISO-8601 local date-time strings through `LocalDateTime.parse(heldAt.trim())`; accept `2026-05-18T14:30` and `2026-05-18T14:30:00`, reject date-only and date-hour strings, then use `.withNano(0)` so omitted seconds become `00` and fractional seconds are truncated.
 - `itemCode` lookup calls `repository.findActiveSportsItem(trimmedItemCode)` after request syntax validation.
 - `activityBatchId` format is `ACTIVITY-` + `academicYear` without hyphen + `-` + `heldAt` formatted `yyyyMMddHHmmss` + `-` + the first 12 uppercase hexadecimal characters of SHA-256 over `hashInput(request, held)`.
-- `hashInput(request, held)` uses length-prefixed segments joined by `|` in this exact order: normalized `title`, canonical `itemCode`, scale-2 plain-string `scoreValue`, normalized `academicYear`, and `held` formatted as `yyyyMMddHHmmss`. Each segment is `codePointCount:value`. Do not use delimiter-only concatenation.
+- `hashInput(request, held)` uses length-prefixed segments joined by `|` in this exact frozen-spec order: normalized `academicYear`, `held` formatted as `yyyyMMddHHmmss`, normalized `title`, canonical `itemCode`, and normalized scale-2 `scoreValue.toPlainString()`. Do not use `BigDecimal.toString()` or delimiter-only concatenation.
+- `encodeHashPart(value)` returns `value.codePointCount(0, value.length()) + ":" + value`. The count is decimal Unicode code points in the normalized Java `String`, not UTF-8 bytes or UTF-16 code units.
 - Lock orchestration follows D-8: enter `transactionOperations.execute(...)`, acquire lock on the request transaction owner connection, map `tryAcquire == false` to `ConflictException("同一活动批次正在导入，请稍后重试")`, let `DataAccessException` from the lock adapter propagate, register release through `TransactionSynchronizationManager` when synchronization is active, run authoritative duplicate check, process rows, and release on the same transaction owner connection in `afterCompletion` or in `finally` if synchronization registration did not happen.
 - Duplicate check calls `repository.activityBatchExists(academicYear, "SPORTS", canonicalItemCode, activityBatchId)` and maps a positive result to `ConflictException("同一活动批次已导入")`.
 - Duplicate-student detection runs after `validateFields(row)` passes. It uses `studentNo.trim()` as the key, first field-valid row wins and consumes the key, field-invalid rows do not consume the key, and later field-valid duplicates fail even when the first field-valid row later fails lookup, scope, or locked-record processing.
@@ -916,7 +928,7 @@ Implement `MybatisActivityImportRepository` by adapting `MybatisLectureImportRep
 
 - category and item come from `ActivityImportedComponent`, not constants.
 - `findActiveSportsItem` parses `cap_rule_json` with Jackson `ObjectMapper`.
-- invalid cap JSON returns `Optional.empty()` and therefore surfaces through the same `404 / RES-4040 / 对应项目定义不存在` request failure as an unavailable item.
+- missing item rows and invalid cap JSON both return `Optional.empty()` and therefore surface through the same `404 / RES-4040 / 对应项目定义不存在` request failure as an unavailable item.
 - `insertActivityComponents` is `@Transactional`, creates/reloads DRAFT final records, inserts rows, and updates totals after each successful insert.
 - `toComponentRow(...)` sets `categoryCode`, `itemCode`, `scoreValue`, `displayText`, `sourceRefId = activityBatchId`, and `createdAt`; `source_type = 'IMPORT'` is hard-coded by the mapper insert SQL.
 - locked records return `ActivityImportFailedRow` with raw values exactly `studentNo` and `displayText`.
@@ -1091,7 +1103,7 @@ Add tests for:
 - route `POST /api/admin/imports/cas-activities`;
 - missing `file/title/itemCode/scoreValue/heldAt/academicYear`;
 - title longer than 255 Unicode code points, itemCode longer than 64 Unicode code points, invalid scoreValue variants, invalid heldAt variants, and invalid academicYear variants return the frozen `VAL-4001` messages;
-- unsupported, blank, missing, and extensionless filenames rejected before service invocation;
+- unsupported, blank, missing, and extensionless filenames rejected before service invocation; accepted filename extensions are exactly `.xls` and `.xlsx`, compared case-insensitively after Java `String.trim()`;
 - file > 5 MB rejected before `getBytes()`;
 - multipart read failure maps to `503 / EXT-5033 / 文件处理失败，请稍后重试`;
 - successful response fields exactly `activityBatchId`, `title`, `itemCode`, `scoreValue`, `totalCount`, `successCount`, `failedCount`, `failedRows`;
@@ -1145,7 +1157,7 @@ Modify `AdminScoreImportController`:
 - add `MAX_ACTIVITY_IMPORT_BYTES = 5L * 1024 * 1024`;
 - add `importActivities(...)` with `@PostMapping(value = "/cas-activities", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)`;
 - controller validates only file-layer conditions before byte reading where possible: file presence, file size, and original filename/extension. Pass title, itemCode, scoreValue, heldAt, and academicYear to `ActivityImportApplicationService`, whose `normalize(command)` owns the frozen business-parameter validation order and messages;
-- validate original filename using shared helper that rejects null, blank, extensionless, `.xlsm`, `.csv`, and text;
+- validate original filename using shared helper that accepts exactly `.xls` and `.xlsx` case-insensitively after Java `String.trim()` and rejects null, blank, extensionless, `.xlsm`, `.csv`, and text;
 - wrap `IOException` from `getBytes()` in `FileStorageException("文件处理失败，请稍后重试", exception)`;
 - map `ActivityImportResult` to `ActivityImportResultResponse`.
 
@@ -1195,7 +1207,7 @@ Create `ActivityImportApplicationContextSmokeTest` using the same pattern as `Le
 Run:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest,ActivityImportApplicationServiceTest,MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest,ActivityImportBatchLockTest,ActivityImportApplicationContextSmokeTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest,LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,LectureImportApplicationContextSmokeTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest,ActivityImportApplicationServiceTest,MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest,ActivityImportBatchLockTest,ActivityImportApplicationContextSmokeTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest,LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,LectureImportApplicationContextSmokeTest,MentorScoreImportParserTest,MentorScoreImportApplicationServiceTest,MybatisMentorScoreImportRepositoryTest,MybatisMentorScoreImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: all targeted tests pass.
@@ -1228,7 +1240,7 @@ git commit -m "test: cover activity import wiring"
 After all tasks are complete, run:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest,ActivityImportApplicationServiceTest,MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest,ActivityImportBatchLockTest,ActivityImportApplicationContextSmokeTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest,LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,LectureImportApplicationContextSmokeTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest,ActivityImportApplicationServiceTest,MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest,ActivityImportBatchLockTest,ActivityImportApplicationContextSmokeTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest,LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,LectureImportApplicationContextSmokeTest,MentorScoreImportParserTest,MentorScoreImportApplicationServiceTest,MybatisMentorScoreImportRepositoryTest,MybatisMentorScoreImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Then run:
