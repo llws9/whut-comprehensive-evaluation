@@ -79,11 +79,12 @@ Query parameters:
 | `academicYear` | yes | Trimmed, non-blank, must match `yyyy-yyyy`, and second year must equal first year + 1. |
 | `status` | no | Trimmed, blank becomes absent. If absent, exports both `SUBMITTED` and `CONFIRMED`. If present, must be `SUBMITTED` or `CONFIRMED`. `DRAFT` is never exportable. |
 | `grade` | no | Trimmed, blank becomes absent. Matches the current primary class's parent GRADE by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404`. |
-| `classes` | no | May be sent as repeated query params (`classes=CS2201&classes=CS2202`) or comma-separated tokens (`classes=CS2201,CS2202`). Normalize by processing raw parameters in request order, splitting each by comma, trimming, dropping blanks, and de-duplicating by first appearance. If all tokens are blank, `classes` is equivalent to absent and does not force `404`. Non-blank tokens match current primary CLASS by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404` if nothing else matches. |
+| `classes` | no | May be sent as repeated query params (`classes=CS2201&classes=CS2202`) or comma-separated tokens (`classes=CS2201,CS2202`). Normalize by processing the received `classes` value list, splitting each by comma, trimming, dropping blanks, and de-duplicating by first appearance in that received list. If all tokens are blank, `classes` is equivalent to absent and does not force `404`. The normalized token count must be at most `500`; more tokens fail with `400 / VAL-4001` and message `classes 参数过多`. Non-blank tokens match current primary CLASS by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404` if nothing else matches. |
 
 `pageNo` and `pageSize` are not accepted for D-10 because exports are unpaged. To keep the frozen delivery document's "pagination parameter error" branch observable, any request containing `pageNo` or `pageSize` fails with `400 / VAL-4001` rather than silently ignoring those parameters.
 
 Raw HTTP request-shape validation happens before `FinalScoreExportQuery` construction. The controller first checks `pageNo`/`pageSize` presence; if either key is present, including blank or repeated values, the pagination-parameter branch wins and the message is `导出接口不支持分页参数`. After that, `academicYear`, `status`, and `grade` must not appear more than once. Repeated non-pagination single-value parameters fail with `400 / VAL-4001` and message `导出接口不支持重复单值参数`. `classes` is the only repeatable D-10 query parameter.
+Unknown query parameters other than `pageNo` and `pageSize` are ignored, matching the current MVC binding style; D-10 does not introduce a strict unknown-parameter rejection branch.
 
 Successful response:
 
@@ -100,6 +101,7 @@ Failure responses:
 | Invalid `status` | `400` | `VAL-4001` | `status 仅允许 SUBMITTED 或 CONFIRMED` |
 | `pageNo` or `pageSize` is present | `400` | `VAL-4001` | `导出接口不支持分页参数` |
 | Repeated `academicYear`, `status`, or `grade` | `400` | `VAL-4001` | `导出接口不支持重复单值参数` |
+| More than `500` normalized `classes` tokens | `400` | `VAL-4001` | `classes 参数过多` |
 | Authenticated caller lacks `score.export.assigned` authority | `403` | `AUTH-4030` | Existing security error response. |
 | Caller has authority but no matching authorized records | `404` | `RES-4040` | `无匹配导出数据` |
 | Workbook generation fails or synchronous row cap is exceeded | `503` | `EXT-5033` | `Excel 生成失败` |
@@ -137,7 +139,7 @@ The repository must:
 - Preserve final records that have no derived active CLASS organization unit only for callers whose `score.export.assigned` scope resolves to `ALL`, and only when no grade/class filter is present. This includes students with no active primary membership and students whose active primary membership is not attached to an active `unit_type = 'CLASS'` org unit. Organization-scoped callers (`ORG_UNIT` or `ORG_SUBTREE`) must not see no-derived-class rows because the translated scope predicate compares `org_path`/`org_unit_id` against `class_ou.path`/`class_ou.id`, which are `NULL` for those rows and therefore do not match.
 - Apply grade/class predicates only when the corresponding filter is present. These filter predicates must be appended to the `WHERE` clause, not to the `LEFT OUTER JOIN ... ON` conditions, so rows with missing derived grade/class fields are excluded when a grade or class filter exists.
 - When `grade` is present, append `(grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})` in `WHERE`.
-- When normalized `classes` is non-empty, append `(class_ou.unit_code IN (...) OR class_ou.unit_name IN (...))` in `WHERE` using safe MyBatis/provider parameters for every token. If normalized `classes` is empty, append no class predicate.
+- When normalized `classes` is non-empty, append `(class_ou.unit_code IN (...) OR class_ou.unit_name IN (...))` in `WHERE` using safe MyBatis/provider parameters for every token. The query object rejects more than `500` normalized class tokens before repository execution. If normalized `classes` is empty, append no class predicate.
 
 D safe-init must add scope rules for default export accounts:
 
@@ -225,7 +227,7 @@ Workbook format:
 - Header row at row 1.
 - Freeze the first row.
 - Use a consistent default font. The implementation can rely on POI defaults plus bold header styling; no formulas are required.
-- Set practical fixed column widths or auto-size after writing rows so headers, class names, and timestamps are readable in common spreadsheet tools. Exact widths are not part of the public contract.
+- Set practical fixed column widths or auto-size after writing rows so headers, class names, and timestamps are readable in common spreadsheet tools. Tests only need a minimum usability check: after generation, every column width must be greater than the default zero-width value, and timestamp/name columns must be at least wide enough for their header text. Exact widths are not part of the public contract.
 - No formulas are written, so formula recalculation is not part of D-10.
 
 Columns are frozen in this exact order:
@@ -256,7 +258,7 @@ Numeric totals are written as numeric cells using `BigDecimal.setScale(2, Roundi
 Operational capacity assumption:
 
 - D-10 is a synchronous MVP export for one required academic year and final-record totals only. The expected deployment size is school cohort scale, not open-ended multi-year platform dumps.
-- D-10 caps synchronous workbook generation at `20_000` export rows. Define a single application-layer constant on `FinalScoreExportApplicationService`, for example `MAX_SYNC_EXPORT_ROWS = 20_000`, and derive the repository probe limit as `MAX_SYNC_EXPORT_ROWS + 1`; do not scatter hard-coded `20_000`/`20_001` values across service, repository, and tests. The repository receives the derived `limit` method parameter and must not directly reference the application-layer constant. The repository must enforce the detection mechanism with a bounded `LIMIT #{limit}` export-row query, not an unbounded full read followed by an in-memory size check. The service asks for up to `MAX_SYNC_EXPORT_ROWS + 1` authorized rows; if the returned list size is greater than `MAX_SYNC_EXPORT_ROWS`, the service fails before workbook allocation with `FinalScoreExportGenerationException("Excel 生成失败")`, returning the existing `503 / EXT-5033` response branch. This intentionally merges "too many rows for the synchronous MVP" and workbook-generation failures into the same frozen public response because the D delivery contract only exposes `EXT-5033 / Excel 生成失败` for export generation failure. D-10 must not introduce a distinct public error code, HTTP status, or message for row-cap overflow; the follow-up path for larger exports is an out-of-scope async/export-job design.
+- D-10 caps synchronous workbook generation at `20_000` export rows. Define a single application-layer constant on `FinalScoreExportApplicationService`, for example `public static final int MAX_SYNC_EXPORT_ROWS = 20_000`, and derive the repository probe limit as `MAX_SYNC_EXPORT_ROWS + 1`; do not scatter hard-coded `20_000`/`20_001` values across service, repository, and tests. Tests must reference the service constant or a service-owned accessor rather than duplicating the numeric values. The repository receives the derived `limit` method parameter and must not directly reference the application-layer constant. The repository must enforce the detection mechanism with a bounded export-row query that applies all filters, scope predicates, and the deterministic `ORDER BY` first, then applies `LIMIT #{limit}`. Do not use an unbounded full read followed by an in-memory size check. The service asks for up to `MAX_SYNC_EXPORT_ROWS + 1` authorized rows; if the returned list size is greater than `MAX_SYNC_EXPORT_ROWS`, the service fails before workbook allocation with `FinalScoreExportGenerationException("Excel 生成失败")`, returning the existing `503 / EXT-5033` response branch. This intentionally merges "too many rows for the synchronous MVP" and workbook-generation failures into the same frozen public response because the D delivery contract only exposes `EXT-5033 / Excel 生成失败` for export generation failure. D-10 must not introduce a distinct public error code, HTTP status, or message for row-cap overflow; the follow-up path for larger exports is an out-of-scope async/export-job design.
 
 ## Component Boundaries
 
@@ -302,8 +304,9 @@ Raw HTTP request-shape validation is a controller responsibility because only MV
 - The academic-year end must equal start + 1.
 - `status` is optional. Trim first; blank becomes `null`/absent. If non-blank, it must be `SUBMITTED` or `CONFIRMED`.
 - `grade` is optional. Blank becomes `null`.
-- `classes` is optional. Normalize by iterating raw repeated parameters in request encounter order, splitting each raw value by comma, trimming every token, dropping blanks, and de-duplicating by first appearance. For example, `classes=A,B&classes=B,C` normalizes to `[A, B, C]`. Store the result as an immutable list. An empty normalized list is equivalent to an absent `classes` parameter.
+- `classes` is optional. Normalize by iterating the received repeated-parameter value list, splitting each raw value by comma, trimming every token, dropping blanks, and de-duplicating by first appearance in that list. For example, `classes=A,B&classes=B,C` normalizes to `[A, B, C]` when the MVC layer supplies values in that order. Store the result as an immutable list. An empty normalized list is equivalent to an absent `classes` parameter.
 - If the request contains `classes` but every token is blank, the normalized list is empty and the request behaves exactly as if `classes` were absent. This is not a `400` and does not force a no-data `404`.
+- If normalized `classes` contains more than `500` tokens, throw `ValidationException("classes 参数过多")` and map it to `400 / VAL-4001`.
 - `FinalScoreExportQuery` must not define `pageNo` or `pageSize` fields. Pagination-parameter validation is complete before the query object is created.
 - Repeated `academicYear`, `status`, or `grade` parameters are invalid HTTP request shape. The controller detects them before query construction and throws `ValidationException("导出接口不支持重复单值参数")`, mapping to `400 / VAL-4001`.
 
@@ -325,7 +328,7 @@ The application service may create `FinalScoreExportGenerationException("Excel �
 
 Spec-phase acceptance tests for the implementation plan:
 
-- Query normalization trims `academicYear`, rejects missing/invalid `academicYear`, treats blank `status` as absent, rejects lowercase/non-exact `status` values and `DRAFT`, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance, and treats `classes=,,` or `classes=&classes= ` as an absent class filter.
+- Query normalization trims `academicYear`, rejects missing/invalid `academicYear`, treats blank `status` as absent, rejects lowercase/non-exact `status` values and `DRAFT`, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance in the received value list, rejects more than `500` normalized class tokens with `classes 参数过多`, and treats `classes=,,` or `classes=&classes= ` as an absent class filter.
 - Controller/WebMvc tests verify present `pageNo/pageSize`, including `pageNo=`, `pageSize=`, and repeated `pageNo/pageSize`, return `400 / VAL-4001` with message `导出接口不支持分页参数` because the pagination-parameter branch has priority.
 - Controller/WebMvc tests verify repeated non-pagination single-value parameters (`academicYear`, `status`, `grade`) return `400 / VAL-4001` with message `导出接口不支持重复单值参数`.
 - Controller security annotation requires `SCORE_EXPORT_ASSIGNED`.
@@ -333,15 +336,15 @@ Spec-phase acceptance tests for the implementation plan:
 - `AdminFinalScoreExportControllerWebMvcTest` covers authenticated users without `SCORE_EXPORT_ASSIGNED` returning `403`, proving the new D-10 controller is protected by the export authority.
 - Controller returns xlsx content type, attachment filename, and workbook bytes for a successful export.
 - Controller returns `404 / RES-4040` when the service reports no matching data.
-- WebMvc/global exception tests assert the frozen public error messages: `academicYear 不合法`, `status 仅允许 SUBMITTED 或 CONFIRMED`, `导出接口不支持分页参数`, `导出接口不支持重复单值参数`, `无匹配导出数据`, and `Excel 生成失败`.
-- Workbook writer creates exactly one worksheet named `final-scores`, freezes the first row, creates the exact header row, writes numeric total cells with `RoundingMode.HALF_UP`, writes blank cells for unexpected null totals, writes blank E-H cells for null `gradeCode`/`gradeName`/`classCode`/`className` without shifting columns, writes UTC timestamp text truncated to seconds, emits no formulas, applies readable column widths or autosizing, and returns the fixed xlsx content type.
+- WebMvc/global exception tests assert the frozen public error messages: `academicYear 不合法`, `status 仅允许 SUBMITTED 或 CONFIRMED`, `导出接口不支持分页参数`, `导出接口不支持重复单值参数`, `classes 参数过多`, `无匹配导出数据`, and `Excel 生成失败`.
+- Workbook writer creates exactly one worksheet named `final-scores`, freezes the first row, creates the exact header row, writes numeric total cells with `RoundingMode.HALF_UP`, writes blank cells for unexpected null totals, writes blank E-H cells for null `gradeCode`/`gradeName`/`classCode`/`className` without shifting columns, writes UTC timestamp text truncated to seconds, emits no formulas, applies readable column widths or autosizing with the minimum-width check above, and returns the fixed xlsx content type.
 - Application service uses `score.export.assigned`, not `score.view.assigned`, when building the access context.
 - Application service returns `FinalScoreExportFile`, and controller copies its filename, content type, and bytes into the response.
 - Application service wraps workbook writer failures as `FinalScoreExportGenerationException`; controller/WebMvc or global exception tests verify the public response remains `503 / EXT-5033`.
 - Application service returns `RES-4040` for an empty authorized row list.
 - Application service returns `RES-4040` when unknown `grade` or unknown `classes` values produce an empty authorized row list.
-- Application service calls `listAdminFinalScoreExportRows(..., MAX_SYNC_EXPORT_ROWS + 1)` and rejects more than `MAX_SYNC_EXPORT_ROWS` returned export rows with `FinalScoreExportGenerationException`, mapping to `503 / EXT-5033`, before calling the workbook writer.
-- Application service verifies the off-by-one boundary: exactly `MAX_SYNC_EXPORT_ROWS` returned rows are passed to the workbook writer and export successfully, while `MAX_SYNC_EXPORT_ROWS + 1` returned rows fail before workbook generation.
+- Application service calls `listAdminFinalScoreExportRows(..., FinalScoreExportApplicationService.MAX_SYNC_EXPORT_ROWS + 1)` and rejects more than `FinalScoreExportApplicationService.MAX_SYNC_EXPORT_ROWS` returned export rows with `FinalScoreExportGenerationException`, mapping to `503 / EXT-5033`, before calling the workbook writer.
+- Application service tests derive their row counts from `FinalScoreExportApplicationService.MAX_SYNC_EXPORT_ROWS` or a service-owned accessor, not numeric literals, and verify the off-by-one boundary: exactly `MAX_SYNC_EXPORT_ROWS` returned rows are passed to the workbook writer and export successfully, while `MAX_SYNC_EXPORT_ROWS + 1` returned rows fail before workbook generation.
 - Application service and workbook writer preserve repository row order in the generated workbook, including rows whose `gradeCode` or `classCode` sort last because of portable `NULLS LAST` ordering.
 - Repository export query applies status, grade, class, and scope filters together.
 - Repository uses the explicit `org_membership` -> `class_ou` -> `grade_ou` join path above, including `class_ou.parent_id` for grade lookup.
