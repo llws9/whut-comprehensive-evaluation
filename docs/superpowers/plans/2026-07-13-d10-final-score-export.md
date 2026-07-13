@@ -587,7 +587,7 @@ private String caseSensitiveIn(String column, String collectionExpression) {
 }
 ```
 
-For class tokens, build `collectionExpression` from `CAST(#{query.classes[0]} AS BINARY)`, `CAST(#{query.classes[1]} AS BINARY)`, and so on for the normalized query size, then pass it to `caseSensitiveIn(...)`. The H2/MySQL-mode verification for this plan showed `CAST(column AS BINARY)` executes and is case-sensitive; do not use MySQL-only `BINARY column` syntax or `COLLATE`, because the existing H2 path rejects them.
+For class tokens, build `collectionExpression` only from MyBatis parameter placeholders, for example `CAST(#{query.classes[0]} AS BINARY)`, `CAST(#{query.classes[1]} AS BINARY)`, and so on for the normalized query size, then pass it to `caseSensitiveIn(...)`. Do not concatenate any raw class token value into the SQL string; the only dynamic string assembly is the trusted placeholder index sequence derived from `query.classes().size()`. MyBatis provider SQL still receives the final SQL string with `#{...}` placeholders and binds the actual list values. Add a repository test with a class token containing quote/comma-like punctuation to prove values remain parameter-bound and do not break SQL syntax. The H2/MySQL-mode verification for this plan showed `CAST(column AS BINARY)` executes and is case-sensitive; do not use MySQL-only `BINARY column` syntax or `COLLATE`, because the existing H2 path rejects them.
 - when `query.grade` is present, append `(` + `caseSensitiveEquals("grade_ou.unit_code", "#{query.grade}")` + ` OR ` + `caseSensitiveEquals("grade_ou.unit_name", "#{query.grade}")` + `)` in the `WHERE` clause;
 - when `query.classes` is non-empty, append `(` + `caseSensitiveIn("class_ou.unit_code", collectionExpression)` + ` OR ` + `caseSensitiveIn("class_ou.unit_name", collectionExpression)` + `)` in the `WHERE` clause;
 - grade and classes predicates must be added to `WHERE`, not to any `LEFT OUTER JOIN ... ON` condition. This ensures rows with no derived grade/class are excluded whenever grade/classes filters are present, while still preserving those rows for `ALL` scope when no grade/classes filters are present;
@@ -798,7 +798,8 @@ Minimum assertions:
 - `Content-Disposition` is an attachment filename ending in `final-scores-2025-2026.xlsx`;
 - workbook sheet `final-scores` exists;
 - header row contains the frozen A-P literal labels;
-- first data row contains the expected final record id, academic year, student number, student name, class code, status, and total cells from the seeded database.
+- first data row contains the expected final record id, academic year, student number, student name, class code, status, and total cells from the seeded database;
+- assert column A `finalRecordId` is a `CellType.STRING` cell whose value equals the seeded final record id string, matching the POI writer contract that uses `row.finalRecordId().toString()`.
 
 The test may disable servlet security filters only if it supplies `UserAuthorizationContextAssembler` through the same production-facing security-context adapter path used by existing integration tests; it must not mock `FinalScoreExportApplicationService`, `FinalRecordQueryRepository`, or `FinalScoreExportWorkbookWriter`.
 
