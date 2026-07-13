@@ -1,13 +1,19 @@
 package edu.whut.eval.interfaces.admin;
 
 import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
+import edu.whut.eval.application.finalrecord.importing.ImportLecturesCommand;
 import edu.whut.eval.application.finalrecord.importing.ImportMentorScoresCommand;
+import edu.whut.eval.application.finalrecord.importing.LectureImportApplicationService;
 import edu.whut.eval.application.finalrecord.importing.MentorScoreImportApplicationService;
 import edu.whut.eval.common.api.ApiResponse;
 import edu.whut.eval.common.exception.FileStorageException;
 import edu.whut.eval.common.exception.ValidationException;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportFailedRow;
+import edu.whut.eval.domain.finalrecord.importing.LectureImportResult;
 import edu.whut.eval.domain.finalrecord.importing.MentorScoreImportFailedRow;
 import edu.whut.eval.domain.finalrecord.importing.MentorScoreImportResult;
+import edu.whut.eval.interfaces.admin.response.LectureImportFailedRowResponse;
+import edu.whut.eval.interfaces.admin.response.LectureImportResultResponse;
 import edu.whut.eval.interfaces.admin.response.MentorScoreImportFailedRowResponse;
 import edu.whut.eval.interfaces.admin.response.MentorScoreImportResultResponse;
 import org.springframework.http.MediaType;
@@ -20,17 +26,26 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Locale;
 
 @RestController
 @Validated
 @RequestMapping("/api/admin/imports")
 public class AdminScoreImportController {
 
-    private final MentorScoreImportApplicationService importApplicationService;
+    private static final long MAX_LECTURE_IMPORT_BYTES = 5L * 1024 * 1024;
+    private static final DateTimeFormatter LECTURE_RESPONSE_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
-    public AdminScoreImportController(MentorScoreImportApplicationService importApplicationService) {
+    private final MentorScoreImportApplicationService importApplicationService;
+    private final LectureImportApplicationService lectureImportApplicationService;
+
+    public AdminScoreImportController(MentorScoreImportApplicationService importApplicationService,
+                                      LectureImportApplicationService lectureImportApplicationService) {
         this.importApplicationService = importApplicationService;
+        this.lectureImportApplicationService = lectureImportApplicationService;
     }
 
     @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_IMPORT)")
@@ -64,6 +79,56 @@ public class AdminScoreImportController {
         return ApiResponse.success(toResponse(result));
     }
 
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).SCORE_IMPORT)")
+    @PostMapping(value = "/lectures", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<LectureImportResultResponse> importLectures(
+            @RequestParam(value = "file", required = false) MultipartFile file,
+            @RequestParam(value = "title", required = false) String title,
+            @RequestParam(value = "heldAt", required = false) String heldAt,
+            @RequestParam(value = "academicYear", required = false) String academicYear) {
+        if (file == null || file.isEmpty()) {
+            throw new ValidationException("上传文件不能为空");
+        }
+        if (title == null || title.isBlank()) {
+            throw new ValidationException("title 不能为空");
+        }
+        if (heldAt == null || heldAt.isBlank()) {
+            throw new ValidationException("heldAt 格式非法");
+        }
+        if (academicYear == null || academicYear.isBlank()) {
+            throw new ValidationException("academicYear 不合法");
+        }
+        if (file.getSize() > MAX_LECTURE_IMPORT_BYTES) {
+            throw new ValidationException("讲座导入文件最多支持 5000 行且不超过 5MB");
+        }
+        validateLectureWorkbookFilename(file);
+
+        byte[] bytes;
+        try {
+            bytes = file.getBytes();
+        } catch (FileStorageException exception) {
+            throw exception;
+        } catch (IOException exception) {
+            throw new FileStorageException("文件处理失败，请稍后重试", exception);
+        }
+
+        LectureImportResult result = lectureImportApplicationService.importLectures(
+                new ImportLecturesCommand(bytes, title, heldAt, academicYear)
+        );
+        return ApiResponse.success(toResponse(result));
+    }
+
+    private void validateLectureWorkbookFilename(MultipartFile file) {
+        String filename = file.getOriginalFilename();
+        if (filename == null) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
+        String normalized = filename.trim().toLowerCase(Locale.ROOT);
+        if (!normalized.endsWith(".xlsx") && !normalized.endsWith(".xls")) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
+    }
+
     private MentorScoreImportResultResponse toResponse(MentorScoreImportResult result) {
         return new MentorScoreImportResultResponse(
                 result.importBatchId(),
@@ -78,6 +143,25 @@ public class AdminScoreImportController {
     private List<MentorScoreImportFailedRowResponse> toFailedRowResponses(List<MentorScoreImportFailedRow> failedRows) {
         return failedRows.stream()
                 .map(row -> new MentorScoreImportFailedRowResponse(row.rowNo(), row.code(), row.message(), row.rawValue()))
+                .toList();
+    }
+
+    private LectureImportResultResponse toResponse(LectureImportResult result) {
+        return new LectureImportResultResponse(
+                result.lectureBatchId(),
+                result.title(),
+                result.heldAt().format(LECTURE_RESPONSE_TIME_FORMATTER),
+                result.academicYear(),
+                result.totalCount(),
+                result.successCount(),
+                result.failedCount(),
+                toLectureFailedRowResponses(result.failedRows())
+        );
+    }
+
+    private List<LectureImportFailedRowResponse> toLectureFailedRowResponses(List<LectureImportFailedRow> failedRows) {
+        return failedRows.stream()
+                .map(row -> new LectureImportFailedRowResponse(row.rowNo(), row.code(), row.message(), row.rawValue()))
                 .toList();
     }
 }
