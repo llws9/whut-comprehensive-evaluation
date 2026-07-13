@@ -94,7 +94,7 @@ Request parameters:
 
 | Parameter | Required | Rule |
 |---|---:|---|
-| `file` | yes | Non-empty `.xlsx` or `.xls` Excel file. Other workbook formats such as `.xlsm`, `.csv`, or text files fail before parsing with `导入模板错误：文件不可解析`. |
+| `file` | yes | Non-empty `.xlsx` or `.xls` Excel file. Other workbook formats such as `.xlsm`, `.csv`, or text files fail before parsing with `导入模板错误：文件不可解析`. A missing, blank, or extensionless original filename is treated as an unsupported extension and fails before byte reading when the controller can inspect it. |
 | `title` | yes | Non-blank after trim, max 255 Unicode code points. Leading and trailing whitespace are removed. The trimmed title is used byte-for-byte for display and deterministic batch identity; internal whitespace, control characters, zero-width characters, case, and Unicode normalization form are otherwise preserved. This means duplicate-batch detection is metadata-exact, not visual-similarity based. |
 | `itemCode` | yes | Non-blank after trim, max 64 characters, must resolve to an active `evaluation_item` row whose `category_code = 'SPORTS'`. |
 | `scoreValue` | yes | Trimmed before validation; strict decimal text matching `^[0-9]+(\.[0-9]+)?$`, `0 <= value <= 99999999.99`, at most 2 decimal places. Negative values, thousand separators, percentages, currency symbols, and scientific notation are invalid. |
@@ -133,7 +133,7 @@ Successful responses return normalized metadata for fields present in the frozen
 
 - `title` is trimmed.
 - `itemCode` is the canonical `evaluation_item.item_code` resolved from the trimmed request value. With the current schema this matches the trimmed request value, because `item_code` is unique and lookup is by exact `item_code`.
-- `scoreValue` is returned at scale 2 as a JSON number.
+- `scoreValue` is returned from a scale-2 `BigDecimal` as a JSON number. JSON itself has no scale guarantee, so clients must treat `0.5` and `0.50` as the same numeric value; display formatting is a client concern.
 - `heldAt` and `academicYear` are validated and normalized for `activityBatchId`, but they are not returned as top-level data fields because the D-9 delivery table does not list them.
 
 `failedRows` are returned in ascending `rowNo` order. `rowNo` is the Excel worksheet's 1-based physical row number; the header is row 1 and the first data row is row 2.
@@ -150,7 +150,14 @@ Response count semantics:
 - `successCount` is the number of rows that successfully inserted an activity component.
 - `failedCount` is `failedRows.size()`.
 - `successCount + failedCount = totalCount`.
-- A workbook that contains only the header still validates metadata, generates the deterministic batch id, acquires the batch lock, and checks duplicates. If another same-batch import is running, it returns the in-flight `409`; if the same `activityBatchId` already has persisted components, it returns the already-imported `409`. Otherwise it returns `200` using the same success response shape: `activityBatchId`, normalized `title`, canonical `itemCode`, scale-2 `scoreValue`, `totalCount = 0`, `successCount = 0`, `failedCount = 0`, and `failedRows = []`. It persists no batch marker. See Import Semantics for the authoritative zero-success retry rule.
+
+A workbook that contains only the header still validates metadata, generates the deterministic batch id, acquires the batch lock, and checks duplicates:
+
+- if another same-batch import is running, it returns the in-flight `409`;
+- if the same `activityBatchId` already has persisted components, it returns the already-imported `409`;
+- otherwise it returns `200` using the same success response shape: `activityBatchId`, normalized `title`, canonical `itemCode`, numeric `scoreValue`, `totalCount = 0`, `successCount = 0`, `failedCount = 0`, and `failedRows = []`.
+
+The header-only success path persists no batch marker. See Import Semantics for the authoritative zero-success retry rule.
 
 Request-level failures:
 
@@ -190,6 +197,7 @@ Frozen row-level failure mapping:
 | Condition | `code` | `message` |
 |---|---|---|
 | `studentNo` blank | `STUDENT_NO_REQUIRED` | `studentNo 不能为空` |
+| `studentNo` longer than 64 Unicode code points after trim | `STUDENT_NOT_FOUND` | `studentNo 对应学生不存在或未启用` |
 | `displayText` longer than 1000 Unicode code points after trim | `DISPLAY_TEXT_TOO_LONG` | `displayText 长度不能超过 1000` |
 | duplicate field-valid `studentNo` in the same workbook | `DUPLICATE_STUDENT` | `同一活动批次中学生重复` |
 | eligible student not found | `STUDENT_NOT_FOUND` | `studentNo 对应学生不存在或未启用` |
@@ -208,7 +216,7 @@ Header row is row 1. Header names are case-sensitive and must appear in this exa
 
 | Column | Header | Required | Rule |
 |---:|---|---:|---|
-| A | `studentNo` | yes | Existing active `iam_user.user_no`. |
+| A | `studentNo` | yes | Existing active `iam_user.user_no`, max 64 Unicode code points after trim. |
 | B | `displayText` | value optional | Column B and its header must exist. Cell values may be blank. Max 1000 Unicode code points after trim. When blank, the normalized row display text is the normalized request title. |
 
 Extra columns after column B are ignored.
@@ -219,13 +227,15 @@ Blank data rows are ignored and do not count toward `totalCount`. A blank data r
 
 Cell values are read with POI `DataFormatter.formatCellValue(cell)` without passing a `FormulaEvaluator`, then trimmed, and blank strings become null. Formula cells are not recalculated by D-9; POI's formatted cached/display value is used. If POI cannot format a formula cell without evaluation, treat the workbook as unreadable and return `导入模板错误：文件不可解析`.
 
-`normalizedStudentNo` is the trimmed `DataFormatter` string from column A. D-9 does not apply case folding, zero-width/control-character stripping, Unicode normalization, or leading-zero normalization.
+`normalizedStudentNo` is the trimmed `DataFormatter` string from column A. D-9 does not apply case folding, zero-width/control-character stripping, Unicode normalization, or leading-zero normalization. Over-64-character `studentNo` values use the existing `STUDENT_NOT_FOUND` row-level failure instead of adding a new public failure code.
 
-D-9 accepts `.xlsx` and `.xls` workbook content. Other uploaded formats are rejected by filename in the controller before byte reading when possible, and by POI/template parsing otherwise.
+D-9 accepts `.xlsx` and `.xls` workbook content. Other uploaded formats are rejected by filename in the controller before byte reading when possible, and by POI/template parsing otherwise. A missing, blank, or extensionless original filename is not trusted as workbook content; the controller rejects it with `导入模板错误：文件不可解析` before byte reading when it can inspect the filename.
 
 The controller must reject missing, empty, oversized, or unsupported-extension files before reading multipart bytes, matching D-8's defense-in-depth behavior. The parser must also reject oversized byte arrays before opening the workbook, because it is a public port and may be tested or reused outside the controller.
 
 The 5 MB limit means 5 * 1024 * 1024 bytes and applies to the uploaded file bytes before POI parsing. The parser rejects oversized byte arrays before opening the workbook, and rejects workbooks with more than 5000 non-blank data rows using `ValidationException("文体活动导入文件最多支持 5000 行且不超过 5MB")`. Exactly 5000 non-blank data rows are allowed.
+
+Unless a rule explicitly says otherwise, "trim" in D-9 means Java `String.trim()` semantics, matching the existing D-7/D-8 import code paths. This removes leading and trailing characters whose code point is less than or equal to U+0020 and does not remove other Unicode separator characters.
 
 Header error messages:
 
@@ -455,6 +465,7 @@ Application service tests:
 - `scoreValue` and `heldAt` are trimmed before strict parsing;
 - date-only `heldAt` and date-hour values without minutes fail with `heldAt 格式非法`;
 - invalid `scoreValue` variants map to request-level failures;
+- response `scoreValue` is asserted as a numeric value, not by preserving JSON textual trailing zeroes;
 - active SPORTS `evaluation_item` is required;
 - item `cap_rule_json.maxPoints` is enforced when `allowOverflow = false`;
 - null, malformed, missing-field, wrong-type, or out-of-bound `cap_rule_json` returns `ResourceNotFoundException` with `对应项目定义不存在`;
@@ -475,7 +486,7 @@ Application service tests:
 - field validation ordering matches the frozen failure table;
 - duplicate students are detected only after field validation;
 - row target lookup, scope checks, and locked final records produce row-level failures;
-- successful rows use request-level `scoreValue`, request `itemCode`, and default display text from title;
+- successful rows use request-level `scoreValue`, canonical resolved `itemCode`, and default display text from title;
 - separate activity batches for the same student and item accumulate components.
 
 Repository tests:
@@ -500,7 +511,7 @@ Controller/MVC tests:
 - method consumes multipart;
 - required params missing return `400 / VAL-4001`, not Spring binding `500`;
 - oversized files return `文体活动导入文件最多支持 5000 行且不超过 5MB` before `getBytes()`;
-- unsupported filename extensions return `导入模板错误：文件不可解析` before service invocation;
+- unsupported, missing, blank, or extensionless filenames return `导入模板错误：文件不可解析` before service invocation;
 - service response maps all frozen D-9 fields and failed-row raw values;
 - service validation/conflict/file-processing/database-access exceptions map through the frozen request-level error surface and existing handlers;
 - security annotation requires `score.import`.
