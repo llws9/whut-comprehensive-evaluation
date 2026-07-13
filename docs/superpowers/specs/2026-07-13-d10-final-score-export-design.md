@@ -79,7 +79,7 @@ Query parameters:
 | `academicYear` | yes | Trimmed, non-blank, must match `yyyy-yyyy`, and second year must equal first year + 1. |
 | `status` | no | Trimmed, blank becomes absent. If absent, exports both `SUBMITTED` and `CONFIRMED`. If present, must be `SUBMITTED` or `CONFIRMED`. `DRAFT` is never exportable. |
 | `grade` | no | Trimmed, blank becomes absent. Matches the current primary class's parent GRADE by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404`. |
-| `classes` | no | May be sent as repeated query params (`classes=CS2201&classes=CS2202`) or comma-separated tokens (`classes=CS2201,CS2202`). Each token is trimmed; blank tokens are ignored. Non-blank tokens match current primary CLASS by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404` if nothing else matches. |
+| `classes` | no | May be sent as repeated query params (`classes=CS2201&classes=CS2202`) or comma-separated tokens (`classes=CS2201,CS2202`). Normalize by processing raw parameters in request order, splitting each by comma, trimming, dropping blanks, and de-duplicating by first appearance. Non-blank tokens match current primary CLASS by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404` if nothing else matches. |
 
 `pageNo` and `pageSize` are not accepted for D-10 because exports are unpaged. To keep the frozen delivery document's "pagination parameter error" branch observable, any request containing `pageNo` or `pageSize` fails with `400 / VAL-4001` rather than silently ignoring those parameters.
 
@@ -127,7 +127,8 @@ The repository must:
 - Filter `fr.academic_year = query.academicYear`.
 - Export only `fr.status IN ('SUBMITTED', 'CONFIRMED')` when `status` is absent. If `status` is present, additionally filter to that single status. `DRAFT` must not be exported in either branch.
 - Use the student's active primary membership only: `org_membership.status = 'ACTIVE' AND is_primary = 1`.
-- Use `LEFT OUTER JOIN` from `final_record` to `org_membership`, `class_ou`, and `grade_ou`, and place `ACTIVE`, `is_primary`, and `unit_type` predicates inside the join conditions rather than in the `WHERE` clause.
+- Use `LEFT OUTER JOIN` from `final_record` to `org_membership`, `class_ou`, and `grade_ou`, and place `ACTIVE`, `is_primary`, `unit_type`, and org status predicates inside the join conditions rather than in the `WHERE` clause.
+- The join path is fixed: `LEFT OUTER JOIN org_membership om ON om.user_id = fr.student_user_id AND om.status = 'ACTIVE' AND om.is_primary = 1`; `LEFT OUTER JOIN org_unit class_ou ON class_ou.id = om.org_unit_id AND class_ou.unit_type = 'CLASS' AND class_ou.status = 'ACTIVE'`; `LEFT OUTER JOIN org_unit grade_ou ON grade_ou.id = class_ou.parent_id AND grade_ou.unit_type = 'GRADE' AND grade_ou.status = 'ACTIVE'`.
 - Preserve final records that have no active primary class membership only for callers whose `score.export.assigned` scope resolves to `ALL`, and only when no grade/class filter is present. Organization-scoped callers (`ORG_UNIT` or `ORG_SUBTREE`) must not see no-membership rows because the translated scope predicate compares `org_path`/`org_unit_id` against `class_ou.path`/`class_ou.id`, which are `NULL` for those rows and therefore do not match.
 - Apply grade/class predicates only when the corresponding filter is present.
 - When `grade` is present, append `(grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})`.
@@ -252,7 +253,7 @@ Operational capacity assumption:
 
 New application classes:
 
-- `FinalScoreExportQuery`: validates and normalizes export filters. Fields are `String academicYear` (required, normalized), `String status` (nullable; absent means `SUBMITTED` plus `CONFIRMED`), `String grade` (nullable), and immutable `List<String> classes` (never null; empty means absent). It must not contain `pageNo` or `pageSize`.
+- `FinalScoreExportQuery`: validates and normalizes export filters. Fields are `String academicYear` (required, normalized), `String status` (nullable; absent means `SUBMITTED` plus `CONFIRMED`), `String grade` (nullable), immutable `List<String> classes` (never null; empty means absent), and raw optional `String pageNo` / `String pageSize` presence markers used only to reject paginated export requests.
 - `FinalScoreExportRow`: row view consumed by the workbook writer.
 - `FinalScoreExportFile`: immutable filename, content type, and workbook bytes. Because `byte[]` is mutable in Java, construct and expose it with defensive copies or an equivalent immutable byte container.
 - `FinalScoreExportWorkbookWriter`: application port with method `FinalScoreExportFile write(String academicYear, List<FinalScoreExportRow> rows)`.
@@ -275,7 +276,7 @@ Interface:
 - Add `AdminFinalScoreExportController` under `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin`.
 - Keep MVC and controller security tests in `whut-eval-app/src/test`, matching the existing controller test pattern, because `whut-eval-app` depends on and compiles `whut-eval-interfaces`.
 - Return `ResponseEntity<byte[]>` with explicit headers by calling `FinalScoreExportApplicationService`, receiving `FinalScoreExportFile`, and copying its `filename`, `contentType`, and `content` into the response.
-- Reject `pageNo` and `pageSize` in the controller by binding them as optional raw request parameters or inspecting the request parameter map before service execution. `FinalScoreExportQuery` must not own this validation.
+- Bind `pageNo` and `pageSize` as optional raw request parameters or inspect the request parameter map, then pass their raw presence into `FinalScoreExportQuery`. The controller must not keep a separate blacklist rule.
 - Convert `classes` query params from `List<String>` to the application query; splitting and trimming live in `FinalScoreExportQuery` so MVC and service tests share behavior.
 
 Configuration:
@@ -285,15 +286,16 @@ Configuration:
 
 ## Validation
 
-`FinalScoreExportQuery` owns filter validation:
+`FinalScoreExportQuery` owns export request validation:
 
 - `academicYear` is required and must match `^\d{4}-\d{4}$`.
 - The academic-year end must equal start + 1.
 - `status` is optional and must be `SUBMITTED` or `CONFIRMED` after trimming.
 - `grade` is optional. Blank becomes `null`.
 - `classes` is optional. Normalize by iterating raw repeated parameters in request encounter order, splitting each raw value by comma, trimming every token, dropping blanks, and de-duplicating by first appearance. For example, `classes=A,B&classes=B,C` normalizes to `[A, B, C]`. Store the result as an immutable list. An empty normalized list is equivalent to an absent `classes` parameter.
+- `pageNo` and `pageSize` are optional raw presence markers. If either is present, even blank, throw `ValidationException("导出接口不支持分页参数")`.
 
-`pageNo` and `pageSize` are not `FinalScoreExportQuery` fields. The controller rejects their presence with `400 / VAL-4001` because the export endpoint is unpaged.
+The controller converts HTTP parameters into `FinalScoreExportQuery` and lets the query object reject `pageNo/pageSize`, so direct service tests and controller tests share the same pagination-parameter behavior.
 
 ## Error Mapping
 
@@ -312,7 +314,7 @@ The application service must catch only workbook generation failures from the wr
 Spec-phase acceptance tests for the implementation plan:
 
 - Query normalization rejects missing/invalid `academicYear`, rejects `DRAFT`, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance, and treats an empty normalized class list as no class filter.
-- Controller rejects present `pageNo/pageSize` with `400 / VAL-4001` before service execution.
+- Query normalization rejects present `pageNo/pageSize` with `ValidationException`, and controller/WebMvc tests verify the HTTP response is `400 / VAL-4001`.
 - Controller security annotation requires `SCORE_EXPORT_ASSIGNED`.
 - `AdminFinalScoreExportControllerWebMvcTest` proves unauthenticated requests are rejected by the existing security filter chain without freezing a new D-10-specific 401/403 contract.
 - `AdminFinalScoreExportControllerWebMvcTest` covers authenticated users without `SCORE_EXPORT_ASSIGNED` returning `403`, proving the new D-10 controller is protected by the export authority.
@@ -321,9 +323,11 @@ Spec-phase acceptance tests for the implementation plan:
 - Workbook writer creates the exact header row, writes numeric total cells, writes UTC timestamp text truncated to seconds, emits no formulas, and applies readable column widths or autosizing.
 - Application service uses `score.export.assigned`, not `score.view.assigned`, when building the access context.
 - Application service returns `FinalScoreExportFile`, and controller copies its filename, content type, and bytes into the response.
+- Application service wraps workbook writer failures as `FinalScoreExportGenerationException`; controller/WebMvc or global exception tests verify the public response remains `503 / EXT-5033`.
 - Application service returns `RES-4040` for an empty authorized row list.
 - Application service returns `RES-4040` when unknown `grade` or unknown `classes` values produce an empty authorized row list.
 - Repository export query applies status, grade, class, and scope filters together.
+- Repository uses the explicit `org_membership` -> `class_ou` -> `grade_ou` join path above, including `class_ou.parent_id` for grade lookup.
 - Repository defaults absent `status` to `SUBMITTED` plus `CONFIRMED`, and verifies `DRAFT` rows are excluded from exports even when matching academic year and scope.
 - Repository keeps records with no primary membership exportable to ALL scope when no grade/class filter is present, with blank grade/class fields.
 - Repository excludes no-primary-membership records for ORG_UNIT and ORG_SUBTREE callers because `class_ou.id`/`class_ou.path` are `NULL` and cannot satisfy organization predicates.
