@@ -108,7 +108,7 @@ Minimal D-9 is a synchronous import endpoint only. It validates activity metadat
 
 D-9 does not add an import batch table, async job, failure-file storage, activity catalog, attendance state, student candidate-source storage, frontend UI, D-10 export, or D-11 roster behavior.
 
-Academic-year scope boundary: Minimal D-9 accepts any syntactically valid `YYYY-YYYY` academic year and writes final records for that requested year, but student target lookup and `score.import` scope checks intentionally use current active primary membership, matching D-8. D-9 does not implement historical organization membership or `heldAt`/academic-year-time-sliced authorization. This is an explicit MVP limitation, not an implementation omission.
+Academic-year scope boundary: Minimal D-9 accepts only academic years matching `YYYY-YYYY` where the second year equals the first year + 1, and writes final records for that requested year. Student target lookup and `score.import` scope checks intentionally use current active primary membership, matching D-8. D-9 does not implement historical organization membership or `heldAt`/academic-year-time-sliced authorization. This is an explicit MVP limitation, not an implementation omission.
 
 ---
 
@@ -334,6 +334,7 @@ Lock port contract:
 - `tryAcquire(...) == true`: lock acquired.
 - `tryAcquire(...) == false`: lock was not acquired because the same exact activity batch is already running; the service maps this to `409 / BIZ-4090 / 同一活动批次正在导入，请稍后重试`.
 - Storage-unavailable paths, including MySQL `GET_LOCK` returning `NULL` or unexpected SQL errors, must not return `false`; the adapter throws a Spring `DataAccessException` so the existing data-access handler maps it to `500 / SYS-5000 / 数据访问异常，请稍后重试`.
+- `release(...)` adapter failures still throw `DataAccessException`, but service orchestration must distinguish timing: release failures before a committed transaction can still affect the request outcome, while release failures from a transaction `afterCompletion` callback must be caught and logged at WARN level and must not replace an already committed successful import response with a 500.
 
 Create `ActivityImportStudentTarget`:
 
@@ -692,7 +693,25 @@ git commit -m "feat: parse activity import workbooks"
 
 Create `ActivityImportApplicationServiceTest` with fakes for `ActivityImportParser`, `ActivityImportRepository`, `ActivityImportBatchLock`, `TransactionOperations`, and `UserAuthorizationContextAssembler`. Cover:
 
-- missing/empty file, title, itemCode, scoreValue, heldAt, and academicYear messages;
+- request-level `VAL-4001` messages exactly match the frozen contract:
+  - missing or empty file: `上传文件不能为空`;
+  - missing or blank title: `title 不能为空`;
+  - title over 255 Unicode code points after trim: `title 长度不能超过 255`;
+  - missing or blank itemCode: `itemCode 不能为空`;
+  - itemCode over 64 Unicode code points after trim: `itemCode 长度不能超过 64`;
+  - missing, blank, or non-decimal scoreValue: `scoreValue 必须是数字`;
+  - scoreValue greater than `99999999.99`: `scoreValue 必须在 0 到 99999999.99 之间`;
+  - scoreValue with scale greater than 2: `scoreValue 最多保留 2 位小数`;
+  - scoreValue greater than item maxPoints when `allowOverflow = false`: `scoreValue 必须在 0 到项目允许范围之间`;
+  - missing, blank, date-only, date-hour, or otherwise unparsable heldAt: `heldAt 格式非法`;
+  - missing, blank, not matching `YYYY-YYYY`, or end year not equal to start year + 1 academicYear: `academicYear 不合法`;
+  - workbook bytes over 5 MB or more than 5000 non-blank data rows: `文体活动导入文件最多支持 5000 行且不超过 5MB`;
+  - missing header, header mismatch, no sheet, or unreadable workbook: message starts with `导入模板错误：`;
+  - item definition not found or invalid cap metadata: `对应项目定义不存在`;
+  - in-progress batch: `同一活动批次正在导入，请稍后重试`;
+  - already imported batch: `同一活动批次已导入`;
+  - multipart byte read failure is controller-owned and maps to `文件处理失败，请稍后重试`;
+  - propagated `DataAccessException` maps through the existing handler to `数据访问异常，请稍后重试`;
 - title length > 255, itemCode length > 64, and academicYear values that do not match `YYYY-YYYY` or whose end year is not start year + 1;
 - strict `scoreValue` ordering: non-decimal, `>99999999.99`, scale > 2, item cap when `allowOverflow = false`;
 - active SPORTS item required: missing item rows and invalid cap metadata are both exposed by repository as `Optional.empty()` and service tests must assert `ResourceNotFoundException("对应项目定义不存在")`, which the global handler maps to `404 / RES-4040`;
@@ -704,7 +723,7 @@ Create `ActivityImportApplicationServiceTest` with fakes for `ActivityImportPars
 - canonical item code used in response, duplicate detection, and persisted components;
 - header-only import returns zero counts and releases lock;
 - partial success rejects same-batch retry when repository duplicate check is true with `409 / BIZ-4090 / 同一活动批次已导入`;
-- batch lock timeout (`tryAcquire == false`) maps to `409 / BIZ-4090 / 同一活动批次正在导入，请稍后重试`, while lock adapter `DataAccessException` propagates to the existing database-access failure handler;
+- batch lock timeout (`tryAcquire == false`) maps to `409 / BIZ-4090 / 同一活动批次正在导入，请稍后重试`, while `tryAcquire` and pre-commit lock adapter `DataAccessException` paths propagate to the existing database-access failure handler;
 - successful rows use normalized request title as persisted display text when row `displayText` is blank, while failed-row raw values still return blank as `null`;
 - duplicate `studentNo` handling: field-invalid rows do not consume a duplicate key; the first field-valid row consumes `studentNo.trim()` even if later target lookup, scope, or final-record lock processing fails; later field-valid rows with the same normalized key fail with `DUPLICATE_STUDENT`;
 - row-level failure code/message table: blank `studentNo` uses `STUDENT_NO_REQUIRED` / `studentNo 不能为空`; over-64 `studentNo` and missing/inactive student target both use `STUDENT_NOT_FOUND` / `studentNo 对应学生不存在或未启用`; over-1000 `displayText` uses `DISPLAY_TEXT_TOO_LONG` / `displayText 长度不能超过 1000`; duplicate student uses `DUPLICATE_STUDENT` / `同一活动批次中学生重复`; out of scope uses `OUT_OF_SCOPE` / `当前用户无权导入该学生文体活动成绩`; locked final record uses `FINAL_RECORD_LOCKED` / `已提交或已确认的最终成绩不允许导入覆盖`;
@@ -713,7 +732,7 @@ Create `ActivityImportApplicationServiceTest` with fakes for `ActivityImportPars
 - `totalCount` is the number of non-blank parsed data rows and equals `successCount + failedCount`; `failedCount` includes every row-level failure category.
 - unsupported or empty scope grants no rows;
 - defensive service-level missing authority maps through `AccessDeniedAppException`;
-- lock release happens through transaction `afterCompletion` when synchronization is active and through a `finally` fallback when synchronization is inactive.
+- lock release happens through transaction `afterCompletion` when synchronization is active and through a `finally` fallback when synchronization is inactive; release failures before commit may still propagate, but `afterCompletion` release failures must be caught and logged at WARN level and must not turn an already committed successful import into a 500 response.
 
 Use test method names such as:
 
@@ -746,20 +765,20 @@ Expected: compilation fails because `ActivityImportApplicationService` is missin
 Implement `ActivityImportApplicationService` with these concrete rules:
 
 - `normalize(command)` validates request parameters in this order: file, title, itemCode, scoreValue, heldAt, academicYear.
-- `normalizeTitle` rejects null/blank title and title values over 255 Unicode code points after Java `String.trim()`.
-- `normalizeItemCode` rejects null/blank itemCode and itemCode values over 64 Unicode code points after Java `String.trim()`.
-- `normalizeAcademicYear` requires `^(\\d{4})-(\\d{4})$` and rejects values whose end year is not start year + 1.
+- `normalizeTitle` rejects null/blank title with `ValidationException("title 不能为空")` and title values over 255 Unicode code points after Java `String.trim()` with `ValidationException("title 长度不能超过 255")`.
+- `normalizeItemCode` rejects null/blank itemCode with `ValidationException("itemCode 不能为空")` and itemCode values over 64 Unicode code points after Java `String.trim()` with `ValidationException("itemCode 长度不能超过 64")`.
+- `normalizeAcademicYear` requires `^(\\d{4})-(\\d{4})$` and rejects values whose end year is not start year + 1; every invalid or missing value uses `ValidationException("academicYear 不合法")`.
 - Inject `UserAuthorizationContextAssembler`, call `requiredAuthorizationContext()`, and defensively require `AuthorizationPermissionCodes.SCORE_IMPORT`; missing authority throws `AccessDeniedAppException("当前用户无导入权限")`.
 - Import and use existing common exceptions only: `ValidationException` for `VAL-4001` request validation, `ResourceNotFoundException` for `RES-4040` item-definition absence, `ConflictException` for `BIZ-4090` duplicate or in-progress batch, `AccessDeniedAppException` for permission failures, and `DataAccessException` propagation for database-access failures.
-- `scoreValue` basic validation order is: trim and reject blank or non-`STRICT_DECIMAL_PATTERN = Pattern.compile("^[0-9]+(\\.[0-9]+)?$")`, parse to `BigDecimal`, reject values `> 99999999.99`, and reject scale greater than 2. Store scale 2 via `setScale(2, RoundingMode.HALF_UP)` only after scale validation; do not apply item-specific maxPoints until after workbook parsing and item metadata lookup succeed.
-- `heldAt` parses ISO-8601 local date-time strings through `LocalDateTime.parse(heldAt.trim())`; accept `2026-05-18T14:30` and `2026-05-18T14:30:00`, reject date-only and date-hour strings, then use `.withNano(0)` so omitted seconds become `00` and fractional seconds are truncated.
+- `scoreValue` basic validation order is: trim and reject blank or non-`STRICT_DECIMAL_PATTERN = Pattern.compile("^[0-9]+(\\.[0-9]+)?$")` with `ValidationException("scoreValue 必须是数字")`, parse to `BigDecimal`, reject values `> 99999999.99` with `ValidationException("scoreValue 必须在 0 到 99999999.99 之间")`, and reject scale greater than 2 with `ValidationException("scoreValue 最多保留 2 位小数")`. Store scale 2 via `setScale(2, RoundingMode.HALF_UP)` only after scale validation; do not apply item-specific maxPoints until after workbook parsing and item metadata lookup succeed.
+- `heldAt` parses ISO-8601 local date-time strings through `LocalDateTime.parse(heldAt.trim())`; accept `2026-05-18T14:30` and `2026-05-18T14:30:00`, reject missing, blank, date-only, and date-hour strings with `ValidationException("heldAt 格式非法")`, then use `.withNano(0)` so omitted seconds become `00` and fractional seconds are truncated.
 - After file-layer checks and basic request validation, immediately call `parser.parse(command.fileContent())`. Workbook parse/template failures must surface before `repository.findActiveSportsItem(...)`, cap metadata parsing, duplicate-batch checks, or item-specific score cap validation.
 - `itemCode` lookup calls `repository.findActiveSportsItem(trimmedItemCode)` after request syntax validation. If the repository returns `Optional.empty()` for a missing active SPORTS item or invalid cap metadata, throw `ResourceNotFoundException("对应项目定义不存在")`; do not map this path to `ValidationException` or a generic system error.
-- After item lookup succeeds, reject `scoreValue > item.maxPoints()` with the frozen score-cap validation error only when `allowOverflow = false`.
+- After item lookup succeeds, reject `scoreValue > item.maxPoints()` with `ValidationException("scoreValue 必须在 0 到项目允许范围之间")` only when `allowOverflow = false`.
 - `activityBatchId` format is `ACTIVITY-` + `academicYear` without hyphen + `-` + `heldAt` formatted `yyyyMMddHHmmss` + `-` + the first 12 uppercase hexadecimal characters of SHA-256 over `hashInput(request, held)`.
 - `hashInput(request, held)` uses length-prefixed segments joined by `|` in this exact frozen-spec order: normalized `academicYear`, `held` formatted as `yyyyMMddHHmmss`, normalized `title`, canonical `itemCode`, and normalized scale-2 `scoreValue.toPlainString()`. Compute SHA-256 over `hashInput.getBytes(StandardCharsets.UTF_8)`, uppercase the hexadecimal digest, and take the first 12 characters. Do not use platform-default charset, `BigDecimal.toString()`, or delimiter-only concatenation.
 - `encodeHashPart(value)` returns `value.codePointCount(0, value.length()) + ":" + value`. The count is decimal Unicode code points in the normalized Java `String`, not UTF-8 bytes or UTF-16 code units.
-- Lock orchestration follows D-8: enter `transactionOperations.execute(...)`, acquire lock on the request transaction owner connection, map `tryAcquire == false` to `ConflictException("同一活动批次正在导入，请稍后重试")`, let `DataAccessException` from the lock adapter propagate, register release through `TransactionSynchronizationManager` when synchronization is active, run authoritative duplicate check, process rows, and release on the same transaction owner connection in `afterCompletion` or in `finally` if synchronization registration did not happen.
+- Lock orchestration follows D-8 with one explicit D-9 hardening: enter `transactionOperations.execute(...)`, acquire lock on the request transaction owner connection, map `tryAcquire == false` to `ConflictException("同一活动批次正在导入，请稍后重试")`, let `DataAccessException` from `tryAcquire` propagate, register release through `TransactionSynchronizationManager` when synchronization is active, run authoritative duplicate check, process rows, and release on the same transaction owner connection in `afterCompletion` or in `finally` if synchronization registration did not happen. If release happens before the transaction outcome is committed, a release `DataAccessException` may still affect the request outcome; if release happens from `afterCompletion`, catch and log the release failure at WARN level so it does not replace an already committed successful response with `500 / SYS-5000 / 数据访问异常，请稍后重试`.
 - Duplicate check calls `repository.activityBatchExists(academicYear, "SPORTS", canonicalItemCode, activityBatchId)` and maps a positive result to `ConflictException("同一活动批次已导入")`.
 - Duplicate-student detection runs after `validateFields(row)` passes. It uses `studentNo.trim()` as the key, first field-valid row wins and consumes the key, field-invalid rows do not consume the key, and later field-valid duplicates fail even when the first field-valid row later fails lookup, scope, or locked-record processing.
 - Field-valid rows are sorted by `studentUserId ASC`, then `rowNo ASC` before persistence.
@@ -1151,8 +1170,20 @@ git commit -m "feat: add activity import batch lock"
 Add tests for:
 
 - route `POST /api/admin/imports/cas-activities`;
-- missing `file/title/itemCode/scoreValue/heldAt/academicYear`;
-- title longer than 255 Unicode code points, itemCode longer than 64 Unicode code points, invalid scoreValue variants, invalid heldAt variants, and invalid academicYear variants return the frozen `VAL-4001` messages;
+- request-level validation returns these exact `VAL-4001` messages through MVC/global exception handling:
+  - missing or empty file: `上传文件不能为空`;
+  - missing or blank title: `title 不能为空`;
+  - title over 255 Unicode code points after trim: `title 长度不能超过 255`;
+  - missing or blank itemCode: `itemCode 不能为空`;
+  - itemCode over 64 Unicode code points after trim: `itemCode 长度不能超过 64`;
+  - missing, blank, or non-decimal scoreValue: `scoreValue 必须是数字`;
+  - scoreValue greater than `99999999.99`: `scoreValue 必须在 0 到 99999999.99 之间`;
+  - scoreValue with scale greater than 2: `scoreValue 最多保留 2 位小数`;
+  - scoreValue above item cap when overflow is not allowed: `scoreValue 必须在 0 到项目允许范围之间`;
+  - missing, blank, date-only, date-hour, or otherwise unparsable heldAt: `heldAt 格式非法`;
+  - missing, blank, not matching `YYYY-YYYY`, or end year not equal to start year + 1 academicYear: `academicYear 不合法`;
+  - workbook bytes over 5 MB or more than 5000 non-blank data rows: `文体活动导入文件最多支持 5000 行且不超过 5MB`;
+  - missing header, header mismatch, no sheet, unreadable workbook, unsupported filename, blank filename, missing filename, or extensionless filename: message starts with `导入模板错误：`, with filename parsing failures using `导入模板错误：文件不可解析`;
 - unsupported, blank, missing, and extensionless filenames rejected before service invocation with `400 / VAL-4001 / 导入模板错误：文件不可解析`; accepted filename extensions are exactly `.xls` and `.xlsx`, compared case-insensitively after Java `String.trim()`;
 - file > 5 MB rejected before `getBytes()`;
 - multipart read failure maps to `503 / EXT-5033 / 文件处理失败，请稍后重试`;
