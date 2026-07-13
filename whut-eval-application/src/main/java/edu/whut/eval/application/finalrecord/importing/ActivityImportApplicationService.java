@@ -372,7 +372,7 @@ public class ActivityImportApplicationService {
             if (!"ACTIVE".equals(rule.status())) {
                 continue;
             }
-            if ("GLOBAL".equals(rule.scopeType())) {
+            if ("ALL".equals(rule.scopeType())) {
                 return true;
             }
             if ("ORG_UNIT".equals(rule.scopeType()) && rule.orgUnitId() != null && rule.orgUnitId().equals(target.orgUnitId())) {

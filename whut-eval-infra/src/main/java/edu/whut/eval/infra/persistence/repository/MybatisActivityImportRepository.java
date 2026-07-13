@@ -16,6 +16,7 @@ import edu.whut.eval.infra.persistence.repository.row.ActivityImportStudentTarge
 import edu.whut.eval.infra.persistence.repository.row.ActivityImportedComponentRow;
 import edu.whut.eval.infra.persistence.repository.row.ActivityScoreCategoryTotalRow;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -229,7 +230,7 @@ public class MybatisActivityImportRepository implements ActivityImportRepository
                 case "INTELLECTUAL" -> intellectual = value;
                 case "SPORTS" -> physical = value;
                 case "LABOR" -> labor = value;
-                default -> throw new DataIntegrityViolationException("unsupported final record category");
+                default -> throw new DataAccessResourceFailureException("unsupported final record category");
             }
         }
 

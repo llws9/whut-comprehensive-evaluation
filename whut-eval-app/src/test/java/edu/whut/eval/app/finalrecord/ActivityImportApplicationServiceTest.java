@@ -180,6 +180,24 @@ class ActivityImportApplicationServiceTest {
     }
 
     @Test
+    void shouldImportRowsForAllScopeRule() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(allScopeAdmin());
+        given(parser.parse(any())).willReturn(List.of(new ActivityImportRow(2L, "S1001", "校运会")));
+        given(repository.findActiveSportsItem("SPORTS"))
+                .willReturn(Optional.of(new ActivityImportItemDefinition("SPORTS", "SPORTS", new BigDecimal("10.00"), false)));
+        given(repository.findTarget("S1001", "2025-2026")).willReturn(Optional.of(target(1001L, 9001L)));
+        given(repository.insertActivityComponents(eq("2025-2026"), any())).willReturn(List.of());
+
+        ActivityImportResult result = service.importActivities(command("活动", "SPORTS", "1.00", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.successCount()).isEqualTo(1);
+        assertThat(result.failedCount()).isZero();
+        verify(repository).insertActivityComponents(eq("2025-2026"), org.mockito.ArgumentMatchers.argThat(components ->
+                components.size() == 1 && components.get(0).studentUserId().equals(1001L)));
+        verify(repository, never()).findActiveOrgPath(any());
+    }
+
+    @Test
     void shouldAllowRetryWhenAllRowsFailAndNoComponentsPersist() {
         given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
         given(parser.parse(any())).willReturn(List.of(new ActivityImportRow(2L, "S404", null)));
@@ -269,6 +287,12 @@ class ActivityImportApplicationServiceTest {
     private UserAuthorizationContext scopedAdmin() {
         return new UserAuthorizationContext(1010L, "T1010", "Counselor", "teacher", Set.of("COUNSELOR"), Set.of("score.import"), List.of(
                 new IamScopeRule(7010L, "score.import", "ORG_SUBTREE", 2002L, null, null, null, 80, "ACTIVE")
+        ));
+    }
+
+    private UserAuthorizationContext allScopeAdmin() {
+        return new UserAuthorizationContext(1010L, "T1010", "Admin", "teacher", Set.of("ADMIN"), Set.of("score.import"), List.of(
+                new IamScopeRule(7011L, "score.import", "ALL", null, null, null, null, 100, "ACTIVE")
         ));
     }
 

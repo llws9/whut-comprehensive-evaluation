@@ -13,6 +13,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 
 import java.math.BigDecimal;
@@ -203,7 +204,8 @@ class MybatisActivityImportRepositoryTest {
                 .willReturn(List.of(total("UNKNOWN", "1.00")));
 
         assertThatThrownBy(() -> repository.insertActivityComponents("2025-2026", List.of(component)))
-                .isInstanceOf(DataIntegrityViolationException.class)
+                .isInstanceOf(DataAccessException.class)
+                .isNotInstanceOf(DataIntegrityViolationException.class)
                 .hasMessage("unsupported final record category")
                 .hasMessageNotContaining("UNKNOWN");
     }

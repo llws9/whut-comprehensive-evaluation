@@ -21,6 +21,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -280,7 +281,8 @@ class MybatisActivityImportRepositoryIntegrationTest {
         assertThatThrownBy(() -> repository.insertActivityComponents("2025-2026", List.of(
                 component(2L, 1001L, "S1001", "SPORTS_COMPETITION", "SPORTS", "1.00", "校运会", "ACTIVITY-20252026-20260518143000-ROLLBACK0001")
         )))
-                .isInstanceOf(DataIntegrityViolationException.class)
+                .isInstanceOf(DataAccessException.class)
+                .isNotInstanceOf(DataIntegrityViolationException.class)
                 .hasMessage("unsupported final record category")
                 .hasMessageNotContaining("UNKNOWN");
 
