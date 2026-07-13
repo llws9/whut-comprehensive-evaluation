@@ -148,7 +148,7 @@ Response count semantics:
 - `successCount` is the number of rows that successfully inserted an activity component.
 - `failedCount` is `failedRows.size()`.
 - `successCount + failedCount = totalCount`.
-- A workbook that contains only the header still validates metadata, generates the deterministic batch id, acquires the batch lock, and checks duplicates. If another same-batch import is running, it returns the in-flight `409`; if the same `activityBatchId` already has persisted components, it returns the already-imported `409`. Otherwise it returns `200` with zero counts and persists no batch marker. See Import Semantics for the authoritative zero-success retry rule.
+- A workbook that contains only the header still validates metadata, generates the deterministic batch id, acquires the batch lock, and checks duplicates. If another same-batch import is running, it returns the in-flight `409`; if the same `activityBatchId` already has persisted components, it returns the already-imported `409`. Otherwise it returns `200` using the same success response shape: `activityBatchId`, normalized `title`, canonical `itemCode`, scale-2 `scoreValue`, `totalCount = 0`, `successCount = 0`, `failedCount = 0`, and `failedRows = []`. It persists no batch marker. See Import Semantics for the authoritative zero-success retry rule.
 
 Request-level failures:
 
@@ -173,6 +173,7 @@ Request-level failures:
 | Same activity batch currently running | `409` | `BIZ-4090` | `同一活动批次正在导入，请稍后重试` |
 | Same activity batch already imported | `409` | `BIZ-4090` | `同一活动批次已导入` |
 | Multipart bytes cannot be read | `503` | `EXT-5033` | `文件处理失败，请稍后重试` |
+| Batch-lock storage unavailable, batch-lock SQL error, or unexpected database access failure | `500` | `SYS-5000` | Existing `DataAccessException` handler response: `数据访问异常，请稍后重试` |
 
 Row-level validation failures return HTTP 200 and appear in `failedRows`.
 
@@ -202,7 +203,7 @@ Header row is row 1. Header names are case-sensitive and must appear in this exa
 | Column | Header | Required | Rule |
 |---:|---|---:|---|
 | A | `studentNo` | yes | Existing active `iam_user.user_no`. |
-| B | `displayText` | no | Max 1000 Unicode code points after trim. When blank, the normalized row display text is the normalized request title. |
+| B | `displayText` | value optional | Column B and its header must exist. Cell values may be blank. Max 1000 Unicode code points after trim. When blank, the normalized row display text is the normalized request title. |
 
 Extra columns after column B are ignored.
 
@@ -311,10 +312,11 @@ Batch-level concurrency:
 
 - Serialize imports for the same `activityBatchId` before row mutation.
 - Use an application-level lock behind an `ActivityImportBatchLock` port, mirroring D-8's `LectureImportBatchLock`.
-- Production wiring uses MySQL `GET_LOCK(CONCAT('D9_ACTIVITY:', ?), 30)` and `RELEASE_LOCK(?)` on the request transaction owner connection.
+- Production wiring derives one final MySQL named-lock string as `D9_ACTIVITY:` + `activityBatchId`. For example, `ACTIVITY-20252026-20260518143000-ABCDEF123456` maps to `D9_ACTIVITY:ACTIVITY-20252026-20260518143000-ABCDEF123456`.
+- Production wiring uses parameterized `GET_LOCK(?, 30)` and `RELEASE_LOCK(?)` on the request transaction owner connection, passing that same final lock string to both calls. It must not pass the raw `activityBatchId` to one call and the prefixed lock string to the other.
 - H2 tests use an explicit keyed JVM lock fake or mock.
 - The lock must be released on every exit path, including duplicate-batch `409`, zero-row success, row-processing success, rollback, and unexpected persistence failures.
-- If the lock cannot be acquired, return `409 / BIZ-4090` with `同一活动批次正在导入，请稍后重试`. For MySQL, `GET_LOCK` returning `0` after the 30-second wait is the same external in-flight conflict; `GET_LOCK` returning `NULL` or an unexpected SQL error is a storage failure.
+- If the lock cannot be acquired, return `409 / BIZ-4090` with `同一活动批次正在导入，请稍后重试`. For MySQL, `GET_LOCK` returning `0` after the 30-second wait is the same external in-flight conflict. `GET_LOCK` returning `NULL` or throwing an unexpected SQL error is a storage-unavailable path and must surface as the request-level database access failure defined above.
 - If the lock is acquired but persisted components already exist, return `409 / BIZ-4090` with `同一活动批次已导入`.
 
 Per-student final-record concurrency:
@@ -327,9 +329,10 @@ Per-student final-record concurrency:
 - If the locked final record is not `DRAFT`, return row-level `FINAL_RECORD_LOCKED` and do not mutate that student's row. Minimal D-9 only has three supported final-record states, so this includes `SUBMITTED` and `CONFIRMED`; any future non-`DRAFT` state must also fail closed until a later spec explicitly allows it.
 - Successful rows insert components and recalculate totals while the record remains locked.
 
-Transaction semantics:
+Transaction and lock ordering:
 
 - The request runs in one transaction for metadata duplicate checks and row mutations.
+- D-9 follows D-8's existing service shape: validation and workbook parsing happen before the transaction; the application service enters `TransactionOperations.execute(...)`; inside that transaction it acquires the batch lock, registers release through transaction synchronization when synchronization is active, performs the authoritative duplicate-batch check, then mutates rows. The MySQL named lock is connection-bound rather than transaction-bound, so the implementation must release it after transaction completion on the same owner connection, or in `finally` if no transaction synchronization is active.
 - Field-level and lookup/scope row failures do not roll back successful rows.
 - Unexpected persistence errors roll back all inserted components in that request.
 - The repository method used directly in integration tests may remain `@Transactional` if needed for rollback coverage; do not remove transactional boundaries without replacing that coverage.
@@ -452,7 +455,9 @@ Application service tests:
 - partially successful same-batch retries are rejected as duplicate when any component from that batch was persisted;
 - zero-success same-batch retries are accepted because no component marks the batch as imported;
 - same-batch in-flight lock conflict returns `ConflictException("同一活动批次正在导入，请稍后重试")`;
-- MySQL `GET_LOCK` timeout maps to the same in-flight lock conflict, while `NULL` or SQL errors map to storage failure;
+- MySQL `GET_LOCK` timeout maps to the same in-flight lock conflict, while `NULL` or SQL errors surface through the existing database access failure response;
+- production lock tests assert the exact same final lock string is passed to both `GET_LOCK` and `RELEASE_LOCK`;
+- transaction orchestration tests or focused service tests cover acquiring the batch lock inside the request transaction before the authoritative duplicate check and releasing it after transaction completion or in the non-synchronized fallback;
 - lock release happens after success, request-level duplicate after lock, row-level failures, and exceptions;
 - field validation ordering matches the frozen failure table;
 - duplicate students are detected only after field validation;
@@ -484,7 +489,7 @@ Controller/MVC tests:
 - oversized files return `文体活动导入文件最多支持 5000 行且不超过 5MB` before `getBytes()`;
 - unsupported filename extensions return `导入模板错误：文件不可解析` before service invocation;
 - service response maps all frozen D-9 fields and failed-row raw values;
-- service validation/conflict/storage exceptions map through existing handlers;
+- service validation/conflict/file-processing/database-access exceptions map through the frozen request-level error surface and existing handlers;
 - security annotation requires `score.import`.
 
 Regression/smoke tests:
