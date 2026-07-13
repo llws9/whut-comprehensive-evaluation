@@ -77,7 +77,7 @@ Query parameters:
 | Parameter | Required | Rule |
 |---|---:|---|
 | `academicYear` | yes | Trimmed, non-blank, must match `yyyy-yyyy`, and second year must equal first year + 1. |
-| `status` | no | Trimmed, blank becomes absent. If present, must be `SUBMITTED` or `CONFIRMED`. |
+| `status` | no | Trimmed, blank becomes absent. If absent, exports both `SUBMITTED` and `CONFIRMED`. If present, must be `SUBMITTED` or `CONFIRMED`. `DRAFT` is never exportable. |
 | `grade` | no | Trimmed, blank becomes absent. Matches the current primary class's parent GRADE by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404`. |
 | `classes` | no | May be sent as repeated query params (`classes=CS2201&classes=CS2202`) or comma-separated tokens (`classes=CS2201,CS2202`). Each token is trimmed; blank tokens are ignored. Non-blank tokens match current primary CLASS by exact `org_unit.unit_code` or `org_unit.unit_name`. Unknown values are not request errors; they produce no matching rows and therefore `404` if nothing else matches. |
 
@@ -122,7 +122,7 @@ The repository must:
 - Apply the translated scope predicate against final-record student and current primary organization fields just as D-5 does.
 - Preserve the real A-group `org_unit.path` format, for example `/WHUT/CS/CS2022/CS2201`; do not introduce numeric-id path matching.
 - Filter `fr.academic_year = query.academicYear`.
-- Export only `fr.status IN ('SUBMITTED', 'CONFIRMED')`.
+- Export only `fr.status IN ('SUBMITTED', 'CONFIRMED')` when `status` is absent. If `status` is present, additionally filter to that single status. `DRAFT` must not be exported in either branch.
 - Use the student's active primary membership only: `org_membership.status = 'ACTIVE' AND is_primary = 1`.
 - Preserve visible final records that have no active primary class membership when no grade/class filter is present. The export SQL must use `LEFT OUTER JOIN` from `final_record` to `org_membership`, `class_ou`, and `grade_ou`, and place `ACTIVE`, `is_primary`, and `unit_type` predicates inside the join conditions rather than in the `WHERE` clause.
 - Apply grade/class predicates only when the corresponding filter is present.
@@ -136,6 +136,12 @@ D safe-init must add scope rules for default export accounts:
 | `8025` | `7012` platform admin | `score.export.assigned` | `ALL` | `NULL` |
 
 The collision guard must fail deterministically if any reserved id is already occupied by an unrelated row. The inserts must include every non-null IAM column required by the documented A schema, including `created_at`.
+
+For `iam_scope_rule`, the safe-init insert statements must use the documented column list exactly:
+
+`id, assignment_id, permission_code, scope_type, org_unit_id, category_code, item_code, expression_json, priority, status, created_at`
+
+The non-null columns that must always be populated are `id`, `assignment_id`, `permission_code`, `scope_type`, `priority`, `status`, and `created_at`. Nullable columns (`org_unit_id`, `category_code`, `item_code`, `expression_json`) must still appear in the insert list so the script remains portable across MySQL and the H2 compatibility tests.
 
 ## Grade and Class Filtering
 
@@ -155,6 +161,7 @@ Filtering rules:
 
 - `grade` matches `gradeCode` or `gradeName` exactly after trimming.
 - `classes` matches `classCode` or `className` exactly after trimming. If the request contains only blank class tokens after splitting and trimming, the normalized class list is empty and D-10 applies no class filter.
+- `grade` is a filter expression, not a lookup that resolves to one organization row. If the same request value matches one grade's `gradeCode` and another grade's `gradeName`, rows from both grades are included and final output order is still determined only by the ordering rules below.
 - Multiple `classes` tokens are ORed.
 - `grade` and `classes` together are ANDed.
 - `status` is ANDed with all organization filters and the authorization scope predicate.
@@ -191,6 +198,7 @@ Ordering is deterministic:
 4. `finalRecordId ASC`
 
 For H2/MySQL compatibility, express null ordering with portable SQL such as `CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END`.
+Apply that portable `NULLS LAST` pattern to both `gradeCode` and `classCode`, for example sort by `CASE WHEN grade_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `grade_ou.unit_code`, then `CASE WHEN class_ou.unit_code IS NULL THEN 1 ELSE 0 END`, then `class_ou.unit_code`, before `studentUserNo` and `finalRecordId`.
 
 ## Workbook Contract
 
@@ -258,6 +266,7 @@ Interface:
 Configuration:
 
 - Register the POI writer as a Spring bean through component scanning (`@Component`) or existing application configuration if component scanning does not pick up the infra package in tests.
+- If component scanning does not wire the infra writer in the application context smoke test, add an explicit `@Bean` in the existing D application configuration path instead of creating a new broad scan root.
 
 ## Validation
 
@@ -279,7 +288,7 @@ Use existing exception flow where possible:
 - Validation failures throw `ValidationException`.
 - No rows throws `ResourceNotFoundException("无匹配导出数据")`.
 - Missing authority throws `AccessDeniedAppException` or is blocked by Spring Security.
-- Workbook writer failures are wrapped in `FinalScoreExportGenerationException`, which is a D-10-specific `BaseAppException` using `CommonErrorCode.FILE_STORAGE_FAILED`, so the HTTP code is `503` and response code is `EXT-5033`.
+- Workbook writer failures are wrapped in `FinalScoreExportGenerationException`, which is a D-10-specific `BaseAppException` using `CommonErrorCode.FILE_STORAGE_FAILED`, so the HTTP code is `503` and response code is `EXT-5033`. This intentionally reuses the existing file-storage error code because the frozen D-10 delivery contract already names `EXT-5033` for file generation failure; D-10 must not introduce a second public error code for the same response branch.
 - Unexpected `DataAccessException` continues to use existing global DB/system mapping.
 
 The application service must catch only workbook generation failures from the writer. It must not convert authorization or validation failures to `EXT-5033`.
@@ -288,7 +297,7 @@ The application service must catch only workbook generation failures from the wr
 
 Spec-phase acceptance tests for the implementation plan:
 
-- Query normalization rejects missing/invalid `academicYear`, rejects `DRAFT`, rejects present `pageNo/pageSize`, normalizes repeated and comma-separated classes, drops blank class tokens, and treats an empty normalized class list as no class filter.
+- Query normalization rejects missing/invalid `academicYear`, rejects `DRAFT`, rejects present `pageNo/pageSize`, normalizes repeated `classes=CS2201&classes=CS2202` and comma-separated `classes=CS2201,CS2202`, drops blank class tokens, and treats an empty normalized class list as no class filter.
 - Controller security annotation requires `SCORE_EXPORT_ASSIGNED`.
 - Controller returns xlsx content type, attachment filename, and workbook bytes for a successful export.
 - Controller returns `404 / RES-4040` when the service reports no matching data.
@@ -296,11 +305,15 @@ Spec-phase acceptance tests for the implementation plan:
 - Application service uses `score.export.assigned`, not `score.view.assigned`, when building the access context.
 - Application service returns `FinalScoreExportFile`, and controller copies its filename, content type, and bytes into the response.
 - Application service returns `RES-4040` for an empty authorized row list.
+- Application service returns `RES-4040` when unknown `grade` or unknown `classes` values produce an empty authorized row list.
 - Repository export query applies status, grade, class, and scope filters together.
+- Repository defaults absent `status` to `SUBMITTED` plus `CONFIRMED`, and verifies `DRAFT` rows are excluded from exports even when matching academic year and scope.
 - Repository keeps records with no primary membership exportable to ALL scope when no grade/class filter is present, with blank grade/class fields.
 - Repository excludes no-membership records when grade or class filters are present.
+- Repository covers ambiguous `grade` values that match one grade code and another grade name, proving both matching grade rows are included.
+- Repository verifies portable null ordering for both `gradeCode` and `classCode`.
 - Repository returns an empty list for unsupported-scope-only callers.
-- D safe-init consistency tests verify `score.export.assigned` scope rules `8023`, `8024`, and `8025`, deterministic collision guards, rerunnable inserts, and required `created_at` columns.
+- D safe-init consistency tests verify `score.export.assigned` scope rules `8023`, `8024`, and `8025`, deterministic collision guards, rerunnable inserts, and the complete `iam_scope_rule` column contract including required non-null `id`, `assignment_id`, `permission_code`, `scope_type`, `priority`, `status`, and `created_at`.
 - Spring context smoke test verifies `FinalScoreExportApplicationService` and the POI writer are wired.
 
 Focused implementation verification should include at least:
