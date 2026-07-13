@@ -300,6 +300,13 @@ Configuration:
 
 Raw HTTP request-shape validation is a controller responsibility because only MVC receives the original multi-value parameter map. `FinalScoreExportQuery` owns semantic export request validation after that shape check:
 
+After raw request-shape validation passes, semantic validation order is fixed so public error messages are deterministic when multiple semantic errors are present:
+
+1. Validate `academicYear`.
+2. Validate `status`.
+3. Normalize and validate `grade`.
+4. Normalize and validate `classes`, including the `500` token limit.
+
 - `academicYear` is required, trimmed, non-blank, and must match `^\d{4}-\d{4}$`.
 - The academic-year end must equal start + 1.
 - `status` is optional. Trim first; blank becomes `null`/absent. If non-blank, it must be `SUBMITTED` or `CONFIRMED`.
@@ -328,7 +335,8 @@ The application service may create `FinalScoreExportGenerationException("Excel �
 
 Spec-phase acceptance tests for the implementation plan:
 
-- Query normalization trims `academicYear`, rejects missing/invalid `academicYear`, treats blank `status` as absent, rejects lowercase/non-exact `status` values and `DRAFT`, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance in the received value list, rejects more than `500` normalized class tokens with `classes 参数过多`, and treats `classes=,,` or `classes=&classes= ` as an absent class filter.
+- Query normalization trims `academicYear`, rejects missing/invalid `academicYear`, treats blank `status` as absent, rejects lowercase/non-exact `status` values and `DRAFT`, treats blank `grade` as absent, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance in the received value list, rejects more than `500` normalized class tokens with `classes 参数过多`, and treats `classes=,,` or `classes=&classes= ` as an absent class filter.
+- Query normalization tests cover the fixed semantic validation priority after raw shape checks, including a request with invalid `academicYear`, invalid `status`, and too many `classes` returning `academicYear 不合法`.
 - Controller/WebMvc tests verify present `pageNo/pageSize`, including `pageNo=`, `pageSize=`, and repeated `pageNo/pageSize`, return `400 / VAL-4001` with message `导出接口不支持分页参数` because the pagination-parameter branch has priority.
 - Controller/WebMvc tests verify repeated non-pagination single-value parameters (`academicYear`, `status`, `grade`) return `400 / VAL-4001` with message `导出接口不支持重复单值参数`.
 - Controller security annotation requires `SCORE_EXPORT_ASSIGNED`.
@@ -349,8 +357,8 @@ Spec-phase acceptance tests for the implementation plan:
 - Repository export query applies status, grade, class, and scope filters together.
 - Repository uses the explicit `org_membership` -> `class_ou` -> `grade_ou` join path above, including `class_ou.parent_id` for grade lookup.
 - Repository defaults absent `status` to `SUBMITTED` plus `CONFIRMED`, and verifies `DRAFT` rows are excluded from exports even when matching academic year and scope.
-- Repository keeps records with no primary membership exportable to ALL scope when no grade/class filter is present, with blank grade/class fields.
-- Repository excludes no-primary-membership records for ORG_UNIT and ORG_SUBTREE callers because `class_ou.id`/`class_ou.path` are `NULL` and cannot satisfy organization predicates.
+- Repository keeps records with no derived active CLASS organization unit exportable to ALL scope when no grade/class filter is present, with blank grade/class fields; tests must cover both no active primary membership and active primary membership attached to a non-CLASS org unit.
+- Repository excludes no-derived-class records for ORG_UNIT and ORG_SUBTREE callers because `class_ou.id`/`class_ou.path` are `NULL` and cannot satisfy organization predicates.
 - Repository excludes no-derived-class records when grade or class filters are present.
 - Repository covers ambiguous `grade` values that match one grade code and another grade name, proving both matching grade rows are included.
 - Repository covers ambiguous `classes` tokens that match one class code and another class name, proving both matching class rows are included.
@@ -369,7 +377,12 @@ The required controller tests live under `whut-eval-app/src/test` and compile th
 
 `FinalRecordControllerSecurityAnnotationTest` remains in the focused command because D-10 extends the shared final-record query repository path; this guards the existing D-5/D-6/D-12 controller annotations while D-10 adds export-specific security tests.
 
-Before merge, also run the D-7/D-8/D-9 import regression command used for D-9 plus D-10 export tests, because D-10 will touch shared final-record query repository code.
+Before merge, also run the D-7/D-8/D-9 import regression command used for D-9 plus D-10 export tests, because D-10 will touch shared final-record query repository code. The canonical command is from [2026-07-13-d9-cas-activity-import.md](/Users/bytedance/whut/whutXX/rewrite/whut-comprehensive-evaluation/.worktrees/d10-final-record-export/docs/superpowers/plans/2026-07-13-d9-cas-activity-import.md:1296) and is inlined here:
+
+```bash
+mvn -pl whut-eval-application -am test-compile
+mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest,ActivityImportApplicationServiceTest,MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest,ActivityImportBatchLockTest,ActivityImportApplicationContextSmokeTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest,LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,LectureImportApplicationContextSmokeTest,MentorScoreImportParserTest,MentorScoreImportApplicationServiceTest,MybatisMentorScoreImportRepositoryTest,MybatisMentorScoreImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
+```
 
 ## Open Decisions Closed By This Spec
 
