@@ -416,6 +416,7 @@ Update the test schema so `org_unit` includes `unit_code`, `unit_type`, and `sta
 
 Add integration tests covering:
 
+- requested `academicYear` filters out otherwise matching rows from other academic years;
 - default status exports only `SUBMITTED` and `CONFIRMED`, excluding `DRAFT`;
 - explicit `SUBMITTED` and explicit `CONFIRMED`;
 - grade/class exact case-sensitive filters with lowercase/mixed-case negative checks;
@@ -475,6 +476,7 @@ Provider requirements:
 - `LEFT OUTER JOIN org_unit grade_ou` with `unit_type = 'GRADE' AND status = 'ACTIVE'`;
 - replace translated scope aliases onto `fr.student_user_id`, `class_ou.id`, `class_ou.path`, and harmless status replacements for category/item unsupported-scope behavior;
 - use case-sensitive comparisons for grade/class, following the existing local helper style or adding a small provider helper that works on H2 and MySQL;
+- always filter `fr.academic_year = #{query.academicYear}`;
 - default absent status to `fr.status IN ('SUBMITTED', 'CONFIRMED')`, explicit status to `fr.status = #{query.status}`;
 - order with portable null-last expressions, then `u.user_no`, then `fr.id`;
 - `LIMIT #{limit}`;
@@ -527,6 +529,9 @@ Use `@WebMvcTest(controllers = AdminFinalScoreExportController.class)` and mock 
 - raw `classes=A,B&classes=B,C` results in service query classes `[A, B, C]`;
 - `pageNo`, blank `pageNo`, repeated `pageNo`, `pageSize`, blank `pageSize`, repeated `pageSize` fail with `导出接口不支持分页参数`;
 - repeated `academicYear`, `status`, or `grade` fail with `导出接口不支持重复单值参数`;
+- invalid `academicYear` fails through the real endpoint with `400 / VAL-4001 / academicYear 不合法`;
+- invalid lowercase or `DRAFT` `status` fails through the real endpoint with `400 / VAL-4001 / status 仅允许 SUBMITTED 或 CONFIRMED`;
+- more than `500` normalized `classes` tokens fail through the real endpoint with `400 / VAL-4001 / classes 参数过多`;
 - unknown query parameter is ignored;
 - service `ResourceNotFoundException("无匹配导出数据")` maps to `404 / RES-4040`;
 - service `FinalScoreExportGenerationException("Excel 生成失败")` maps to `503 / EXT-5033`;
@@ -653,9 +658,9 @@ git commit -m "feat: seed final score export scopes"
 
 - Create: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalScoreExportApplicationContextSmokeTest.java`
 
-- [ ] **Step 1: Write failing context smoke test**
+- [ ] **Step 1: Write failing production-scan context smoke test**
 
-Create a focused Spring context test that imports the final-record application configuration, repository adapter, mapper scan, POI writer, and controller. Assert the context contains:
+Create a focused Spring context test that uses component scanning or the same app-level configuration pattern as existing smoke tests to discover beans through the production package layout. Do not directly `@Import(PoiFinalScoreExportWorkbookWriter.class)` in the test, because that would bypass the wiring behavior being verified. Assert the context contains:
 
 - `FinalScoreExportApplicationService`;
 - `FinalScoreExportWorkbookWriter`;
@@ -672,9 +677,9 @@ mvn -pl whut-eval-app,whut-eval-interfaces -am -Dtest=FinalScoreExportApplicatio
 
 Expected: failure if component scanning or test configuration is missing required beans.
 
-- [ ] **Step 3: Fix wiring only if the smoke test proves it is needed**
+- [ ] **Step 3: Fix production wiring only if the smoke test proves it is needed**
 
-If the POI writer is not discovered, add a narrow `@Bean` in the existing final-record application configuration path. Do not add a broad scan root.
+If the POI writer is not discovered, fix the production wiring in a module that can legally see the infra implementation, such as an app-level test/application configuration or an infra-owned configuration class already scanned by the app. Do not add a broad scan root, and do not add an `@Bean` for `PoiFinalScoreExportWorkbookWriter` inside `whut-eval-application`, because that module must not depend on infra classes.
 
 - [ ] **Step 4: Run focused D-10 verification**
 
@@ -704,7 +709,7 @@ git add whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalScoreExpo
 git commit -m "test: verify final score export wiring"
 ```
 
-If Step 3 required a real wiring change, add `whut-eval-application/src/main/java/edu/whut/eval/application/finalrecord/config/FinalRecordApplicationConfiguration.java` before committing.
+If Step 3 required a real wiring change, add only the production configuration file that changed; do not stage unrelated configuration files.
 
 ## Self-Review Checklist
 
