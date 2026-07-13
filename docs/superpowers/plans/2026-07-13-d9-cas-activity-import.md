@@ -29,7 +29,9 @@
   - `whut-eval-application/src/main/java/edu/whut/eval/application/auth/AuthorizationPermissionCodes.java`
   - `whut-eval-domain/src/main/java/edu/whut/eval/domain/auth/model/UserAuthorizationContext.java`
   - `whut-eval-common/src/main/java/edu/whut/eval/common/exception/AccessDeniedAppException.java`
+  - `whut-eval-common/src/main/java/edu/whut/eval/common/exception/ConflictException.java`
   - `whut-eval-common/src/main/java/edu/whut/eval/common/exception/FileStorageException.java`
+  - `whut-eval-common/src/main/java/edu/whut/eval/common/exception/ResourceNotFoundException.java`
   - `whut-eval-common/src/main/java/edu/whut/eval/common/exception/ValidationException.java`
   - `whut-eval-infra/src/main/java/edu/whut/eval/infra/persistence/dataobject/FinalRecordDO.java`
 - Existing D-8 tests:
@@ -38,6 +40,7 @@
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisLectureImportRepositoryTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/MybatisLectureImportRepositoryIntegrationTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportBatchLockTest.java`
+  - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/LectureImportApplicationContextSmokeTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminScoreImportControllerWebMvcTest.java`
   - `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/AdminScoreImportControllerSecurityAnnotationTest.java`
 
@@ -156,11 +159,19 @@ final class ActivityImportContractsCompileTest {
                 "studentNo 对应学生不存在或未启用",
                 Map.of("studentNo", "2022305001", "displayText", "签到")
         );
-        ActivityImportResult result = new ActivityImportResult(
-                "ACTIVITY-20252026-20260518143000-ABCDEF123456",
+        ImportActivitiesCommand command = new ImportActivitiesCommand(
+                new byte[]{1},
                 "校运会志愿服务",
                 "SPORTS_COMPETITION",
-                new BigDecimal("0.50"),
+                "0.50",
+                "2026-05-18T14:30",
+                "2025-2026"
+        );
+        ActivityImportResult result = new ActivityImportResult(
+                "ACTIVITY-20252026-20260518143000-ABCDEF123456",
+                command.title(),
+                command.itemCode(),
+                new BigDecimal(command.scoreValue()),
                 1,
                 0,
                 1,
@@ -178,7 +189,7 @@ final class ActivityImportContractsCompileTest {
                 result.activityBatchId()
         );
 
-        List<ActivityImportRow> parsedRows = parser.parse(new byte[]{1});
+        List<ActivityImportRow> parsedRows = parser.parse(command.fileContent());
         boolean locked = lock.tryAcquire(result.activityBatchId(), Duration.ofSeconds(1));
         Optional<ActivityImportItemDefinition> item = repository.findActiveSportsItem(result.itemCode());
         Optional<ActivityImportStudentTarget> target = repository.findTarget(row.studentNo(), "2025-2026");
@@ -332,8 +343,7 @@ package edu.whut.eval.application.finalrecord.importing;
 public record ActivityImportStudentTarget(
         Long studentUserId,
         String studentNo,
-        Long orgUnitId,
-        String orgPath
+        Long orgUnitId
 ) {
 }
 ```
@@ -390,6 +400,10 @@ public interface ActivityImportRepository {
 
     boolean activityBatchExists(String academicYear, String categoryCode, String itemCode, String activityBatchId);
 
+    /**
+     * Minimal D-9 intentionally reads current primary active membership only.
+     * The academicYear argument is retained for D-7/D-8 parity and a future historical-membership lookup.
+     */
     Optional<ActivityImportStudentTarget> findTarget(String studentNo, String academicYear);
 
     Optional<String> findActiveOrgPath(Long orgUnitId);
@@ -652,7 +666,7 @@ Create `ActivityImportApplicationServiceTest` with fakes for `ActivityImportPars
 - missing/empty file, title, itemCode, scoreValue, heldAt, and academicYear messages;
 - title length > 255, itemCode length > 64, and academicYear values that do not match `YYYY-YYYY` or whose end year is not start year + 1;
 - strict `scoreValue` ordering: non-decimal, `>99999999.99`, scale > 2, item cap when `allowOverflow = false`;
-- active SPORTS item required, invalid cap metadata exposed by repository as `Optional.empty()`;
+- active SPORTS item required: missing item rows and invalid cap metadata are both exposed by repository as `Optional.empty()` and service tests must assert `ResourceNotFoundException("对应项目定义不存在")`, which the global handler maps to `404 / RES-4040`;
 - deterministic `activityBatchId` format `^ACTIVITY-[0-9]{8}-[0-9]{14}-[0-9A-F]{12}$`;
 - exact deterministic `activityBatchId` hash contract from the frozen spec: hash input segments are ordered normalized `academicYear`, normalized `heldAt` formatted `yyyyMMddHHmmss`, normalized `title`, canonical `itemCode`, then normalized scale-2 `scoreValue.toPlainString()`;
 - length-prefixed hash input by asserting titles containing `|` and `:` generate distinct ids and by testing `encodeHashPart("A|B:中")` returns the Unicode-code-point count prefix followed by `:` and the original value;
@@ -705,9 +719,10 @@ Implement `ActivityImportApplicationService` with these concrete rules:
 - `normalizeItemCode` rejects null/blank itemCode and itemCode values over 64 Unicode code points after Java `String.trim()`.
 - `normalizeAcademicYear` requires `^(\\d{4})-(\\d{4})$` and rejects values whose end year is not start year + 1.
 - Inject `UserAuthorizationContextAssembler`, call `requiredAuthorizationContext()`, and defensively require `AuthorizationPermissionCodes.SCORE_IMPORT`; missing authority throws `AccessDeniedAppException("当前用户无导入权限")`.
+- Import and use existing common exceptions only: `ValidationException` for `VAL-4001` request validation, `ResourceNotFoundException` for `RES-4040` item-definition absence, `ConflictException` for `BIZ-4090` duplicate or in-progress batch, `AccessDeniedAppException` for permission failures, and `DataAccessException` propagation for database-access failures.
 - `scoreValue` validation order is: trim and reject blank or non-`STRICT_DECIMAL_PATTERN = Pattern.compile("^[0-9]+(\\.[0-9]+)?$")`, parse to `BigDecimal`, reject values `> 99999999.99`, reject scale greater than 2, then reject values above item `maxPoints` when `allowOverflow = false`. Store scale 2 via `setScale(2, RoundingMode.HALF_UP)` only after scale validation.
 - `heldAt` parses ISO-8601 local date-time strings through `LocalDateTime.parse(heldAt.trim())`; accept `2026-05-18T14:30` and `2026-05-18T14:30:00`, reject date-only and date-hour strings, then use `.withNano(0)` so omitted seconds become `00` and fractional seconds are truncated.
-- `itemCode` lookup calls `repository.findActiveSportsItem(trimmedItemCode)` after request syntax validation.
+- `itemCode` lookup calls `repository.findActiveSportsItem(trimmedItemCode)` after request syntax validation. If the repository returns `Optional.empty()` for a missing active SPORTS item or invalid cap metadata, throw `ResourceNotFoundException("对应项目定义不存在")`; do not map this path to `ValidationException` or a generic system error.
 - `activityBatchId` format is `ACTIVITY-` + `academicYear` without hyphen + `-` + `heldAt` formatted `yyyyMMddHHmmss` + `-` + the first 12 uppercase hexadecimal characters of SHA-256 over `hashInput(request, held)`.
 - `hashInput(request, held)` uses length-prefixed segments joined by `|` in this exact frozen-spec order: normalized `academicYear`, `held` formatted as `yyyyMMddHHmmss`, normalized `title`, canonical `itemCode`, and normalized scale-2 `scoreValue.toPlainString()`. Do not use `BigDecimal.toString()` or delimiter-only concatenation.
 - `encodeHashPart(value)` returns `value.codePointCount(0, value.length()) + ":" + value`. The count is decimal Unicode code points in the normalized Java `String`, not UTF-8 bytes or UTF-16 code units.
@@ -808,7 +823,6 @@ Create `ActivityImportStudentTargetRow` with:
 private Long studentUserId;
 private String studentNo;
 private Long orgUnitId;
-private String orgPath;
 ```
 
 Create `ActivityImportedComponentRow` with:
@@ -872,8 +886,7 @@ public interface ActivityImportMapper {
     @Select("""
             SELECT u.id AS student_user_id,
                    u.user_no AS student_no,
-                   ou.id AS org_unit_id,
-                   ou.path AS org_path
+                   ou.id AS org_unit_id
             FROM iam_user u
             JOIN org_membership om ON om.user_id = u.id AND om.status = 'ACTIVE' AND om.is_primary = 1
             JOIN org_unit ou ON ou.id = om.org_unit_id AND ou.status = 'ACTIVE'
@@ -917,7 +930,7 @@ SQL requirements:
 - `selectActiveSportsItem`: `WHERE item_code = #{itemCode} AND category_code = 'SPORTS' AND status = 'ACTIVE'`.
 - `countActivityBatchComponents`: `FROM final_component_score fcs JOIN final_record fr ON fr.id = fcs.final_record_id`, filter `fr.academic_year`, `fcs.category_code`, `fcs.item_code`, `fcs.source_type = 'IMPORT'`, `fcs.source_ref_id`.
 - `selectTarget`: active `iam_user`, active primary `org_membership`, active `org_unit`, deterministic `ORDER BY om.id ASC LIMIT 1`.
-- `ActivityImportRepository.findTarget(String studentNo, String academicYear)` keeps the `academicYear` argument for parity with D-7/D-8 and a future historical-membership lookup. Minimal D-9 mapper `selectTarget(String studentNo)` intentionally ignores academic year and reads current primary active membership only.
+- `ActivityImportRepository.findTarget(String studentNo, String academicYear)` JavaDoc states that Minimal D-9 intentionally ignores `academicYear` and reads current primary active membership only; the argument is retained for D-7/D-8 parity and a future historical-membership lookup. Minimal D-9 mapper `selectTarget(String studentNo)` does not query org paths; service authorization uses `findActiveOrgPath` as the single source of org-path truth.
 - `selectFinalRecordForUpdate`: lock by `(student_user_id, academic_year)`.
 - `insertActivityComponent` is intentionally single-row. Its SQL hard-codes `source_type = 'IMPORT'`; `ActivityImportedComponentRow` does not carry a `sourceType` field. `MybatisActivityImportRepository.insertActivityComponents(...)` loops over sorted components inside one transaction, matching D-8's per-row lock, insert, and total recalculation semantics.
 - `updateTotals` must increment `version` in SQL using `version = version + 1`, not by requiring a caller-provided version argument. Every multi-argument mapper method must use `@Param` names that exactly match SQL bind expressions.
@@ -1106,6 +1119,9 @@ Add tests for:
 - unsupported, blank, missing, and extensionless filenames rejected before service invocation; accepted filename extensions are exactly `.xls` and `.xlsx`, compared case-insensitively after Java `String.trim()`;
 - file > 5 MB rejected before `getBytes()`;
 - multipart read failure maps to `503 / EXT-5033 / 文件处理失败，请稍后重试`;
+- missing/invalid `itemCode` definition from service `ResourceNotFoundException("对应项目定义不存在")` maps through MVC/global exception handling to `404 / RES-4040 / 对应项目定义不存在`;
+- duplicate-batch `ConflictException("同一活动批次已导入")` maps through MVC/global exception handling to `409 / BIZ-4090 / 同一活动批次已导入`;
+- in-progress batch `ConflictException("同一活动批次正在导入，请稍后重试")` maps through MVC/global exception handling to `409 / BIZ-4090 / 同一活动批次正在导入，请稍后重试`;
 - successful response fields exactly `activityBatchId`, `title`, `itemCode`, `scoreValue`, `totalCount`, `successCount`, `failedCount`, `failedRows`;
 - failed row `rawValue` contains exactly `studentNo` and `displayText`;
 - security annotation requires `score.import`.
@@ -1207,6 +1223,7 @@ Create `ActivityImportApplicationContextSmokeTest` using the same pattern as `Le
 Run:
 
 ```bash
+mvn -pl whut-eval-application test-compile
 mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest,ActivityImportApplicationServiceTest,MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest,ActivityImportBatchLockTest,ActivityImportApplicationContextSmokeTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest,LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,LectureImportApplicationContextSmokeTest,MentorScoreImportParserTest,MentorScoreImportApplicationServiceTest,MybatisMentorScoreImportRepositoryTest,MybatisMentorScoreImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
@@ -1240,6 +1257,7 @@ git commit -m "test: cover activity import wiring"
 After all tasks are complete, run:
 
 ```bash
+mvn -pl whut-eval-application test-compile
 mvn -pl whut-eval-app -am -Dtest=ActivityImportParserTest,ActivityImportApplicationServiceTest,MybatisActivityImportRepositoryTest,MybatisActivityImportRepositoryIntegrationTest,ActivityImportBatchLockTest,ActivityImportApplicationContextSmokeTest,AdminScoreImportControllerWebMvcTest,AdminScoreImportControllerSecurityAnnotationTest,LectureImportParserTest,LectureImportApplicationServiceTest,MybatisLectureImportRepositoryTest,MybatisLectureImportRepositoryIntegrationTest,LectureImportBatchLockTest,LectureImportApplicationContextSmokeTest,MentorScoreImportParserTest,MentorScoreImportApplicationServiceTest,MybatisMentorScoreImportRepositoryTest,MybatisMentorScoreImportRepositoryIntegrationTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
