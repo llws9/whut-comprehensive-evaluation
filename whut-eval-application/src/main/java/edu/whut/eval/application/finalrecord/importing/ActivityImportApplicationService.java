@@ -1,6 +1,8 @@
 package edu.whut.eval.application.finalrecord.importing;
 
 import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
+import edu.whut.eval.application.auth.model.ScoreResourceContext;
+import edu.whut.eval.application.auth.service.ResourceScopeAccessEvaluator;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.common.exception.ConflictException;
@@ -10,7 +12,6 @@ import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.domain.finalrecord.importing.ActivityImportFailedRow;
 import edu.whut.eval.domain.finalrecord.importing.ActivityImportResult;
 import edu.whut.eval.domain.finalrecord.importing.ActivityImportRow;
-import edu.whut.eval.domain.iam.model.IamScopeRule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -50,17 +51,20 @@ public class ActivityImportApplicationService {
     private static final DateTimeFormatter BATCH_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
 
     private final UserAuthorizationContextAssembler authorizationContextAssembler;
+    private final ResourceScopeAccessEvaluator resourceScopeAccessEvaluator;
     private final ActivityImportParser parser;
     private final ActivityImportRepository repository;
     private final ActivityImportBatchLock batchLock;
     private final TransactionOperations transactionOperations;
 
     public ActivityImportApplicationService(UserAuthorizationContextAssembler authorizationContextAssembler,
+                                            ResourceScopeAccessEvaluator resourceScopeAccessEvaluator,
                                             ActivityImportParser parser,
                                             ActivityImportRepository repository,
                                             ActivityImportBatchLock batchLock,
                                             TransactionOperations transactionOperations) {
         this.authorizationContextAssembler = authorizationContextAssembler;
+        this.resourceScopeAccessEvaluator = resourceScopeAccessEvaluator;
         this.parser = parser;
         this.repository = repository;
         this.batchLock = batchLock;
@@ -151,7 +155,7 @@ public class ActivityImportApplicationService {
                 failedRows.add(failed(row, "STUDENT_NOT_FOUND", "studentNo 对应学生不存在或未启用"));
                 continue;
             }
-            if (!canAccess(context, target.get(), orgPathCache)) {
+            if (!canAccess(context, target.get(), request, item, orgPathCache)) {
                 failedRows.add(failed(row, "OUT_OF_SCOPE", "当前用户无权导入该学生文体活动成绩"));
                 continue;
             }
@@ -367,46 +371,50 @@ public class ActivityImportApplicationService {
 
     private boolean canAccess(UserAuthorizationContext context,
                               ActivityImportStudentTarget target,
+                              NormalizedRequest request,
+                              ActivityImportItemDefinition item,
                               Map<Long, Optional<String>> orgPathCache) {
-        for (IamScopeRule rule : context.findScopeRulesByPermissionCode(AuthorizationPermissionCodes.SCORE_IMPORT)) {
-            if (!"ACTIVE".equals(rule.status())) {
-                continue;
-            }
-            if ("ALL".equals(rule.scopeType())) {
-                return true;
-            }
-            if ("ORG_UNIT".equals(rule.scopeType()) && rule.orgUnitId() != null && rule.orgUnitId().equals(target.orgUnitId())) {
-                return true;
-            }
-            if ("ORG_SUBTREE".equals(rule.scopeType()) && matchesOrgSubtree(rule.orgUnitId(), target.orgUnitId(), orgPathCache)) {
-                return true;
-            }
+        ScoreResourceContext scoreContextWithoutPath = scoreContext(target, null, request, item);
+        if (resourceScopeAccessEvaluator.canAccessScore(
+                context,
+                AuthorizationPermissionCodes.SCORE_IMPORT,
+                scoreContextWithoutPath
+        ).isAllowed()) {
+            return true;
         }
-        return false;
-    }
-
-    private boolean matchesOrgSubtree(Long rootOrgUnitId,
-                                      Long targetOrgUnitId,
-                                      Map<Long, Optional<String>> orgPathCache) {
-        if (rootOrgUnitId == null || targetOrgUnitId == null) {
+        if (!requiresOrgPath(context)) {
             return false;
         }
-        Optional<String> rootPath = orgPathCache.computeIfAbsent(rootOrgUnitId, repository::findActiveOrgPath);
-        Optional<String> targetPath = orgPathCache.computeIfAbsent(targetOrgUnitId, repository::findActiveOrgPath);
-        if (rootPath.isEmpty() || targetPath.isEmpty() || isBlank(rootPath.get()) || isBlank(targetPath.get())) {
+        Optional<String> targetPath = orgPathCache.computeIfAbsent(target.orgUnitId(), repository::findActiveOrgPath);
+        if (targetPath.isEmpty() || isBlank(targetPath.get())) {
             return false;
         }
-        String normalizedRootPath = trimTrailingSlash(rootPath.get().trim());
-        String normalizedTargetPath = trimTrailingSlash(targetPath.get().trim());
-        return normalizedTargetPath.equals(normalizedRootPath)
-                || normalizedTargetPath.startsWith(normalizedRootPath + "/");
+        return resourceScopeAccessEvaluator.canAccessScore(
+                context,
+                AuthorizationPermissionCodes.SCORE_IMPORT,
+                scoreContext(target, targetPath.get(), request, item)
+        ).isAllowed();
     }
 
-    private String trimTrailingSlash(String path) {
-        if (path.length() > 1 && path.endsWith("/")) {
-            return path.substring(0, path.length() - 1);
-        }
-        return path;
+    private ScoreResourceContext scoreContext(ActivityImportStudentTarget target,
+                                              String orgPath,
+                                              NormalizedRequest request,
+                                              ActivityImportItemDefinition item) {
+        return new ScoreResourceContext(
+                null,
+                target.studentUserId(),
+                target.orgUnitId(),
+                orgPath,
+                item.categoryCode(),
+                item.itemCode(),
+                request.academicYear()
+        );
+    }
+
+    private boolean requiresOrgPath(UserAuthorizationContext context) {
+        return context.findScopeRulesByPermissionCode(AuthorizationPermissionCodes.SCORE_IMPORT).stream()
+                .filter(rule -> "ACTIVE".equals(rule.status()))
+                .anyMatch(rule -> "ORG_SUBTREE".equals(rule.scopeType()) || "CUSTOM_EXPRESSION".equals(rule.scopeType()));
     }
 
     private boolean isBlank(String value) {

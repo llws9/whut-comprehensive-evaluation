@@ -1,5 +1,10 @@
 package edu.whut.eval.app.finalrecord;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import edu.whut.eval.application.auth.service.DefaultAuthorizationScopeEvaluator;
+import edu.whut.eval.application.auth.service.DefaultResourceScopeAccessEvaluator;
+import edu.whut.eval.application.auth.service.JsonScopeRuleExpressionInterpreter;
+import edu.whut.eval.application.auth.service.ResourceScopeAccessEvaluator;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.application.finalrecord.importing.ActivityImportApplicationService;
 import edu.whut.eval.application.finalrecord.importing.ActivityImportBatchLock;
@@ -18,6 +23,8 @@ import edu.whut.eval.domain.finalrecord.importing.ActivityImportFailedRow;
 import edu.whut.eval.domain.finalrecord.importing.ActivityImportResult;
 import edu.whut.eval.domain.finalrecord.importing.ActivityImportRow;
 import edu.whut.eval.domain.iam.model.IamScopeRule;
+import edu.whut.eval.domain.org.model.OrgUnit;
+import edu.whut.eval.domain.org.repository.OrgUnitLookupRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.transaction.support.TransactionCallback;
@@ -49,6 +56,11 @@ import static org.mockito.Mockito.verify;
 class ActivityImportApplicationServiceTest {
 
     private final UserAuthorizationContextAssembler authorizationContextAssembler = mock(UserAuthorizationContextAssembler.class);
+    private final ResourceScopeAccessEvaluator resourceScopeAccessEvaluator = new DefaultResourceScopeAccessEvaluator(
+            new DefaultAuthorizationScopeEvaluator(),
+            new JsonScopeRuleExpressionInterpreter(new ObjectMapper()),
+            new InMemoryOrgUnitLookupRepository()
+    );
     private final ActivityImportParser parser = mock(ActivityImportParser.class);
     private final ActivityImportRepository repository = mock(ActivityImportRepository.class);
     private final RecordingLock lock = new RecordingLock();
@@ -60,6 +72,7 @@ class ActivityImportApplicationServiceTest {
     };
     private final ActivityImportApplicationService service = new ActivityImportApplicationService(
             authorizationContextAssembler,
+            resourceScopeAccessEvaluator,
             parser,
             repository,
             lock,
@@ -198,6 +211,22 @@ class ActivityImportApplicationServiceTest {
     }
 
     @Test
+    void shouldRejectOrgUnitRuleWhenItemConstraintDoesNotMatchActivityItem() {
+        given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(itemScopedOrgUnitAdmin());
+        given(parser.parse(any())).willReturn(List.of(new ActivityImportRow(2L, "S1001", "校运会")));
+        given(repository.findActiveSportsItem("SPORTS_COMPETITION"))
+                .willReturn(Optional.of(new ActivityImportItemDefinition("SPORTS_COMPETITION", "SPORTS", new BigDecimal("10.00"), false)));
+        given(repository.findTarget("S1001", "2025-2026")).willReturn(Optional.of(target(1001L, 2002L)));
+
+        ActivityImportResult result = service.importActivities(command("活动", "SPORTS_COMPETITION", "1.00", "2026-05-18T14:30", "2025-2026"));
+
+        assertThat(result.successCount()).isZero();
+        assertThat(result.failedCount()).isEqualTo(1);
+        assertThat(result.failedRows()).extracting("code").containsExactly("OUT_OF_SCOPE");
+        verify(repository, never()).insertActivityComponents(any(), any());
+    }
+
+    @Test
     void shouldAllowRetryWhenAllRowsFailAndNoComponentsPersist() {
         given(authorizationContextAssembler.requiredAuthorizationContext()).willReturn(scopedAdmin());
         given(parser.parse(any())).willReturn(List.of(new ActivityImportRow(2L, "S404", null)));
@@ -296,6 +325,12 @@ class ActivityImportApplicationServiceTest {
         ));
     }
 
+    private UserAuthorizationContext itemScopedOrgUnitAdmin() {
+        return new UserAuthorizationContext(1010L, "T1010", "Counselor", "teacher", Set.of("COUNSELOR"), Set.of("score.import"), List.of(
+                new IamScopeRule(7012L, "score.import", "ORG_UNIT", 2002L, "SPORTS", "SPORTS_OTHER", null, 80, "ACTIVE")
+        ));
+    }
+
     private ActivityImportStudentTarget target(Long studentUserId, Long orgUnitId) {
         return new ActivityImportStudentTarget(studentUserId, "S" + studentUserId, orgUnitId);
     }
@@ -305,6 +340,17 @@ class ActivityImportApplicationServiceTest {
         raw.put("studentNo", studentNo);
         raw.put("displayText", displayText);
         return raw;
+    }
+
+    private static class InMemoryOrgUnitLookupRepository implements OrgUnitLookupRepository {
+        private final Map<Long, OrgUnit> units = Map.of(
+                2002L, new OrgUnit(2002L, 2001L, "COLLEGE", "CS", "计算机与人工智能学院", "/WHUT/CS", "ACTIVE")
+        );
+
+        @Override
+        public Optional<OrgUnit> findById(Long id) {
+            return Optional.ofNullable(units.get(id));
+        }
     }
 
     private static final class RecordingLock implements ActivityImportBatchLock {
