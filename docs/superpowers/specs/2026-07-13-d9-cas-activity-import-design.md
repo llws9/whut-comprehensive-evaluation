@@ -6,6 +6,8 @@ Implement D-9: `POST /api/admin/imports/cas-activities`.
 
 The endpoint synchronously imports cultural and sports activity participation scores into draft final records. It follows the D-group "synchronous import + immediate receipt" model, fails the whole request for invalid activity metadata, returns row-level student failures in `failedRows`, and does not introduce async jobs, import history tables, D-10 export, D-11 unsubmitted roster, or B-9 candidate-source tables.
 
+Terminology: this document uses "CAS activity", "cultural and sports activity", and "文体活动" for the same D-9 business concept. Public API names remain the frozen English identifiers in the delivery contract; user-facing Chinese messages use "文体活动".
+
 ## Existing Contracts
 
 Source contract:
@@ -175,6 +177,10 @@ Request-level failures:
 | Multipart bytes cannot be read | `503` | `EXT-5033` | `文件处理失败，请稍后重试` |
 | Batch-lock storage unavailable, batch-lock SQL error, or unexpected database access failure | `500` | `SYS-5000` | Existing `DataAccessException` handler response: `数据访问异常，请稍后重试` |
 
+Both activity-batch conflict rows intentionally use the existing shared `BIZ-4090` conflict error code to stay aligned with the current `CommonErrorCode.RESOURCE_CONFLICT` surface. Callers distinguish the retryable in-flight case from the already-imported case by the frozen message and by the operation context; D-9 does not introduce new sub-error-code fields.
+
+When multiple request-level validation errors exist in one request, D-9 fails on the first check in this order: file presence/size/extension, title, itemCode, scoreValue syntax/range/scale, heldAt, academicYear, workbook parse/template, evaluation item lookup and cap metadata, then item-specific score cap. Tests may assert this deterministic priority for command/controller validation. This priority does not require collecting all request-level failures.
+
 Row-level validation failures return HTTP 200 and appear in `failedRows`.
 
 For request-level `scoreValue`, trim leading and trailing whitespace before validation, then evaluate validation in this order: blank or non-strict decimal text, numeric value above `99999999.99`, scale greater than 2 decimals, then item-specific max when `allowOverflow = false`. `0`, `0.0`, and `0.00` are valid. Negative numbers fail as non-strict decimal text with `scoreValue 必须是数字`.
@@ -211,7 +217,7 @@ Blank data rows are ignored and do not count toward `totalCount`. A blank data r
 
 `totalCount` counts non-blank data rows after the header, including rows that later fail validation.
 
-Cell values are read with `DataFormatter`, trimmed, and blank strings become null. The parser must not evaluate formulas beyond POI's formatted value behavior.
+Cell values are read with POI `DataFormatter.formatCellValue(cell)` without passing a `FormulaEvaluator`, then trimmed, and blank strings become null. Formula cells are not recalculated by D-9; POI's formatted cached/display value is used. If POI cannot format a formula cell without evaluation, treat the workbook as unreadable and return `导入模板错误：文件不可解析`.
 
 `normalizedStudentNo` is the trimmed `DataFormatter` string from column A. D-9 does not apply case folding, zero-width/control-character stripping, Unicode normalization, or leading-zero normalization.
 
@@ -249,9 +255,11 @@ The request-level `scoreValue` is applied to every successful row in the batch. 
 
 `ACTIVITY-<academicYearWithoutDash>-<heldAt yyyyMMddHHmmss>-<uppercase 12-char hash>`
 
-The hash input is:
+The hash input is the UTF-8 string formed by length-prefixing each normalized field and joining the encoded fields with `|`:
 
-`normalizedAcademicYear + "|" + normalizedHeldAt + "|" + normalizedTitle + "|" + normalizedItemCode + "|" + normalizedScoreValue`
+`len(normalizedAcademicYear) + ":" + normalizedAcademicYear + "|" + len(normalizedHeldAt) + ":" + normalizedHeldAt + "|" + len(normalizedTitle) + ":" + normalizedTitle + "|" + len(normalizedItemCode) + ":" + normalizedItemCode + "|" + len(normalizedScoreValue) + ":" + normalizedScoreValue`
+
+Each `len(...)` is the decimal count of Unicode code points in the normalized string. The length prefix makes the hash input unambiguous even when `title` or a future `itemCode` contains `|` or `:`. D-9 must not use plain delimiter-only concatenation for the hash input.
 
 Use SHA-256 over the UTF-8 hash input, uppercase the hexadecimal digest, and take the first 12 characters.
 
@@ -432,8 +440,10 @@ Parser tests:
 - accepts `.xlsx` and `.xls` content through `WorkbookFactory`;
 - rejects unreadable bytes with `导入模板错误：文件不可解析`;
 - rejects missing sheet/header/header mismatch;
+- reads formula cells with `DataFormatter.formatCellValue(cell)` without a `FormulaEvaluator`, and either uses the formatted cached/display value or returns `导入模板错误：文件不可解析` when POI cannot format the workbook;
 - ignores extra columns;
 - ignores blank data rows;
+- accepts a header-only workbook as `totalCount = 0`;
 - counts non-blank rows and preserves Excel row numbers;
 - rejects more than 5000 non-blank rows;
 - preserves raw trimmed `studentNo` and `displayText`.
@@ -441,6 +451,7 @@ Parser tests:
 Application service tests:
 
 - missing/blank/too-long request parameters map to frozen `ValidationException` messages;
+- multi-parameter request validation follows the frozen request-level validation priority;
 - `scoreValue` and `heldAt` are trimmed before strict parsing;
 - date-only `heldAt` and date-hour values without minutes fail with `heldAt 格式非法`;
 - invalid `scoreValue` variants map to request-level failures;
@@ -449,11 +460,13 @@ Application service tests:
 - null, malformed, missing-field, wrong-type, or out-of-bound `cap_rule_json` returns `ResourceNotFoundException` with `对应项目定义不存在`;
 - inactive, missing, or non-SPORTS item definitions return `ResourceNotFoundException` with `对应项目定义不存在`;
 - deterministic `activityBatchId` uses normalized metadata and score scale;
+- deterministic `activityBatchId` hash input is length-prefixed and remains distinct when `title` contains `|` or `:`;
 - deterministic `activityBatchId`, duplicate-batch detection, persistence, and response all use the canonical item code resolved from `evaluation_item.item_code`;
 - visually similar but byte-different titles are distinct metadata and generate distinct `activityBatchId` values;
 - duplicate existing activity batch returns `ConflictException("同一活动批次已导入")`;
 - partially successful same-batch retries are rejected as duplicate when any component from that batch was persisted;
 - zero-success same-batch retries are accepted because no component marks the batch as imported;
+- header-only imports return the full zero-count success response, acquire and release the batch lock, check duplicate batches, persist no marker, and remain retryable when no same-batch component exists;
 - same-batch in-flight lock conflict returns `ConflictException("同一活动批次正在导入，请稍后重试")`;
 - MySQL `GET_LOCK` timeout maps to the same in-flight lock conflict, while `NULL` or SQL errors surface through the existing database access failure response;
 - production lock tests assert the exact same final lock string is passed to both `GET_LOCK` and `RELEASE_LOCK`;
