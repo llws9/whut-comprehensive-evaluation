@@ -97,9 +97,11 @@ Failure responses:
 | Missing or invalid `academicYear` | `400` | `VAL-4001` | `academicYear 不合法` |
 | Invalid `status` | `400` | `VAL-4001` | `status 仅允许 SUBMITTED 或 CONFIRMED` |
 | `pageNo` or `pageSize` is present | `400` | `VAL-4001` | `导出接口不支持分页参数` |
-| Caller lacks `score.export.assigned` authority | `403` | `AUTH-4030` | Existing security error response. |
+| Authenticated caller lacks `score.export.assigned` authority | `403` | `AUTH-4030` | Existing security error response. |
 | Caller has authority but no matching authorized records | `404` | `RES-4040` | `无匹配导出数据` |
 | Workbook generation fails | `503` | `EXT-5033` | `Excel 生成失败` |
+
+Unauthenticated requests are out of D-10's public response contract and follow the existing Spring Security entry-point behavior. D-10 tests only need to prove the endpoint is protected; they must not force a new unauthenticated 401/403 contract unless the global security layer already freezes one.
 
 No-data semantics:
 
@@ -140,6 +142,7 @@ D safe-init must add scope rules for default export accounts:
 | `8025` | `7012` platform admin | `score.export.assigned` | `ALL` | `NULL` | `{"superAdmin":true}` | `1000` | `ACTIVE` | `CURRENT_TIMESTAMP()` |
 
 The collision guard must fail deterministically if any reserved id is already occupied by an unrelated row. The inserts must include every non-null IAM column required by the documented A schema, including `created_at`.
+Deterministic failure means the SQL script must raise a database error, not only log or return a warning. Use the existing guard-table pattern or an equivalent H2/MySQL-portable duplicate-primary-key insert so application/database initialization aborts with a `SQLException`/duplicate-key style failure before any D-10 export scope rows are inserted.
 
 For `iam_scope_rule`, the safe-init insert statements must use the documented column list exactly:
 
@@ -212,6 +215,7 @@ Workbook format:
 - Header row at row 1.
 - Freeze the first row.
 - Use a consistent default font. The implementation can rely on POI defaults plus bold header styling; no formulas are required.
+- Set practical fixed column widths or auto-size after writing rows so headers, class names, and timestamps are readable in common spreadsheet tools. Exact widths are not part of the public contract.
 - No formulas are written, so formula recalculation is not part of D-10.
 
 Columns are frozen in this exact order:
@@ -235,9 +239,14 @@ Columns are frozen in this exact order:
 | O | `提交时间` | `submittedAt` | text ISO-8601 instant, blank if null |
 | P | `确认时间` | `confirmedAt` | text ISO-8601 instant, blank if null |
 
-Timestamp cells use `Instant.toString()` text, for example `2026-07-07T12:00:00Z`. This avoids server-timezone drift in tests and keeps parity with existing JSON view models.
+Timestamp cells use UTC `Instant` text truncated to seconds, for example `2026-07-07T12:00:00Z`. If a source value has milliseconds or nanoseconds, truncate rather than round before calling `Instant.toString()`. This avoids server-timezone drift and sub-second test flakiness.
 
 Numeric totals are written as numeric cells using `BigDecimal.setScale(2).doubleValue()` and a `0.00` cell style. D-owned totals are persisted as `DECIMAL(10,2)`, so this conversion is stable for the documented value range. The exported workbook does not contain calculated formulas; persisted totals are the source of truth.
+
+Operational capacity assumption:
+
+- D-10 is a synchronous MVP export for one required academic year and final-record totals only. The expected deployment size is school cohort scale, not open-ended multi-year platform dumps.
+- D-10 does not add a public row-count or file-size error branch because the frozen delivery contract does not define one. If production data exceeds synchronous in-memory workbook limits, the follow-up path is an out-of-scope async/export-job design rather than adding an undocumented D-10 response.
 
 ## Component Boundaries
 
@@ -245,7 +254,7 @@ New application classes:
 
 - `FinalScoreExportQuery`: validates and normalizes export filters. Fields are `String academicYear` (required, normalized), `String status` (nullable; absent means `SUBMITTED` plus `CONFIRMED`), `String grade` (nullable), and immutable `List<String> classes` (never null; empty means absent). It must not contain `pageNo` or `pageSize`.
 - `FinalScoreExportRow`: row view consumed by the workbook writer.
-- `FinalScoreExportFile`: immutable filename, content type, and byte array.
+- `FinalScoreExportFile`: immutable filename, content type, and workbook bytes. Because `byte[]` is mutable in Java, construct and expose it with defensive copies or an equivalent immutable byte container.
 - `FinalScoreExportWorkbookWriter`: application port with method `FinalScoreExportFile write(String academicYear, List<FinalScoreExportRow> rows)`.
 - `FinalScoreExportApplicationService`: orchestrates auth, query, no-data handling, and workbook generation; its public export method returns `FinalScoreExportFile`.
 - `FinalScoreExportGenerationException`: extends `BaseAppException`, uses `CommonErrorCode.FILE_STORAGE_FAILED`, and maps workbook write failures to `EXT-5033`.
@@ -264,13 +273,14 @@ Infrastructure:
 Interface:
 
 - Add `AdminFinalScoreExportController` under `whut-eval-interfaces/src/main/java/edu/whut/eval/interfaces/admin`.
+- Keep MVC and controller security tests in `whut-eval-app/src/test`, matching the existing controller test pattern, because `whut-eval-app` depends on and compiles `whut-eval-interfaces`.
 - Return `ResponseEntity<byte[]>` with explicit headers by calling `FinalScoreExportApplicationService`, receiving `FinalScoreExportFile`, and copying its `filename`, `contentType`, and `content` into the response.
 - Reject `pageNo` and `pageSize` in the controller by binding them as optional raw request parameters or inspecting the request parameter map before service execution. `FinalScoreExportQuery` must not own this validation.
 - Convert `classes` query params from `List<String>` to the application query; splitting and trimming live in `FinalScoreExportQuery` so MVC and service tests share behavior.
 
 Configuration:
 
-- Register the POI writer as a Spring bean through component scanning (`@Component`) or existing application configuration if component scanning does not pick up the infra package in tests.
+- Register the POI writer as a Spring bean with `@Component` in `whut-eval-infra`.
 - If component scanning does not wire the infra writer in the application context smoke test, add an explicit `@Bean` in the existing D application configuration path instead of creating a new broad scan root.
 
 ## Validation
@@ -304,10 +314,11 @@ Spec-phase acceptance tests for the implementation plan:
 - Query normalization rejects missing/invalid `academicYear`, rejects `DRAFT`, normalizes repeated `classes=CS2201&classes=CS2202`, comma-separated `classes=CS2201,CS2202`, and mixed `classes=A,B&classes=B,C`, drops blank class tokens, de-duplicates by first appearance, and treats an empty normalized class list as no class filter.
 - Controller rejects present `pageNo/pageSize` with `400 / VAL-4001` before service execution.
 - Controller security annotation requires `SCORE_EXPORT_ASSIGNED`.
-- `AdminFinalScoreExportControllerWebMvcTest` covers unauthenticated/unauthorized export requests returning `403`, proving the new D-10 controller is protected by `SCORE_EXPORT_ASSIGNED`.
+- `AdminFinalScoreExportControllerWebMvcTest` proves unauthenticated requests are rejected by the existing security filter chain without freezing a new D-10-specific 401/403 contract.
+- `AdminFinalScoreExportControllerWebMvcTest` covers authenticated users without `SCORE_EXPORT_ASSIGNED` returning `403`, proving the new D-10 controller is protected by the export authority.
 - Controller returns xlsx content type, attachment filename, and workbook bytes for a successful export.
 - Controller returns `404 / RES-4040` when the service reports no matching data.
-- Workbook writer creates the exact header row, writes numeric total cells, writes timestamp text using `Instant.toString()`, and emits no formulas.
+- Workbook writer creates the exact header row, writes numeric total cells, writes UTC timestamp text truncated to seconds, emits no formulas, and applies readable column widths or autosizing.
 - Application service uses `score.export.assigned`, not `score.view.assigned`, when building the access context.
 - Application service returns `FinalScoreExportFile`, and controller copies its filename, content type, and bytes into the response.
 - Application service returns `RES-4040` for an empty authorized row list.
@@ -320,14 +331,16 @@ Spec-phase acceptance tests for the implementation plan:
 - Repository covers ambiguous `grade` values that match one grade code and another grade name, proving both matching grade rows are included.
 - Repository verifies portable null ordering for both `gradeCode` and `classCode`.
 - Repository returns an empty list for unsupported-scope-only callers and callers with no active `score.export.assigned` scope rules.
-- D safe-init consistency tests verify `score.export.assigned` scope rules `8023`, `8024`, and `8025`, deterministic collision guards, rerunnable inserts, and the complete `iam_scope_rule` column contract including required non-null `id`, `assignment_id`, `permission_code`, `scope_type`, `priority`, `status`, and `created_at`. The tests must assert the exact priority/status/expression values from the safe-init table above.
+- D safe-init consistency tests verify `score.export.assigned` scope rules `8023`, `8024`, and `8025`, deterministic collision guards, rerunnable inserts, and the complete `iam_scope_rule` column contract including required non-null `id`, `assignment_id`, `permission_code`, `scope_type`, `priority`, `status`, and `created_at`. The tests must assert the exact priority/status/expression values from the safe-init table above and that an unrelated reserved-id collision raises a SQL duplicate-key/database error instead of continuing with warnings.
 - Spring context smoke test verifies `FinalScoreExportApplicationService` and the POI writer are wired.
 
 Focused implementation verification should include at least:
 
 ```bash
-mvn -pl whut-eval-app -am -Dtest=FinalScoreExport*Test,AdminFinalScoreExportControllerWebMvcTest,AdminFinalScoreExportControllerSecurityAnnotationTest,FinalRecordControllerSecurityAnnotationTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,TeamDeliverySqlConsistencyTest,GroupAIdentitySqlSeedConsistencyTest test -Dsurefire.failIfNoSpecifiedTests=false
+mvn -pl whut-eval-app,whut-eval-interfaces -am -Dtest=FinalScoreExport*Test,AdminFinalScoreExportControllerWebMvcTest,AdminFinalScoreExportControllerSecurityAnnotationTest,FinalRecordControllerSecurityAnnotationTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,TeamDeliverySqlConsistencyTest,GroupAIdentitySqlSeedConsistencyTest test -Dsurefire.failIfNoSpecifiedTests=false
 ```
+
+The required controller tests live under `whut-eval-app/src/test` and compile the controller from `whut-eval-interfaces` through the app module dependency. The verification output must show the D-10 controller tests (`AdminFinalScoreExportControllerWebMvcTest` and `AdminFinalScoreExportControllerSecurityAnnotationTest`, or their final agreed names) were actually executed.
 
 `FinalRecordControllerSecurityAnnotationTest` remains in the focused command because D-10 extends the shared final-record query repository path; this guards the existing D-5/D-6/D-12 controller annotations while D-10 adds export-specific security tests.
 
