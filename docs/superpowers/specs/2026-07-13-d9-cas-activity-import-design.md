@@ -95,8 +95,8 @@ Request parameters:
 | `file` | yes | Non-empty `.xlsx` or `.xls` Excel file. Other workbook formats such as `.xlsm`, `.csv`, or text files fail before parsing with `导入模板错误：文件不可解析`. |
 | `title` | yes | Non-blank after trim, max 255 Unicode code points. Leading and trailing whitespace are removed; internal whitespace, control characters, zero-width characters, case, and Unicode normalization form are otherwise preserved. |
 | `itemCode` | yes | Non-blank after trim, max 64 characters, must resolve to an active `evaluation_item` row whose `category_code = 'SPORTS'`. |
-| `scoreValue` | yes | Strict decimal text matching `^[0-9]+(\.[0-9]+)?$`, `0 <= value <= 99999999.99`, at most 2 decimal places. Negative values, thousand separators, percentages, currency symbols, and scientific notation are invalid. |
-| `heldAt` | yes | ISO local date-time parsed with `LocalDateTime.parse(heldAt)`. Omitted seconds default to `00`, fractional seconds are truncated, and timezone offsets are not accepted. The batch id uses whole seconds. |
+| `scoreValue` | yes | Trimmed before validation; strict decimal text matching `^[0-9]+(\.[0-9]+)?$`, `0 <= value <= 99999999.99`, at most 2 decimal places. Negative values, thousand separators, percentages, currency symbols, and scientific notation are invalid. |
+| `heldAt` | yes | Trimmed before validation; ISO local date-time parsed with `LocalDateTime.parse(heldAt)`. Omitted seconds default to `00`, fractional seconds are truncated, and timezone offsets are not accepted. The batch id uses whole seconds. |
 | `academicYear` | yes | Trimmed before validation; must match `^\d{4}-\d{4}$`, and the second year must equal first year + 1. |
 
 Successful response:
@@ -168,6 +168,7 @@ Request-level failures:
 | File too large or too many data rows | `400` | `VAL-4001` | `文体活动导入文件最多支持 5000 行且不超过 5MB` |
 | Missing required header, header mismatch, no sheet, unreadable workbook | `400` | `VAL-4001` | Starts with `导入模板错误：` |
 | Active SPORTS `evaluation_item` not found for `itemCode` | `404` | `RES-4040` | `对应项目定义不存在` |
+| Active SPORTS `evaluation_item` has missing, invalid, or unsupported `cap_rule_json` | `404` | `RES-4040` | `对应项目定义不存在` |
 | Missing authority | `403` | `AUTH-4030` | Existing security handler response. Service-level defensive checks must map to the same external HTTP code surface and must not introduce a second public 403 contract. |
 | Same activity batch currently running | `409` | `BIZ-4090` | `同一活动批次正在导入，请稍后重试` |
 | Same activity batch already imported | `409` | `BIZ-4090` | `同一活动批次已导入` |
@@ -175,7 +176,7 @@ Request-level failures:
 
 Row-level validation failures return HTTP 200 and appear in `failedRows`.
 
-For request-level `scoreValue`, evaluate validation in this order: blank or non-strict decimal text, numeric value above `99999999.99`, scale greater than 2 decimals, then item-specific max when `allowOverflow = false`. `0`, `0.0`, and `0.00` are valid. Negative numbers fail as non-strict decimal text with `scoreValue 必须是数字`.
+For request-level `scoreValue`, trim leading and trailing whitespace before validation, then evaluate validation in this order: blank or non-strict decimal text, numeric value above `99999999.99`, scale greater than 2 decimals, then item-specific max when `allowOverflow = false`. `0`, `0.0`, and `0.00` are valid. Negative numbers fail as non-strict decimal text with `scoreValue 必须是数字`.
 
 Frozen row-level failure mapping:
 
@@ -187,6 +188,8 @@ Frozen row-level failure mapping:
 | eligible student not found | `STUDENT_NOT_FOUND` | `studentNo 对应学生不存在或未启用` |
 | row target outside `score.import` scope | `OUT_OF_SCOPE` | `当前用户无权导入该学生文体活动成绩` |
 | existing final record is not `DRAFT` | `FINAL_RECORD_LOCKED` | `已提交或已确认的最终成绩不允许导入覆盖` |
+
+`eligible student not found` includes: no active user for `studentNo`, inactive user, no active primary membership, and inactive or missing primary organization. `OUT_OF_SCOPE` applies only after an eligible target has been found and the target's active primary organization does not match the caller's effective `score.import` scope.
 
 When more than one row-level condition applies, use the first matching condition in the table above. Duplicate-student detection runs only after `studentNo` and `displayText` field validation pass, so field-invalid rows do not consume the duplicate key. A field-valid row consumes its normalized `studentNo` duplicate key even if it later fails student lookup, scope, or final-record lock checks.
 
@@ -230,7 +233,7 @@ Header error messages:
 
 D-9 always writes activity scores as:
 
-- `category_code = evaluation_item.category_code`, required to be `SPORTS`;
+- `category_code = evaluation_item.category_code`, after item validation has required it to be `SPORTS`;
 - `item_code = normalized itemCode`;
 - `source_type = 'IMPORT'`;
 - `source_ref_id = activityBatchId`.
@@ -256,8 +259,8 @@ Normalization is fixed as:
 - `normalizedAcademicYear`: request `academicYear` after trim.
 - `normalizedTitle`: request `title` after trim; no internal whitespace collapsing, case folding, or Unicode normalization is applied.
 - `normalizedItemCode`: request `itemCode` after trim.
-- `normalizedScoreValue`: parsed `scoreValue` formatted at scale 2 with `toPlainString`.
-- `normalizedHeldAt`: parsed `heldAt` truncated to whole seconds and formatted as `yyyyMMddHHmmss`.
+- `normalizedScoreValue`: request `scoreValue` after trim, then parsed and formatted at scale 2 with `toPlainString`.
+- `normalizedHeldAt`: request `heldAt` after trim, then parsed, truncated to whole seconds, and formatted as `yyyyMMddHHmmss`.
 - D-9 does not return `heldAt`; the normalized whole-second value is used only for deterministic batch identity.
 
 The generated `activityBatchId` format is `^ACTIVITY-[0-9]{8}-[0-9]{14}-[0-9A-F]{12}$`. Its length is 45 characters, which fits the documented `final_component_score.source_ref_id VARCHAR(64)` constraint.
@@ -265,6 +268,8 @@ The generated `activityBatchId` format is `^ACTIVITY-[0-9]{8}-[0-9]{14}-[0-9A-F]
 The service may perform an optional duplicate-batch fast-path check before acquiring the batch lock. The authoritative duplicate-batch check must run after acquiring the batch lock and before any row mutation. Both checks use the same predicate: any existing `final_component_score` joined to the same `academicYear` with `category_code = 'SPORTS'`, `item_code = normalizedItemCode`, `source_type = 'IMPORT'`, and `source_ref_id = activityBatchId`. If either check finds a match, the whole request fails with `409 / BIZ-4090` and message `同一活动批次已导入`.
 
 Because this phase does not introduce an import batch table, duplicate-batch detection is backed by existing final-component rows. If a previous import had zero successful rows, there is no persisted batch marker and a retry is accepted. This zero-success retry exception is intentional: the system treats an upload with no persisted activity components as not imported.
+
+If a previous same-batch import partially succeeded, the persisted successful components make the whole deterministic `activityBatchId` imported. Minimal D-9 therefore rejects a retry with the same normalized metadata as duplicate and does not support same-batch "fill only missing students" semantics. Operators must use the immediate `failedRows` receipt to correct the source data and either import a distinct administrative correction batch with distinct normalized metadata or wait for a later dedicated batch-management feature. This avoids silent duplicate components while D-9 has no import batch table or idempotent per-student batch state.
 
 ### Evaluation Item Validation
 
@@ -289,6 +294,8 @@ D-9 does not mutate `evaluation_item`. It does not parse option lists or create 
 Score cap rule:
 
 - Minimal D-9 parses only the existing E seed shape: a JSON object with numeric `maxPoints` and boolean `allowOverflow`.
+- `cap_rule_json` is valid only when it is non-null, parses as a JSON object, contains both fields, has `maxPoints` as a non-negative JSON number not above `99999999.99`, and has `allowOverflow` as a JSON boolean.
+- If `cap_rule_json` is null, malformed JSON, a non-object value, missing either field, or has a field with the wrong type or invalid numeric bound, the item definition is treated as unavailable and the request fails with `404 / RES-4040` and message `对应项目定义不存在`. D-9 must not default to "no cap" or silently allow overflow for malformed metadata.
 - The database-safe upper bound `99999999.99` and two-decimal scale are always enforced before item-specific caps.
 - When `allowOverflow = false`, request `scoreValue` must be `<= maxPoints`; otherwise the request fails with `400 / VAL-4001` and message `scoreValue 必须在 0 到项目允许范围之间`.
 - When `allowOverflow = true`, request `scoreValue` may exceed `maxPoints` but must still satisfy the database-safe upper bound and scale.
@@ -346,7 +353,7 @@ For each successful row, insert into `final_component_score`:
 | Column | Value |
 |---|---|
 | `final_record_id` | Locked or newly created DRAFT final record id. |
-| `category_code` | `SPORTS`. |
+| `category_code` | `evaluation_item.category_code`, already validated as `SPORTS`. |
 | `item_code` | Normalized request `itemCode`. |
 | `score_value` | Normalized request `scoreValue` scaled to 2 decimals. |
 | `display_text` | Row `displayText` after trim, or normalized request `title` when blank. |
@@ -362,6 +369,8 @@ After each successful insert, recalculate final-record totals with the same cate
 - `LABOR` -> `labor_total`.
 
 Then update `grand_total`, `updated_at`, and increment `version` if the record is still `DRAFT`.
+
+All reads, locks, inserts, duplicate checks, and created DRAFT `final_record.academic_year` values use the normalized request `academicYear`. D-9 never derives `final_record.academic_year` from `heldAt`.
 
 Duplicate-batch detection does not reject different activity batches for the same student and same `itemCode`. Only the same deterministic `activityBatchId` is considered a duplicate import.
 
@@ -427,12 +436,16 @@ Parser tests:
 Application service tests:
 
 - missing/blank/too-long request parameters map to frozen `ValidationException` messages;
+- `scoreValue` and `heldAt` are trimmed before strict parsing;
 - invalid `scoreValue` variants map to request-level failures;
 - active SPORTS `evaluation_item` is required;
 - item `cap_rule_json.maxPoints` is enforced when `allowOverflow = false`;
+- null, malformed, missing-field, wrong-type, or out-of-bound `cap_rule_json` returns `ResourceNotFoundException` with `对应项目定义不存在`;
 - inactive, missing, or non-SPORTS item definitions return `ResourceNotFoundException` with `对应项目定义不存在`;
 - deterministic `activityBatchId` uses normalized metadata and score scale;
 - duplicate existing activity batch returns `ConflictException("同一活动批次已导入")`;
+- partially successful same-batch retries are rejected as duplicate when any component from that batch was persisted;
+- zero-success same-batch retries are accepted because no component marks the batch as imported;
 - same-batch in-flight lock conflict returns `ConflictException("同一活动批次正在导入，请稍后重试")`;
 - lock release happens after success, request-level duplicate after lock, row-level failures, and exceptions;
 - field validation ordering matches the frozen failure table;
@@ -444,8 +457,11 @@ Application service tests:
 Repository tests:
 
 - active student target lookup requires active user, active primary membership, and active org;
+- active users without active primary membership, and active users whose primary org is inactive or missing, return row-level `STUDENT_NOT_FOUND`;
 - active SPORTS item lookup filters inactive and wrong-category rows;
+- active SPORTS item lookup treats invalid `cap_rule_json` as an unavailable definition;
 - duplicate-batch check filters by academic year, category, item, source type, and source ref;
+- duplicate-batch and final-record mutation use the normalized request `academicYear`, not a value derived from `heldAt`;
 - missing final record creates DRAFT record and inserts component;
 - existing DRAFT record inserts component and increments totals/version;
 - any non-DRAFT final record, including SUBMITTED and CONFIRMED, produces `FINAL_RECORD_LOCKED`;
