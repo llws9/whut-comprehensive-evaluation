@@ -30,6 +30,7 @@ In scope:
 - Add `GET /api/admin/exports/final-scores`.
 - Accept `academicYear`, optional `status`, optional `grade`, and optional `classes` query parameters. `status` is limited to `SUBMITTED` or `CONFIRMED`; `DRAFT` is never exportable.
 - Evaluate `score.export.assigned` authority and data scopes.
+- Add `AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED` with value `score.export.assigned`.
 - Export only `SUBMITTED` and `CONFIRMED` final records.
 - Apply grade/class filters against the student's current primary organization path, using existing `org_unit` rows.
 - Generate an `.xlsx` workbook synchronously and return it as the HTTP response body.
@@ -135,8 +136,9 @@ The repository must:
 - Filter `fr.academic_year = query.academicYear`.
 - Export only `fr.status IN ('SUBMITTED', 'CONFIRMED')` when `status` is absent. If `status` is present, additionally filter to that single status. `DRAFT` must not be exported in either branch.
 - Use the student's active primary membership only: `org_membership.status = 'ACTIVE' AND is_primary = 1`.
-- Use `LEFT OUTER JOIN` from `final_record` to `org_membership`, `class_ou`, and `grade_ou`, and place `ACTIVE`, `is_primary`, `unit_type`, and org status predicates inside the join conditions rather than in the `WHERE` clause.
-- The join path is fixed: `LEFT OUTER JOIN org_membership om ON om.user_id = fr.student_user_id AND om.status = 'ACTIVE' AND om.is_primary = 1`; `LEFT OUTER JOIN org_unit class_ou ON class_ou.id = om.org_unit_id AND class_ou.unit_type = 'CLASS' AND class_ou.status = 'ACTIVE'`; `LEFT OUTER JOIN org_unit grade_ou ON grade_ou.id = class_ou.parent_id AND grade_ou.unit_type = 'GRADE' AND grade_ou.status = 'ACTIVE'`.
+- Keep the existing base query join from `final_record fr` to `iam_user iu` so `studentUserNo` and `studentUserName` come from `iu.user_no` and `iu.user_name`.
+- Use `LEFT OUTER JOIN` from that `final_record` + `iam_user` base query to `org_membership`, `class_ou`, and `grade_ou`, and place `ACTIVE`, `is_primary`, `unit_type`, and org status predicates inside the join conditions rather than in the `WHERE` clause.
+- The full D-10 join path is fixed: base `final_record fr` plus `iam_user iu` on `iu.id = fr.student_user_id`; `LEFT OUTER JOIN org_membership om ON om.user_id = fr.student_user_id AND om.status = 'ACTIVE' AND om.is_primary = 1`; `LEFT OUTER JOIN org_unit class_ou ON class_ou.id = om.org_unit_id AND class_ou.unit_type = 'CLASS' AND class_ou.status = 'ACTIVE'`; `LEFT OUTER JOIN org_unit grade_ou ON grade_ou.id = class_ou.parent_id AND grade_ou.unit_type = 'GRADE' AND grade_ou.status = 'ACTIVE'`.
 - Preserve final records that have no derived active CLASS organization unit only for callers whose `score.export.assigned` scope resolves to `ALL`, and only when no grade/class filter is present. This includes students with no active primary membership and students whose active primary membership is not attached to an active `unit_type = 'CLASS'` org unit. Organization-scoped callers (`ORG_UNIT` or `ORG_SUBTREE`) must not see no-derived-class rows because the translated scope predicate compares `org_path`/`org_unit_id` against `class_ou.path`/`class_ou.id`, which are `NULL` for those rows and therefore do not match.
 - Apply grade/class predicates only when the corresponding filter is present. These filter predicates must be appended to the `WHERE` clause, not to the `LEFT OUTER JOIN ... ON` conditions, so rows with missing derived grade/class fields are excluded when a grade or class filter exists.
 - When `grade` is present, append `(grade_ou.unit_code = #{query.grade} OR grade_ou.unit_name = #{query.grade})` in `WHERE`, using the repository's case-sensitive comparison helper for both MySQL and H2 so collation differences cannot make lowercase or mixed-case values match.
@@ -228,7 +230,7 @@ Workbook format:
 - Header row at row 1.
 - Freeze the first row.
 - Use a consistent default font. The implementation can rely on POI defaults plus bold header styling; no formulas are required.
-- Set practical fixed column widths or auto-size after writing rows so headers, class names, and timestamps are readable in common spreadsheet tools. The width assertions refer to the frozen A-P column table below: after generation, every column width must be greater than `8 * 256` POI width units; text name columns D (`姓名`), F (`年级`), and H (`班级`) must be at least `headerText.length() * 256` POI width units; timestamp columns O (`提交时间`) and P (`确认时间`) must be at least `20 * 256` POI width units to fit values like `2026-07-07T12:00:00Z`. Exact widths are not part of the public contract.
+- Set practical fixed column widths or auto-size after writing rows so headers, class names, and timestamps are readable in common spreadsheet tools. The width assertions refer to the frozen A-P column table below: after generation, every column width must be greater than `8 * 256` POI width units, and timestamp columns O (`提交时间`) and P (`确认时间`) must be at least `20 * 256` POI width units to fit values like `2026-07-07T12:00:00Z`. Exact widths are not part of the public contract.
 - No formulas are written, so formula recalculation is not part of D-10.
 
 Columns are frozen in this exact order:
@@ -271,12 +273,13 @@ New application classes:
 - `FinalScoreExportWorkbookWriter`: application port under `whut-eval-application`, with method `FinalScoreExportFile write(String academicYear, List<FinalScoreExportRow> rows)`. The returned `FinalScoreExportFile.contentType` is fixed to `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, and the returned `FinalScoreExportFile.filename` must be `final-scores-{academicYear}.xlsx` using the already-normalized `academicYear` method argument.
 - `FinalScoreExportApplicationService`: application service under `whut-eval-application`, orchestrating auth, query, no-data handling, and workbook generation; its public export method is `FinalScoreExportFile export(FinalScoreExportQuery query)`.
 - `FinalScoreExportGenerationException`: extends `BaseAppException`, uses `CommonErrorCode.FILE_STORAGE_FAILED`, and maps workbook write failures to `EXT-5033`.
+- `AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED`: add this constant to the existing authorization permission constants class with exact value `score.export.assigned`.
 
 Repository changes:
 
 - Add `listAdminFinalScoreExportRows(FinalRecordAccessContext accessContext, FinalScoreExportQuery query, int limit)` to `FinalRecordQueryRepository`; D-10 callers pass `MAX_SYNC_EXPORT_ROWS + 1` so the service can detect more than `MAX_SYNC_EXPORT_ROWS` rows without loading an unbounded result set.
 - Implement it in `MybatisPlusFinalRecordQueryRepository` using the existing scope-fragment path.
-- Add mapper/provider methods that extend the current final-record admin query with `LEFT OUTER JOIN` aliases for `class_ou` and `grade_ou`, preserving no-derived-class rows unless grade/class filters are present.
+- Add mapper/provider methods that extend the current final-record admin query's `final_record` + `iam_user` base join with `LEFT OUTER JOIN` aliases for `class_ou` and `grade_ou`, preserving no-derived-class rows unless grade/class filters are present.
 
 Infrastructure:
 
@@ -360,6 +363,7 @@ Spec-phase acceptance tests for the implementation plan:
 - Application service and workbook writer preserve repository row order in the generated workbook, including rows whose `gradeCode` or `classCode` sort last because of portable `NULLS LAST` ordering.
 - Repository or application-level ordering tests must construct multiple rows with the same `gradeCode` and `classCode` and assert `studentUserNo ASC`, then construct a tie on `studentUserNo` and assert `finalRecordId ASC`. These checks are in addition to the portable `NULLS LAST` cases and prove all four ordering keys are active before the workbook preserves row order.
 - Repository export query applies status, grade, class, and scope filters together.
+- Repository export-row tests verify `studentUserNo` and `studentUserName` exactly match the joined `iam_user.user_no` and `iam_user.user_name` for known test users, and verify normal matched records return non-null values for both fields.
 - Repository uses the explicit `org_membership` -> `class_ou` -> `grade_ou` join path above, including `class_ou.parent_id` for grade lookup.
 - Repository defaults absent `status` to `SUBMITTED` plus `CONFIRMED`, and verifies `DRAFT` rows are excluded from exports even when matching academic year and scope.
 - Repository keeps records with no derived active CLASS organization unit exportable to ALL scope when no grade/class filter is present, with blank grade/class fields; tests must cover both no active primary membership and active primary membership attached to a non-CLASS org unit.
