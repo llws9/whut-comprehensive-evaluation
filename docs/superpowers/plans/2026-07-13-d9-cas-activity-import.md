@@ -501,6 +501,35 @@ void shouldRejectOversizedBytesBeforeOpeningWorkbook() {
 }
 
 @Test
+void shouldRejectMoreThanFiveThousandNonBlankRows() {
+    byte[] workbook = workbookWithRows(5001);
+
+    assertThatThrownBy(() -> parser.parse(workbook))
+            .isInstanceOf(ValidationException.class)
+            .hasMessage("文体活动导入文件最多支持 5000 行且不超过 5MB");
+}
+
+@Test
+void shouldNotCountBlankRowsTowardRowLimit() {
+    byte[] workbook = workbookWithRowsAndBlanks(5000, 20);
+
+    assertThat(parser.parse(workbook)).hasSize(5000);
+}
+
+@Test
+void shouldRejectMissingSheetHeaderAndUnreadableWorkbook() {
+    assertThatThrownBy(() -> parser.parse(workbookWithoutSheets()))
+            .isInstanceOf(ValidationException.class)
+            .hasMessage("导入模板错误：缺少工作表");
+    assertThatThrownBy(() -> parser.parse(workbookWithoutHeader()))
+            .isInstanceOf(ValidationException.class)
+            .hasMessage("导入模板错误：缺少表头");
+    assertThatThrownBy(() -> parser.parse("not excel".getBytes(StandardCharsets.UTF_8)))
+            .isInstanceOf(ValidationException.class)
+            .hasMessage("导入模板错误：文件不可解析");
+}
+
+@Test
 void shouldParseXlsWorkbookContent() {
     byte[] workbook = xlsWorkbook("studentNo", "displayText",
             row("2022305001", "校运会志愿服务"));
@@ -521,7 +550,7 @@ void shouldReadFormulaCellWithoutEvaluator() {
 }
 ```
 
-Use helper methods from the D-8 parser test, adjusted to two required columns plus optional ignored extras. Header-only and blank data rows must not count toward `totalCount`. Parser tests must cover both OOXML `.xlsx` workbooks and binary `.xls` workbook bytes through `WorkbookFactory`; controller filename validation owns extension rejection, while parser content validation proves both supported workbook formats are readable.
+Use helper methods from the D-8 parser test, adjusted to two required columns plus optional ignored extras. Header-only and blank data rows must not count toward `totalCount` or the 5000-row limit. Parser tests must cover both OOXML `.xlsx` workbooks and binary `.xls` workbook bytes through `WorkbookFactory`; controller filename validation owns extension rejection, while parser content validation proves both supported workbook formats are readable. Template-error parser tests must explicitly cover 5001 non-blank data rows, no sheets, missing header, and unreadable workbook bytes.
 
 - [ ] **Step 2: Run parser tests and verify failure**
 
@@ -799,6 +828,8 @@ Use D-8 repository tests as the base and add D-9-specific cases:
 - duplicate-batch check filters by academic year, `SPORTS`, canonical item code, `IMPORT`, and `activityBatchId`;
 - missing final record creates DRAFT and inserts SPORTS component;
 - existing DRAFT inserts and updates totals/version;
+- totals mapping matches the frozen D-7/D-8 final-record rule: `MORAL -> moral_total`, `INTELLECTUAL -> intellectual_total`, `SPORTS -> physical_total`, `LABOR -> labor_total`, missing categories use scaled zero, and `grand_total = moral_total + intellectual_total + physical_total + labor_total`;
+- importing a SPORTS activity into a DRAFT record that already has D-7/D-8 or application components preserves existing MORAL/INTELLECTUAL/LABOR totals, adds the activity score into `physical_total`, recomputes `grand_total`, and increments `version`;
 - SUBMITTED/CONFIRMED returns `FINAL_RECORD_LOCKED`;
 - two different activity batches for same student/item create two components;
 - unexpected totals update failure rolls back inserted components in integration test.
@@ -933,6 +964,7 @@ SQL requirements:
 - `ActivityImportRepository.findTarget(String studentNo, String academicYear)` JavaDoc states that Minimal D-9 intentionally ignores `academicYear` and reads current primary active membership only; the argument is retained for D-7/D-8 parity and a future historical-membership lookup. Minimal D-9 mapper `selectTarget(String studentNo)` does not query org paths; service authorization uses `findActiveOrgPath` as the single source of org-path truth.
 - `selectFinalRecordForUpdate`: lock by `(student_user_id, academic_year)`.
 - `insertActivityComponent` is intentionally single-row. Its SQL hard-codes `source_type = 'IMPORT'`; `ActivityImportedComponentRow` does not carry a `sourceType` field. `MybatisActivityImportRepository.insertActivityComponents(...)` loops over sorted components inside one transaction, matching D-8's per-row lock, insert, and total recalculation semantics.
+- Total recalculation must copy the D-7/D-8 category mapping exactly: initialize `moral`, `intellectual`, `physical`, and `labor` to scaled zero; for every `selectTotals(finalRecordId)` row, scale null to zero and map `MORAL` to `moral`, `INTELLECTUAL` to `intellectual`, `SPORTS` to `physical`, and `LABOR` to `labor`; throw `ConflictException("unsupported final record category: " + categoryCode)` for any unexpected category; then set `grand = moral + intellectual + physical + labor` before `updateTotals(...)`.
 - `updateTotals` must increment `version` in SQL using `version = version + 1`, not by requiring a caller-provided version argument. Every multi-argument mapper method must use `@Param` names that exactly match SQL bind expressions.
 
 - [ ] **Step 4: Implement repository**
@@ -943,6 +975,7 @@ Implement `MybatisActivityImportRepository` by adapting `MybatisLectureImportRep
 - `findActiveSportsItem` parses `cap_rule_json` with Jackson `ObjectMapper`.
 - missing item rows and invalid cap JSON both return `Optional.empty()` and therefore surface through the same `404 / RES-4040 / 对应项目定义不存在` request failure as an unavailable item.
 - `insertActivityComponents` is `@Transactional`, creates/reloads DRAFT final records, inserts rows, and updates totals after each successful insert.
+- `updateTotals(finalRecordId, updatedAt)` must preserve existing categories by recalculating from all `final_component_score` rows for that final record, not only D-9 rows. SPORTS activity imports must update `physical_total`; `grand_total` must equal the scaled sum of the four category totals.
 - `toComponentRow(...)` sets `categoryCode`, `itemCode`, `scoreValue`, `displayText`, `sourceRefId = activityBatchId`, and `createdAt`; `source_type = 'IMPORT'` is hard-coded by the mapper insert SQL.
 - locked records return `ActivityImportFailedRow` with raw values exactly `studentNo` and `displayText`.
 - duplicate final-record insert handling uses SQLState `23000` or MySQL error code `1062`.
@@ -1116,7 +1149,7 @@ Add tests for:
 - route `POST /api/admin/imports/cas-activities`;
 - missing `file/title/itemCode/scoreValue/heldAt/academicYear`;
 - title longer than 255 Unicode code points, itemCode longer than 64 Unicode code points, invalid scoreValue variants, invalid heldAt variants, and invalid academicYear variants return the frozen `VAL-4001` messages;
-- unsupported, blank, missing, and extensionless filenames rejected before service invocation; accepted filename extensions are exactly `.xls` and `.xlsx`, compared case-insensitively after Java `String.trim()`;
+- unsupported, blank, missing, and extensionless filenames rejected before service invocation with `400 / VAL-4001 / 导入模板错误：文件不可解析`; accepted filename extensions are exactly `.xls` and `.xlsx`, compared case-insensitively after Java `String.trim()`;
 - file > 5 MB rejected before `getBytes()`;
 - multipart read failure maps to `503 / EXT-5033 / 文件处理失败，请稍后重试`;
 - missing/invalid `itemCode` definition from service `ResourceNotFoundException("对应项目定义不存在")` maps through MVC/global exception handling to `404 / RES-4040 / 对应项目定义不存在`;
@@ -1173,7 +1206,7 @@ Modify `AdminScoreImportController`:
 - add `MAX_ACTIVITY_IMPORT_BYTES = 5L * 1024 * 1024`;
 - add `importActivities(...)` with `@PostMapping(value = "/cas-activities", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)`;
 - controller validates only file-layer conditions before byte reading where possible: file presence, file size, and original filename/extension. Pass title, itemCode, scoreValue, heldAt, and academicYear to `ActivityImportApplicationService`, whose `normalize(command)` owns the frozen business-parameter validation order and messages;
-- validate original filename using shared helper that accepts exactly `.xls` and `.xlsx` case-insensitively after Java `String.trim()` and rejects null, blank, extensionless, `.xlsm`, `.csv`, and text;
+- validate original filename using shared helper that accepts exactly `.xls` and `.xlsx` case-insensitively after Java `String.trim()` and rejects null, blank, extensionless, `.xlsm`, `.csv`, and text by throwing `ValidationException("导入模板错误：文件不可解析")`; this path must not invoke the service and must not surface Spring binding/default multipart errors;
 - wrap `IOException` from `getBytes()` in `FileStorageException("文件处理失败，请稍后重试", exception)`;
 - map `ActivityImportResult` to `ActivityImportResultResponse`.
 
