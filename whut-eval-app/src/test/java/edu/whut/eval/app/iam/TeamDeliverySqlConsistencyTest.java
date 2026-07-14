@@ -322,7 +322,7 @@ class TeamDeliverySqlConsistencyTest {
         assertThat(sql).contains("DELETE FROM d_seed_collision_guard");
         assertThat(sql).contains("INSERT INTO d_seed_collision_guard (id) VALUES (1)");
         assertThat(sql).contains("INSERT INTO d_seed_collision_guard (id)\nSELECT 1\nWHERE EXISTS");
-        assertThat(sql).contains("REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(expression_json, ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')");
+        assertThat(sql).contains("REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(CAST(expression_json AS CHAR(1000)), ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')");
         assertThat(sql.indexOf("EXISTS (SELECT 1 FROM iam_scope_rule WHERE id = 8023"))
                 .isLessThan(sql.indexOf("SELECT 8023, 7010, 'score.export.assigned'"));
         assertThat(sql.indexOf("EXISTS (SELECT 1 FROM iam_scope_rule WHERE id = 8024"))
@@ -484,6 +484,24 @@ class TeamDeliverySqlConsistencyTest {
 
             assertThat(countRows(connection, "iam_scope_rule", "id = 8023")).isZero();
             assertThat(countRows(connection, "iam_scope_rule", "id = 8025")).isZero();
+        }
+    }
+
+    @Test
+    void shouldFailBeforeExportScopeInsertsWhenLastReservedExportScopeIdIsOccupied() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:d_export_scope_last_collision;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")) {
+            createMinimalIamTables(connection);
+            connection.createStatement().executeUpdate("""
+                    INSERT INTO iam_scope_rule (id, assignment_id, permission_code, scope_type, org_unit_id, category_code, item_code, expression_json, priority, status, created_at)
+                    VALUES (8025, 7999, 'unrelated.permission', 'ALL', NULL, NULL, NULL, '{"unrelated":true}', 1, 'ACTIVE', CURRENT_TIMESTAMP())
+                    """);
+
+            assertThatThrownBy(() -> executeStatements(connection, Files.readString(D_GROUP_SAFE_INIT_SQL)))
+                    .isInstanceOf(SQLException.class);
+
+            assertThat(countRows(connection, "iam_scope_rule", "id = 8023")).isZero();
+            assertThat(countRows(connection, "iam_scope_rule", "id = 8024")).isZero();
+            assertThat(countRows(connection, "iam_scope_rule", "id = 8025 AND permission_code = 'score.export.assigned'")).isZero();
         }
     }
 

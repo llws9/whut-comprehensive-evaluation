@@ -75,6 +75,7 @@ import static org.mockito.BDDMockito.then;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(classes = FinalScoreExportHttpIntegrationTest.TestApplication.class)
@@ -159,6 +160,19 @@ class FinalScoreExportHttpIntegrationTest {
                 new AccessSessionValidationCommand(1010L, "session-export-1010", "access-jti-export")
         );
         assertWorkbook(result.getResponse().getContentAsByteArray());
+    }
+
+    @Test
+    void shouldReturnJsonNotFoundWhenScopedExportHasNoRows() throws Exception {
+        mockMvc.perform(get("/api/admin/exports/final-scores")
+                        .param("academicYear", "2025-2026")
+                        .param("classes", "UNKNOWN_CLASS")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token()))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith("application/json"))
+                .andExpect(header().doesNotExist(HttpHeaders.CONTENT_DISPOSITION))
+                .andExpect(jsonPath("$.code").value("RES-4040"))
+                .andExpect(jsonPath("$.message").value("无匹配导出数据"));
     }
 
     private void assertWorkbook(byte[] content) throws Exception {

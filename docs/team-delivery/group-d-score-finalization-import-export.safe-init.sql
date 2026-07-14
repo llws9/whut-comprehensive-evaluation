@@ -80,7 +80,7 @@ WHERE EXISTS (SELECT 1 FROM iam_permission WHERE id = 5023 AND permission_code <
          AND org_unit_id = 2002
          AND category_code IS NULL
          AND item_code IS NULL
-         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(expression_json, ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') = '{"scoreRole":"counselor"}'
+         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(CAST(expression_json AS CHAR(1000)), ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') = '{"scoreRole":"counselor"}'
          AND priority = 80
          AND status = 'ACTIVE'
        )
@@ -95,7 +95,7 @@ WHERE EXISTS (SELECT 1 FROM iam_permission WHERE id = 5023 AND permission_code <
          AND org_unit_id = 2002
          AND category_code IS NULL
          AND item_code IS NULL
-         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(expression_json, ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') = '{"scoreRole":"college_reviewer"}'
+         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(CAST(expression_json AS CHAR(1000)), ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') = '{"scoreRole":"college_reviewer"}'
          AND priority = 70
          AND status = 'ACTIVE'
        )
@@ -110,7 +110,7 @@ WHERE EXISTS (SELECT 1 FROM iam_permission WHERE id = 5023 AND permission_code <
          AND org_unit_id IS NULL
          AND category_code IS NULL
          AND item_code IS NULL
-         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(expression_json, ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') = '{"superAdmin":true}'
+         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(CAST(expression_json AS CHAR(1000)), ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') = '{"superAdmin":true}'
          AND priority = 1000
          AND status = 'ACTIVE'
        )
