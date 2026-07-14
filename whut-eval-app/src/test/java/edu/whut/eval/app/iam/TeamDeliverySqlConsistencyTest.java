@@ -285,12 +285,15 @@ class TeamDeliverySqlConsistencyTest {
         String doc = Files.readString(TEAM_DELIVERY.resolve("group-d-score-finalization-import-export.md"));
         String readme = Files.readString(TEAM_DELIVERY.resolve("README.md"));
 
-        assertThat(doc).contains("当前 Minimal D 已落地范围");
-        assertThat(doc).contains("D-1 / D-2 / D-3 / D-4 / D-5 / D-6 / D-7 / D-8 / D-9 / D-12");
-        assertThat(doc).contains("DEFERRED_AFTER_MINIMAL_D");
-        assertThat(doc).contains("D-7 / D-8 / D-9 当前已实现");
-        assertThat(doc).contains("D-10 / D-11");
-        assertThat(doc).contains("自动 smoke gate 不覆盖 D-10 至 D-11");
+        assertThat(doc).contains("当前 D 组已落地范围");
+        assertThat(doc).contains("D-1 / D-2 / D-3 / D-4 / D-5 / D-6 / D-7 / D-8 / D-9 / D-10 / D-11 / D-12");
+        assertThat(doc).contains("D-7 / D-8 / D-9 / D-10 / D-11 当前已实现");
+        assertThat(doc).contains("/api/admin/exports/final-scores");
+        assertThat(doc).contains("/api/admin/final-records/unsubmitted");
+        assertThat(doc).doesNotContain("暂未暴露成绩导出");
+        assertThat(doc).doesNotContain("自动 smoke gate 不覆盖 D-10 至 D-11");
+        assertThat(doc).doesNotContain("| D-10 | `GET` | `/api/admin/exports/final-scores` | 导出成绩 | `DEFERRED_AFTER_MINIMAL_D` |");
+        assertThat(doc).doesNotContain("| D-11 | `GET` | `/api/admin/final-records/unsubmitted` | 查询未提交学生名单 | `DEFERRED_AFTER_MINIMAL_D` |");
         assertThat(readme).contains("DEFERRED_AFTER_MINIMAL_D");
     }
 
