@@ -65,6 +65,14 @@ public class ReviewApplicationQueryApplicationService {
         return toDetail(row, logs);
     }
 
+    public List<ApplicationAttachmentView> listReviewAttachments(Long applicationId) {
+        UserAuthorizationContext reviewer = requiredReviewer();
+        ReviewApplicationQueryRow row = reviewApplicationQueryRepository.findReviewApplicationDetail(applicationId)
+                .orElseThrow(() -> new ResourceNotFoundException("申请不存在"));
+        reviewApplicationAccessValidator.requireAccess(reviewer, row);
+        return row.getAttachments().stream().map(this::toAttachmentView).toList();
+    }
+
     public List<ReviewLogView> listReviewLogs(Long applicationId) {
         UserAuthorizationContext reviewer = requiredReviewer();
         ReviewApplicationQueryRow row = reviewApplicationQueryRepository.findReviewApplicationDetail(applicationId)

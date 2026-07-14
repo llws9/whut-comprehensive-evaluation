@@ -1,6 +1,7 @@
 package edu.whut.eval.app.review;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import edu.whut.eval.application.application.query.ApplicationAttachmentView;
 import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
 import edu.whut.eval.application.application.query.ReviewApplicationListItemView;
 import edu.whut.eval.application.application.query.ReviewApplicationQueryRow;
@@ -95,6 +96,25 @@ class ReviewApplicationQueryApplicationServiceTest {
     }
 
     @Test
+    void shouldListReviewAttachmentsAfterAccessValidation() throws Exception {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
+        given(reviewApplicationQueryRepository.findReviewApplicationDetail(21013L)).willReturn(Optional.of(submittedRow()));
+
+        List<ApplicationAttachmentView> result = service.listReviewAttachments(21013L);
+
+        assertThat(result).hasSize(1);
+        ApplicationAttachmentView attachment = result.get(0);
+        assertThat(attachment.getFileId()).isEqualTo("file-1");
+        assertThat(attachment.getOriginalFilename()).isEqualTo("a.pdf");
+        assertThat(attachment.getContentType()).isEqualTo("application/pdf");
+        assertThat(attachment.getSize()).isEqualTo(128L);
+        assertThat(attachment.getSortNo()).isZero();
+        assertThat(objectMapper.writeValueAsString(attachment)).doesNotContain("storageKey");
+        verify(reviewApplicationAccessValidator).requireAccess(any(), any());
+        verifyNoInteractions(applicationReviewLogRepository);
+    }
+
+    @Test
     void shouldListReviewLogsAfterAccessValidation() {
         given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
         given(reviewApplicationQueryRepository.findReviewApplicationDetail(21013L)).willReturn(Optional.of(submittedRow()));
@@ -143,6 +163,19 @@ class ReviewApplicationQueryApplicationServiceTest {
                 .given(reviewApplicationAccessValidator).requireAccess(any(), any());
 
         assertThatThrownBy(() -> service.getReviewDetail(21013L))
+                .isInstanceOf(AccessDeniedAppException.class)
+                .hasMessage("当前审核人无权访问该申请");
+        verifyNoInteractions(applicationReviewLogRepository);
+    }
+
+    @Test
+    void shouldDenyExistingOutOfScopeReviewAttachmentsInsteadOfHidingThemAsNotFound() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
+        given(reviewApplicationQueryRepository.findReviewApplicationDetail(21013L)).willReturn(Optional.of(submittedRow()));
+        willThrow(new AccessDeniedAppException("当前审核人无权访问该申请"))
+                .given(reviewApplicationAccessValidator).requireAccess(any(), any());
+
+        assertThatThrownBy(() -> service.listReviewAttachments(21013L))
                 .isInstanceOf(AccessDeniedAppException.class)
                 .hasMessage("当前审核人无权访问该申请");
         verifyNoInteractions(applicationReviewLogRepository);

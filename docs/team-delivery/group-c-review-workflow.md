@@ -2,7 +2,7 @@
 
 > 当前状态：`PARTIAL_IMPLEMENTED`
 >
-> 当前 Java Controller 已提供 `ReviewApplicationController`，覆盖 C-3/C-4/C-6/C-7/C-8/C-9：审核列表、审核详情、审核轨迹、审批通过、退回补充、审批拒绝。C-1/C-2/C-5/C-10 仍为目标态设计，尚未暴露独立入口；其中详情响应也会内联返回附件摘要与审核轨迹。
+> 当前 Java Controller 已提供 `ReviewApplicationController`，覆盖 C-3/C-4/C-5/C-6/C-7/C-8/C-9：审核列表、审核详情、附件摘要、审核轨迹、审批通过、退回补充、审批拒绝。C-1/C-2/C-10 仍为目标态设计；C-5 当前返回附件元数据摘要，访问 URL 生成仍待 E-9/E-10 集成。
 
 ## 1. 模块背景
 
@@ -95,7 +95,7 @@ flowchart LR
 | C-2 | `GET` | `/api/review/meta/grades` | 获取可选年级/组织过滤条件 | `TARGET_BLUEPRINT` |
 | C-3 | `GET` | `/api/review/applications` | 分页查询待审/已审申请 | `CURRENT_IMPLEMENTED` |
 | C-4 | `GET` | `/api/review/applications/{applicationId}` | 查询审核详情 | `CURRENT_IMPLEMENTED` |
-| C-5 | `GET` | `/api/review/applications/{applicationId}/attachments` | 查看附件列表 | `TARGET_BLUEPRINT` |
+| C-5 | `GET` | `/api/review/applications/{applicationId}/attachments` | 查看附件列表 | `CURRENT_IMPLEMENTED` |
 | C-6 | `GET` | `/api/review/applications/{applicationId}/logs` | 查询审核轨迹 | `CURRENT_IMPLEMENTED` |
 | C-7 | `POST` | `/api/review/applications/{applicationId}/approve` | 审批通过 | `CURRENT_IMPLEMENTED` |
 | C-8 | `POST` | `/api/review/applications/{applicationId}/return` | 退回补充 | `CURRENT_IMPLEMENTED` |
@@ -238,8 +238,8 @@ flowchart LR
 
 - 路由：`GET /api/review/applications/{applicationId}/attachments`
 - 鉴权：`application.review`
-- 目的：仅返回附件元数据和下载地址/预览地址，不做上传逻辑
-- 实现约束：优先调用 E-9 查询文件元数据、E-10 生成访问地址；若文件本身已有 `publicUrl`，也应通过统一返回模型暴露，不允许控制器侧直接拼接 `storageKey`
+- 当前实现：返回申请已绑定附件的元数据摘要，不暴露 `storageKey`
+- 后续目标：接入 E-9 查询文件元数据、E-10 生成访问地址；若文件本身已有 `publicUrl`，也应通过统一返回模型暴露，不允许控制器侧直接拼接 `storageKey`
 
 成功返回 `data`：附件列表
 
@@ -249,6 +249,12 @@ flowchart LR
 | `originalFilename` | `string` | 原文件名 |
 | `contentType` | `string` | 文件类型 |
 | `size` | `number` | 文件大小 |
+| `sortNo` | `number` | 附件排序号 |
+
+E-9/E-10 集成后的目标扩展字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
 | `sourceType` | `string` | 附件来源类型 |
 | `accessUrl` | `string` | 统一访问地址 |
 | `accessMode` | `string` | `PUBLIC_URL/SIGNED_URL` |

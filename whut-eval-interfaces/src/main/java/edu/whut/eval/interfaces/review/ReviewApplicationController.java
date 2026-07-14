@@ -3,6 +3,7 @@ package edu.whut.eval.interfaces.review;
 import edu.whut.eval.application.application.command.ApproveReviewCommand;
 import edu.whut.eval.application.application.command.RejectReviewCommand;
 import edu.whut.eval.application.application.command.ReturnReviewCommand;
+import edu.whut.eval.application.application.query.ApplicationAttachmentView;
 import edu.whut.eval.application.application.query.ReviewActionResultView;
 import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
 import edu.whut.eval.application.application.query.ReviewApplicationListItemView;
@@ -61,6 +62,12 @@ public class ReviewApplicationController {
     @GetMapping("/{applicationId}")
     public ApiResponse<ReviewApplicationDetailView> getDetail(@PathVariable Long applicationId) {
         return ApiResponse.success(reviewApplicationQueryApplicationService.getReviewDetail(applicationId));
+    }
+
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_REVIEW)")
+    @GetMapping("/{applicationId}/attachments")
+    public ApiResponse<List<ApplicationAttachmentView>> listAttachments(@PathVariable Long applicationId) {
+        return ApiResponse.success(reviewApplicationQueryApplicationService.listReviewAttachments(applicationId));
     }
 
     @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_REVIEW)")

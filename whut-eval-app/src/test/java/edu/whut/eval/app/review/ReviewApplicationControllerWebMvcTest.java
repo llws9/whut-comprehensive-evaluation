@@ -133,6 +133,26 @@ class ReviewApplicationControllerWebMvcTest {
     }
 
     @Test
+    void shouldListReviewAttachmentsWithoutStorageKey() throws Exception {
+        given(queryService.listReviewAttachments(21013L)).willReturn(List.of(
+                new ApplicationAttachmentView("file-1", "a.pdf", "application/pdf", 128L, 0)
+        ));
+
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build()
+                .perform(get("/api/review/applications/21013/attachments"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data[0].fileId").value("file-1"))
+                .andExpect(jsonPath("$.data[0].originalFilename").value("a.pdf"))
+                .andExpect(jsonPath("$.data[0].contentType").value("application/pdf"))
+                .andExpect(jsonPath("$.data[0].size").value(128))
+                .andExpect(jsonPath("$.data[0].sortNo").value(0))
+                .andExpect(jsonPath("$.data[0].storageKey").doesNotExist());
+    }
+
+    @Test
     void shouldApproveApplication() throws Exception {
         given(commandService.approve(any())).willReturn(actionResult(ApplicationSubmissionStatus.APPROVED));
 

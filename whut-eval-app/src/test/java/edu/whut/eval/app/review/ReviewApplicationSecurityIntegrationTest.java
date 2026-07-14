@@ -1,5 +1,6 @@
 package edu.whut.eval.app.review;
 
+import edu.whut.eval.application.application.query.ApplicationAttachmentView;
 import edu.whut.eval.application.application.query.ReviewActionResultView;
 import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
 import edu.whut.eval.application.application.query.ReviewApplicationSummaryView;
@@ -124,6 +125,9 @@ class ReviewApplicationSecurityIntegrationTest {
             );
         });
         given(reviewApplicationQueryApplicationService.getReviewDetail(21013L)).willReturn(detailView());
+        given(reviewApplicationQueryApplicationService.listReviewAttachments(21013L)).willReturn(List.of(
+                new ApplicationAttachmentView("file-1", "a.pdf", "application/pdf", 128L, 0)
+        ));
         given(reviewApplicationQueryApplicationService.listReviewLogs(21013L)).willReturn(List.of(
                 new ReviewLogView(31000L, "RETURN", 1010L, null, "COUNSELOR", "补充材料",
                         Instant.parse("2026-07-07T11:00:00Z"))
@@ -150,6 +154,13 @@ class ReviewApplicationSecurityIntegrationTest {
     @Test
     void shouldAllowReviewerWithApplicationReviewOnDetail() throws Exception {
         mockMvc.perform(get("/api/review/applications/21013")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "application.review")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldAllowReviewerWithApplicationReviewOnAttachments() throws Exception {
+        mockMvc.perform(get("/api/review/applications/21013/attachments")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "application.review")))
                 .andExpect(status().isOk());
     }
