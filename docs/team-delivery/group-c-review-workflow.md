@@ -1,8 +1,8 @@
 # C 组需求文档：审核工作流模块
 
-> 当前状态：`TARGET_BLUEPRINT`
+> 当前状态：`PARTIAL_IMPLEMENTED`
 >
-> 当前代码尚未提供 `/api/review/**` 审核动作 Controller；本文档是审核工作流目标态设计，当前可复用的只有管理端申请查询能力。
+> 当前 Java Controller 已提供 `ReviewApplicationController`，覆盖 C-3/C-4/C-7/C-8/C-9：审核列表、审核详情、审批通过、退回补充、审批拒绝。C-1/C-2/C-5/C-6/C-10 仍为目标态设计，尚未暴露独立入口；其中详情响应已内联返回附件摘要与审核轨迹。
 
 ## 1. 模块背景
 
@@ -89,18 +89,18 @@ flowchart LR
 
 ## 5. 接口清单总表
 
-| 编号 | 方法 | 路由 | 用途 |
-|---|---|---|---|
-| C-1 | `GET` | `/api/review/tasks/summary` | 审核工作台摘要 |
-| C-2 | `GET` | `/api/review/meta/grades` | 获取可选年级/组织过滤条件 |
-| C-3 | `GET` | `/api/review/applications` | 分页查询待审/已审申请 |
-| C-4 | `GET` | `/api/review/applications/{applicationId}` | 查询审核详情 |
-| C-5 | `GET` | `/api/review/applications/{applicationId}/attachments` | 查看附件列表 |
-| C-6 | `GET` | `/api/review/applications/{applicationId}/logs` | 查询审核轨迹 |
-| C-7 | `POST` | `/api/review/applications/{applicationId}/approve` | 审批通过 |
-| C-8 | `POST` | `/api/review/applications/{applicationId}/return` | 退回补充 |
-| C-9 | `POST` | `/api/review/applications/{applicationId}/reject` | 审批拒绝 |
-| C-10 | `POST` | `/api/review/applications/batch-approve` | 批量审批通过 |
+| 编号 | 方法 | 路由 | 用途 | 当前状态 |
+|---|---|---|---|---|
+| C-1 | `GET` | `/api/review/tasks/summary` | 审核工作台摘要 | `TARGET_BLUEPRINT` |
+| C-2 | `GET` | `/api/review/meta/grades` | 获取可选年级/组织过滤条件 | `TARGET_BLUEPRINT` |
+| C-3 | `GET` | `/api/review/applications` | 分页查询待审/已审申请 | `CURRENT_IMPLEMENTED` |
+| C-4 | `GET` | `/api/review/applications/{applicationId}` | 查询审核详情 | `CURRENT_IMPLEMENTED` |
+| C-5 | `GET` | `/api/review/applications/{applicationId}/attachments` | 查看附件列表 | `TARGET_BLUEPRINT` |
+| C-6 | `GET` | `/api/review/applications/{applicationId}/logs` | 查询审核轨迹 | `TARGET_BLUEPRINT` |
+| C-7 | `POST` | `/api/review/applications/{applicationId}/approve` | 审批通过 | `CURRENT_IMPLEMENTED` |
+| C-8 | `POST` | `/api/review/applications/{applicationId}/return` | 退回补充 | `CURRENT_IMPLEMENTED` |
+| C-9 | `POST` | `/api/review/applications/{applicationId}/reject` | 审批拒绝 | `CURRENT_IMPLEMENTED` |
+| C-10 | `POST` | `/api/review/applications/batch-approve` | 批量审批通过 | `TARGET_BLUEPRINT` |
 
 ## 6. 统一返回约定
 
