@@ -2,6 +2,8 @@ package edu.whut.eval.app.finalrecord;
 
 import edu.whut.eval.application.auth.service.AccessSessionService;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
+import edu.whut.eval.application.finalrecord.exporting.FinalScoreExportApplicationService;
+import edu.whut.eval.application.finalrecord.exporting.FinalScoreExportFile;
 import edu.whut.eval.application.finalrecord.query.AdminFinalRecordDetailView;
 import edu.whut.eval.application.finalrecord.query.AdminFinalRecordListItemView;
 import edu.whut.eval.application.finalrecord.query.ConfirmFinalRecordResultView;
@@ -23,6 +25,7 @@ import edu.whut.eval.infra.security.jwt.JwtClaimsToCurrentUserMapper;
 import edu.whut.eval.infra.security.jwt.JwtTokenResolver;
 import edu.whut.eval.infra.security.web.RestAccessDeniedHandler;
 import edu.whut.eval.infra.security.web.RestAuthenticationEntryPoint;
+import edu.whut.eval.interfaces.admin.AdminFinalScoreExportController;
 import edu.whut.eval.interfaces.admin.AdminFinalRecordController;
 import edu.whut.eval.interfaces.student.StudentFinalRecordController;
 import io.jsonwebtoken.Jwts;
@@ -59,11 +62,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(controllers = {StudentFinalRecordController.class, AdminFinalRecordController.class})
+@WebMvcTest(controllers = {StudentFinalRecordController.class, AdminFinalRecordController.class, AdminFinalScoreExportController.class})
 @ContextConfiguration(classes = FinalRecordSecurityIntegrationTest.TestApplication.class)
 @Import({
         StudentFinalRecordController.class,
         AdminFinalRecordController.class,
+        AdminFinalScoreExportController.class,
         SecurityConfiguration.class,
         RestAuthenticationEntryPoint.class,
         RestAccessDeniedHandler.class,
@@ -109,6 +113,9 @@ class FinalRecordSecurityIntegrationTest {
     private FinalRecordCommandApplicationService commandApplicationService;
 
     @MockBean
+    private FinalScoreExportApplicationService exportApplicationService;
+
+    @MockBean
     private UserAuthorizationContextLoader userAuthorizationContextLoader;
 
     @MockBean
@@ -126,6 +133,11 @@ class FinalRecordSecurityIntegrationTest {
         given(queryApplicationService.getAdminFinalRecordDetail(41001L)).willReturn(adminDetail());
         given(commandApplicationService.confirm(any())).willReturn(new ConfirmFinalRecordResultView(
                 41001L, FinalRecordStatus.CONFIRMED, "ok", Instant.now(), 2L));
+        given(exportApplicationService.export(any())).willReturn(new FinalScoreExportFile(
+                "final-scores-2025-2026.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "xlsx".getBytes(StandardCharsets.UTF_8)
+        ));
     }
 
     @Test
@@ -169,6 +181,29 @@ class FinalRecordSecurityIntegrationTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "score.confirm.assigned"))
                         .contentType(APPLICATION_JSON)
                         .content("{\"comment\":\"ok\",\"expectedVersion\":1}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldReturn401WhenAnonymousExportsFinalScores() throws Exception {
+        mockMvc.perform(get("/api/admin/exports/final-scores")
+                        .param("academicYear", "2025-2026"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void shouldReturn403WhenAdminLacksScoreExportAssigned() throws Exception {
+        mockMvc.perform(get("/api/admin/exports/final-scores")
+                        .param("academicYear", "2025-2026")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "score.view.assigned")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void shouldAllowAdminExportWithScoreExportAssigned() throws Exception {
+        mockMvc.perform(get("/api/admin/exports/final-scores")
+                        .param("academicYear", "2025-2026")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "score.export.assigned")))
                 .andExpect(status().isOk());
     }
 
