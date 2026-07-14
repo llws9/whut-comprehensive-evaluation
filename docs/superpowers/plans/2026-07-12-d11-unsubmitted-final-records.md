@@ -75,6 +75,7 @@ Update these fields as the implementation proceeds. Every field starts as `PENDI
 - Final Verification After Last Edit: `PASS`; after the Task 5 evidence edit, reran focused D-11 tests with `mvn -pl whut-eval-app -am -Dtest=UnsubmittedFinalRecordQueryTest,FinalRecordQueryApplicationServiceTest,MybatisPlusFinalRecordQueryRepositoryIntegrationTest,AdminFinalRecordControllerWebMvcTest,FinalRecordSecurityIntegrationTest,FinalRecordControllerSecurityAnnotationTest,ScopeSqlTranslatorTest test -Dsurefire.failIfNoSpecifiedTests=false`, which reported `Tests run: 69, Failures: 0, Errors: 0, Skipped: 0`. Reran `git diff --check`, `git status --short`, `git diff --stat HEAD`, `git diff --name-status HEAD`, base branch diff review, `command -v rg`, and the five mandatory `rg` contract scans before final staging. Final uncommitted diff was limited to this plan file plus Task 5 shared-scope regression tests.
 
 **Tech Stack:** Java 21, Spring Boot 3.3.2, Spring MVC with `jakarta.servlet`, Spring Security method annotations, MyBatis provider SQL, H2 MySQL-mode integration tests, JUnit 5, AssertJ, Mockito.
+> **Architecture Note:** This repository uses a multi-module Maven structure (`whut-eval-domain`, `whut-eval-application`, `whut-eval-infra`, `whut-eval-interfaces`, `whut-eval-app`), which supersedes the single-module Spring Boot 2.6 description in the parent directory `AGENTS.md`. All commands and paths in this plan are for the current multi-module Spring Boot 3.3.2 architecture.
 
 ---
 
@@ -2384,7 +2385,7 @@ public final class D11ScopeSqlShape {
     }
 
     public static String orgSubtreeFragment(String inSql) {
-        // Double percent signs are Java String.formatted() escapes; the emitted SQL uses single % wildcards.
+        // %% in String.formatted() produces a literal %; the emitted SQL uses single % as the LIKE wildcard.
         return """
                 EXISTS (
                   SELECT 1
@@ -2612,7 +2613,9 @@ private SqlPredicateFragment rosterScopeFragment(FinalRecordAccessContext access
         String inSql = bindList(parameters, "d11Subtree", subtreeIds);
         fragments.add(D11ScopeSqlShape.orgSubtreeFragment(inSql));
     }
-    if (fragments.isEmpty()) {
+    // Explicitly deny-all only when no whole-record (ORG_UNIT/ORG_SUBTREE) scope clauses exist after filtering.
+    // Non-whole-record clauses (CATEGORY, ITEM, etc.) are intentionally ignored for final-record roster visibility per scope contract.
+    if (predicate.isEmptyResult() || fragments.isEmpty()) {
         return new SqlPredicateFragment("1 = 0", Map.of());
     }
     return new SqlPredicateFragment("(" + String.join(" OR ", fragments) + ")", parameters);
@@ -2818,9 +2821,31 @@ git commit -m "feat: query unsubmitted final record roster"
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordSecurityIntegrationTest.java`
 - Modify: `whut-eval-app/src/test/java/edu/whut/eval/app/finalrecord/FinalRecordControllerSecurityAnnotationTest.java`
 
+**Controller Parameter Validation Rules (exact implementation):**
+1. For single-value fields (`academicYear`, `grade`, `pageNo`, `pageSize`):
+   - Use `HttpServletRequest.getParameterValues(<field>)` to get all raw values.
+   - If the returned array length > 1: immediately throw `ValidationException` with code `VAL-4001` and message `<field> 不合法`.
+   - If array length == 1: take the single value, trim it, pass to query object for further validation.
+   - If array is empty or null: treat as not provided; use defaults for `pageNo`/`pageSize`, and the query object required check for `academicYear`.
+   - Reject array-style parameters like `academicYear[]`, `grade[]`, `pageNo[]`, and `pageSize[]` by checking for these parameter names and returning the same validation error.
+2. For multi-value field `classes`:
+   - First get all raw `classes` parameter values via `getParameterValues("classes")`.
+   - Then get all raw `classes[]` parameter values via `getParameterValues("classes[]")`.
+   - Concatenate the two lists in order: first all `classes` values, then all `classes[]` values.
+   - Pass this merged raw list to `UnsubmittedFinalRecordQuery` for normalization: trim, blank drop, dedup, length checks, and `MAX_CLASSES = 500`.
+   - Commas in class values are treated as ordinary characters; do not split values.
+3. All validation errors return HTTP 400 with `code = "VAL-4001"` and the field-specific message defined in the API contract.
+
 - [x] **Step 1: Write failing controller tests**
 
-Add controller tests:
+Add controller tests covering the above validation rules:
+- Test repeated `academicYear` values return `VAL-4001`.
+- Test repeated `grade` values return `VAL-4001`.
+- Test repeated `pageNo`/`pageSize` values return `VAL-4001`.
+- Test `academicYear[]`/`grade[]` array-style single-value parameters return `VAL-4001`.
+- Test merged `classes` + `classes[]` order is preserved before dedup.
+- Test `MAX_CLASSES = 500` limit returns `VAL-4001`.
+- Test commas in `classes` values are preserved as exact match characters.
 
 Use Mockito imports for `any()`, `anyLong()`, `never()`, and `reset()` if the test file does not already import them. Use `org.hamcrest.Matchers.aMapWithSize` for the exact `PageResult` JSON field-count assertion.
 
