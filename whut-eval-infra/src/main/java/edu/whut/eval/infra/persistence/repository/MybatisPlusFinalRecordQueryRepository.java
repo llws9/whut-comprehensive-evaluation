@@ -66,7 +66,13 @@ public class MybatisPlusFinalRecordQueryRepository implements FinalRecordQueryRe
     public List<FinalScoreExportRow> listAdminFinalScoreExportRows(FinalRecordAccessContext accessContext,
                                                                    FinalScoreExportQuery query,
                                                                    int limit) {
-        throw new UnsupportedOperationException("final score export query is implemented in D-10 Task 4");
+        SqlPredicateFragment fragment = scopeFragment(accessContext);
+        return finalRecordQueryMapper.selectAdminFinalScoreExportRows(
+                fragment.getExpression(),
+                fragment.getParameters(),
+                query,
+                limit
+        );
     }
 
     @Override

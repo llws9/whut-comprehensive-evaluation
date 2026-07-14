@@ -1,6 +1,8 @@
 package edu.whut.eval.infra.persistence.mapper;
 
 import edu.whut.eval.application.finalrecord.query.FinalComponentScoreRow;
+import edu.whut.eval.application.finalrecord.exporting.FinalScoreExportQuery;
+import edu.whut.eval.application.finalrecord.exporting.FinalScoreExportRow;
 import edu.whut.eval.application.finalrecord.query.FinalRecordQueryRow;
 import edu.whut.eval.domain.finalrecord.query.FinalRecordPageQuery;
 import org.apache.ibatis.annotations.Mapper;
@@ -25,6 +27,12 @@ public interface FinalRecordQueryMapper {
                                                       @Param("query") FinalRecordPageQuery query,
                                                       @Param("offset") long offset,
                                                       @Param("limit") long limit);
+
+    @SelectProvider(type = FinalRecordQuerySqlProvider.class, method = "buildSelectAdminFinalScoreExportRows")
+    List<FinalScoreExportRow> selectAdminFinalScoreExportRows(@Param("expression") String expression,
+                                                              @Param("parameters") Map<String, Object> parameters,
+                                                              @Param("query") FinalScoreExportQuery query,
+                                                              @Param("limit") int limit);
 
     @SelectProvider(type = FinalRecordQuerySqlProvider.class, method = "buildSelectAdminFinalRecordDetail")
     FinalRecordQueryRow selectAdminFinalRecordDetail(@Param("recordId") Long recordId);
