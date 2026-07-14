@@ -2,6 +2,8 @@ package edu.whut.eval.infra.persistence.repository;
 
 import edu.whut.eval.application.finalrecord.query.FinalComponentScoreRow;
 import edu.whut.eval.application.finalrecord.query.FinalRecordQueryRow;
+import edu.whut.eval.application.finalrecord.exporting.FinalScoreExportQuery;
+import edu.whut.eval.application.finalrecord.exporting.FinalScoreExportRow;
 import edu.whut.eval.application.finalrecord.repository.FinalRecordQueryRepository;
 import edu.whut.eval.domain.auth.model.ApplicationScopePredicate;
 import edu.whut.eval.domain.auth.model.AuthorizationScopeSet;
@@ -58,6 +60,13 @@ public class MybatisPlusFinalRecordQueryRepository implements FinalRecordQueryRe
                 query.getPageSize()
         );
         return new PageResult<>(total, records);
+    }
+
+    @Override
+    public List<FinalScoreExportRow> listAdminFinalScoreExportRows(FinalRecordAccessContext accessContext,
+                                                                   FinalScoreExportQuery query,
+                                                                   int limit) {
+        throw new UnsupportedOperationException("final score export query is implemented in D-10 Task 4");
     }
 
     @Override
