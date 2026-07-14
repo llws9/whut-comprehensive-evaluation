@@ -152,6 +152,15 @@ class ReviewApplicationSecurityIntegrationTest {
     }
 
     @Test
+    void shouldRejectUserWithoutApplicationReviewOnBatchApprove() throws Exception {
+        mockMvc.perform(post("/api/review/applications/batch-approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1002L, "application.submit"))
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"applicationIds\":[21013]}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void shouldAllowReviewerWithApplicationReviewOnDetail() throws Exception {
         mockMvc.perform(get("/api/review/applications/21013")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "application.review")))

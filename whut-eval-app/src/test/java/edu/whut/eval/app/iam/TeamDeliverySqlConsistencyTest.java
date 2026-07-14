@@ -285,6 +285,7 @@ class TeamDeliverySqlConsistencyTest {
         assertThat(doc).contains("| C-7 | `POST` | `/api/review/applications/{applicationId}/approve` | 审批通过 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-8 | `POST` | `/api/review/applications/{applicationId}/return` | 退回补充 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-9 | `POST` | `/api/review/applications/{applicationId}/reject` | 审批拒绝 | `CURRENT_IMPLEMENTED` |");
+        assertThat(doc).contains("| C-10 | `POST` | `/api/review/applications/batch-approve` | 批量审批通过 | `CURRENT_IMPLEMENTED` |");
     }
 
     @Test

@@ -1,9 +1,11 @@
 package edu.whut.eval.interfaces.review;
 
 import edu.whut.eval.application.application.command.ApproveReviewCommand;
+import edu.whut.eval.application.application.command.BatchApproveReviewCommand;
 import edu.whut.eval.application.application.command.RejectReviewCommand;
 import edu.whut.eval.application.application.command.ReturnReviewCommand;
 import edu.whut.eval.application.application.query.ApplicationAttachmentView;
+import edu.whut.eval.application.application.query.BatchReviewApproveResultView;
 import edu.whut.eval.application.application.query.ReviewActionResultView;
 import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
 import edu.whut.eval.application.application.query.ReviewApplicationListItemView;
@@ -14,6 +16,7 @@ import edu.whut.eval.common.api.ApiResponse;
 import edu.whut.eval.domain.application.query.ReviewApplicationPageQuery;
 import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.interfaces.review.request.ApproveReviewRequest;
+import edu.whut.eval.interfaces.review.request.BatchApproveReviewRequest;
 import edu.whut.eval.interfaces.review.request.RejectReviewRequest;
 import edu.whut.eval.interfaces.review.request.ReturnReviewRequest;
 import jakarta.validation.Valid;
@@ -82,6 +85,14 @@ public class ReviewApplicationController {
                                                        @Valid @RequestBody ApproveReviewRequest request) {
         return ApiResponse.success(reviewApplicationCommandApplicationService.approve(
                 new ApproveReviewCommand(applicationId, request.getExpectedVersion(), request.getComment())
+        ));
+    }
+
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_REVIEW)")
+    @PostMapping("/batch-approve")
+    public ApiResponse<BatchReviewApproveResultView> batchApprove(@Valid @RequestBody BatchApproveReviewRequest request) {
+        return ApiResponse.success(reviewApplicationCommandApplicationService.batchApprove(
+                new BatchApproveReviewCommand(request.getApplicationIds(), request.getComment())
         ));
     }
 

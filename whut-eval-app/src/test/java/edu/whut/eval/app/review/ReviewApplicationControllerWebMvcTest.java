@@ -2,6 +2,8 @@ package edu.whut.eval.app.review;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import edu.whut.eval.application.application.query.BatchReviewApproveFailedItemView;
+import edu.whut.eval.application.application.query.BatchReviewApproveResultView;
 import edu.whut.eval.application.application.query.ApplicationAttachmentView;
 import edu.whut.eval.application.application.query.ReviewActionResultView;
 import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
@@ -168,6 +170,40 @@ class ReviewApplicationControllerWebMvcTest {
     }
 
     @Test
+    void shouldBatchApproveApplicationsWithPerItemFailures() throws Exception {
+        given(commandService.batchApprove(any())).willReturn(new BatchReviewApproveResultView(
+                3,
+                1,
+                2,
+                List.of(
+                        new BatchReviewApproveFailedItemView(21014L, "RES-4040", "申请不存在"),
+                        new BatchReviewApproveFailedItemView(21015L, "BIZ-4090", "当前申请状态不允许审核")
+                ),
+                Instant.parse("2026-07-07T12:30:00Z")
+        ));
+
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
+                .build()
+                .perform(post("/api/review/applications/batch-approve")
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new BatchApprovePayload(List.of(21013L, 21014L, 21015L), "批量同意")
+                        )))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.totalCount").value(3))
+                .andExpect(jsonPath("$.data.successCount").value(1))
+                .andExpect(jsonPath("$.data.failedCount").value(2))
+                .andExpect(jsonPath("$.data.failedItems[0].applicationId").value(21014))
+                .andExpect(jsonPath("$.data.failedItems[0].code").value("RES-4040"))
+                .andExpect(jsonPath("$.data.failedItems[1].applicationId").value(21015))
+                .andExpect(jsonPath("$.data.failedItems[1].code").value("BIZ-4090"))
+                .andExpect(jsonPath("$.data.processedAt").value("2026-07-07T12:30:00Z"));
+    }
+
+    @Test
     void shouldReturn400WhenReturnReasonIsBlank() throws Exception {
         standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
@@ -238,5 +274,8 @@ class ReviewApplicationControllerWebMvcTest {
     }
 
     private record ApprovePayload(Long expectedVersion, String comment) {
+    }
+
+    private record BatchApprovePayload(List<Long> applicationIds, String comment) {
     }
 }

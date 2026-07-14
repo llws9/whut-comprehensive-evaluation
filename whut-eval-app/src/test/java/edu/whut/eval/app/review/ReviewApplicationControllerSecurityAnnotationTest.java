@@ -18,7 +18,7 @@ class ReviewApplicationControllerSecurityAnnotationTest {
     @Test
     void shouldRequireApplicationReviewAuthorityOnAllEndpoints() {
         Set<String> endpointMethods = Set.of("pageApplications", "getDetail", "listAttachments", "listLogs",
-                "approve", "returnForFix", "reject");
+                "approve", "batchApprove", "returnForFix", "reject");
         Set<String> annotatedMethods = Arrays.stream(ReviewApplicationController.class.getDeclaredMethods())
                 .filter(method -> endpointMethods.contains(method.getName()))
                 .peek(method -> {

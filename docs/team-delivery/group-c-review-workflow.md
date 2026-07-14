@@ -2,7 +2,7 @@
 
 > 当前状态：`PARTIAL_IMPLEMENTED`
 >
-> 当前 Java Controller 已提供 `ReviewApplicationController`，覆盖 C-3/C-4/C-5/C-6/C-7/C-8/C-9：审核列表、审核详情、附件摘要、审核轨迹、审批通过、退回补充、审批拒绝。C-1/C-2/C-10 仍为目标态设计；C-5 当前返回附件元数据摘要，访问 URL 生成仍待 E-9/E-10 集成。
+> 当前 Java Controller 已提供 `ReviewApplicationController`，覆盖 C-3/C-4/C-5/C-6/C-7/C-8/C-9/C-10：审核列表、审核详情、附件摘要、审核轨迹、审批通过、退回补充、审批拒绝、批量审批通过。C-1/C-2 仍为目标态设计；C-5 当前返回附件元数据摘要，访问 URL 生成仍待 E-9/E-10 集成。
 
 ## 1. 模块背景
 
@@ -100,7 +100,7 @@ flowchart LR
 | C-7 | `POST` | `/api/review/applications/{applicationId}/approve` | 审批通过 | `CURRENT_IMPLEMENTED` |
 | C-8 | `POST` | `/api/review/applications/{applicationId}/return` | 退回补充 | `CURRENT_IMPLEMENTED` |
 | C-9 | `POST` | `/api/review/applications/{applicationId}/reject` | 审批拒绝 | `CURRENT_IMPLEMENTED` |
-| C-10 | `POST` | `/api/review/applications/batch-approve` | 批量审批通过 | `TARGET_BLUEPRINT` |
+| C-10 | `POST` | `/api/review/applications/batch-approve` | 批量审批通过 | `CURRENT_IMPLEMENTED` |
 
 ## 6. 统一返回约定
 

@@ -1,14 +1,18 @@
 package edu.whut.eval.application.application.service;
 
 import edu.whut.eval.application.application.command.ApproveReviewCommand;
+import edu.whut.eval.application.application.command.BatchApproveReviewCommand;
 import edu.whut.eval.application.application.command.RejectReviewCommand;
 import edu.whut.eval.application.application.command.ReturnReviewCommand;
+import edu.whut.eval.application.application.query.BatchReviewApproveFailedItemView;
+import edu.whut.eval.application.application.query.BatchReviewApproveResultView;
 import edu.whut.eval.application.application.query.ReviewActionResultView;
 import edu.whut.eval.application.application.query.ReviewApplicationQueryRow;
 import edu.whut.eval.application.application.repository.ReviewApplicationQueryRepository;
 import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.common.exception.AccessDeniedAppException;
+import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.application.model.ApplicationReviewAction;
@@ -22,7 +26,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 @Service
 public class ReviewApplicationCommandApplicationService {
@@ -51,6 +59,33 @@ public class ReviewApplicationCommandApplicationService {
     }
 
     @Transactional
+    public BatchReviewApproveResultView batchApprove(BatchApproveReviewCommand command) {
+        List<Long> applicationIds = requireBatchApplicationIds(command.applicationIds());
+        UserAuthorizationContext reviewer = requiredReviewer();
+        List<BatchReviewApproveFailedItemView> failedItems = new ArrayList<>();
+        long successCount = 0;
+        for (Long applicationId : applicationIds) {
+            try {
+                reviewWithReviewer(reviewer, applicationId, null, ApplicationReviewAction.APPROVE, command.comment(), true);
+                successCount++;
+            } catch (ResourceNotFoundException | AccessDeniedAppException | ConflictException ex) {
+                failedItems.add(new BatchReviewApproveFailedItemView(
+                        applicationId,
+                        ex.getErrorCode().code(),
+                        ex.getMessage()
+                ));
+            }
+        }
+        return new BatchReviewApproveResultView(
+                applicationIds.size(),
+                successCount,
+                failedItems.size(),
+                List.copyOf(failedItems),
+                Instant.now()
+        );
+    }
+
+    @Transactional
     public ReviewActionResultView returnForFix(ReturnReviewCommand command) {
         requireReason(command.reason());
         return review(command.applicationId(), command.expectedVersion(), ApplicationReviewAction.RETURN, command.reason());
@@ -66,19 +101,27 @@ public class ReviewApplicationCommandApplicationService {
                                           Long expectedVersion,
                                           ApplicationReviewAction action,
                                           String reason) {
-        UserAuthorizationContext reviewer = userAuthorizationContextAssembler.requiredAuthorizationContext();
-        if (!reviewer.hasAuthority(AuthorizationPermissionCodes.APPLICATION_REVIEW)) {
-            throw new AccessDeniedAppException("当前审核人无审核权限");
-        }
+        return reviewWithReviewer(requiredReviewer(), applicationId, expectedVersion, action, reason, false);
+    }
+
+    private ReviewActionResultView reviewWithReviewer(UserAuthorizationContext reviewer,
+                                                      Long applicationId,
+                                                      Long expectedVersion,
+                                                      ApplicationReviewAction action,
+                                                      String reason,
+                                                      boolean useCurrentVersion) {
         ReviewApplicationQueryRow resource = reviewApplicationQueryRepository.findReviewApplicationDetail(applicationId)
                 .orElseThrow(() -> new ResourceNotFoundException("申请不存在"));
         reviewApplicationAccessValidator.requireAccess(reviewer, resource);
         ApplicationSubmission submission = applicationSubmissionRepository.findById(applicationId)
                 .orElseThrow(() -> new ResourceNotFoundException("申请不存在"));
+        long requiredVersion = useCurrentVersion
+                ? currentVersion(submission)
+                : requiredExpectedVersion(expectedVersion);
         ApplicationSubmission reviewed = switch (action) {
-            case APPROVE -> submission.approve(requiredExpectedVersion(expectedVersion));
-            case RETURN -> submission.returnForFix(requiredExpectedVersion(expectedVersion));
-            case REJECT -> submission.reject(requiredExpectedVersion(expectedVersion));
+            case APPROVE -> submission.approve(requiredVersion);
+            case RETURN -> submission.returnForFix(requiredVersion);
+            case REJECT -> submission.reject(requiredVersion);
         };
         ApplicationSubmission saved = applicationSubmissionRepository.save(reviewed);
         Instant reviewedAt = Instant.now();
@@ -92,6 +135,14 @@ public class ReviewApplicationCommandApplicationService {
                 reviewedAt
         ));
         return new ReviewActionResultView(saved.getApplicationId(), saved.getStatus(), saved.getVersion(), log.getId(), log.getReviewedAt());
+    }
+
+    private UserAuthorizationContext requiredReviewer() {
+        UserAuthorizationContext reviewer = userAuthorizationContextAssembler.requiredAuthorizationContext();
+        if (!reviewer.hasAuthority(AuthorizationPermissionCodes.APPLICATION_REVIEW)) {
+            throw new AccessDeniedAppException("当前审核人无审核权限");
+        }
+        return reviewer;
     }
 
     private ApplicationAccessContext toAccessContext(UserAuthorizationContext reviewer) {
@@ -112,6 +163,29 @@ public class ReviewApplicationCommandApplicationService {
             throw new ValidationException("expectedVersion 不能为空");
         }
         return expectedVersion;
+    }
+
+    private long currentVersion(ApplicationSubmission submission) {
+        if (submission.getVersion() == null) {
+            throw new ConflictException("申请版本已变更，请刷新后重试");
+        }
+        return submission.getVersion();
+    }
+
+    private List<Long> requireBatchApplicationIds(List<Long> applicationIds) {
+        if (applicationIds == null || applicationIds.isEmpty()) {
+            throw new ValidationException("applicationIds 不能为空");
+        }
+        Set<Long> seen = new HashSet<>();
+        for (Long applicationId : applicationIds) {
+            if (applicationId == null) {
+                throw new ValidationException("applicationIds 不能为空");
+            }
+            if (!seen.add(applicationId)) {
+                throw new ValidationException("applicationIds 不允许重复");
+            }
+        }
+        return List.copyOf(applicationIds);
     }
 
     private void requireReason(String reason) {
