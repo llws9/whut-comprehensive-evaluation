@@ -69,7 +69,52 @@ WHERE EXISTS (SELECT 1 FROM iam_permission WHERE id = 5023 AND permission_code <
    OR EXISTS (SELECT 1 FROM iam_scope_rule WHERE id = 8019 AND NOT (assignment_id = 7010 AND permission_code = 'score.confirm.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002))
    OR EXISTS (SELECT 1 FROM iam_scope_rule WHERE id = 8020 AND NOT (assignment_id = 7011 AND permission_code = 'score.confirm.assigned' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002))
    OR EXISTS (SELECT 1 FROM iam_scope_rule WHERE id = 8021 AND NOT (assignment_id = 7010 AND permission_code = 'score.import' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002))
-   OR EXISTS (SELECT 1 FROM iam_scope_rule WHERE id = 8022 AND NOT (assignment_id = 7011 AND permission_code = 'score.import' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002));
+   OR EXISTS (SELECT 1 FROM iam_scope_rule WHERE id = 8022 AND NOT (assignment_id = 7011 AND permission_code = 'score.import' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002))
+   OR EXISTS (
+     SELECT 1 FROM iam_scope_rule
+     WHERE id = 8023
+       AND NOT (
+         assignment_id = 7010
+         AND permission_code = 'score.export.assigned'
+         AND scope_type = 'ORG_SUBTREE'
+         AND org_unit_id = 2002
+         AND category_code IS NULL
+         AND item_code IS NULL
+         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(expression_json, ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') = '{"scoreRole":"counselor"}'
+         AND priority = 80
+         AND status = 'ACTIVE'
+       )
+   )
+   OR EXISTS (
+     SELECT 1 FROM iam_scope_rule
+     WHERE id = 8024
+       AND NOT (
+         assignment_id = 7011
+         AND permission_code = 'score.export.assigned'
+         AND scope_type = 'ORG_SUBTREE'
+         AND org_unit_id = 2002
+         AND category_code IS NULL
+         AND item_code IS NULL
+         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(expression_json, ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') = '{"scoreRole":"college_reviewer"}'
+         AND priority = 70
+         AND status = 'ACTIVE'
+       )
+   )
+   OR EXISTS (
+     SELECT 1 FROM iam_scope_rule
+     WHERE id = 8025
+       AND NOT (
+         assignment_id = 7012
+         AND permission_code = 'score.export.assigned'
+         AND scope_type = 'ALL'
+         AND org_unit_id IS NULL
+         AND category_code IS NULL
+         AND item_code IS NULL
+         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(expression_json, ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') = '{"superAdmin":true}'
+         AND priority = 1000
+         AND status = 'ACTIVE'
+       )
+   );
 
 INSERT INTO iam_permission (id, permission_code, permission_name, permission_group, status, created_at)
 SELECT 5023, 'score.confirm.assigned', '确认授权范围最终成绩', 'score', 'ACTIVE', CURRENT_TIMESTAMP()
@@ -141,4 +186,25 @@ SELECT 8022, 7011, 'score.import', 'ORG_SUBTREE', 2002, NULL, NULL, '{"scoreRole
 WHERE NOT EXISTS (
   SELECT 1 FROM iam_scope_rule
   WHERE assignment_id = 7011 AND permission_code = 'score.import' AND scope_type = 'ORG_SUBTREE' AND org_unit_id = 2002
+);
+
+INSERT INTO iam_scope_rule (id, assignment_id, permission_code, scope_type, org_unit_id, category_code, item_code, expression_json, priority, status, created_at)
+SELECT 8023, 7010, 'score.export.assigned', 'ORG_SUBTREE', 2002, NULL, NULL, '{"scoreRole":"counselor"}', 80, 'ACTIVE', CURRENT_TIMESTAMP()
+WHERE NOT EXISTS (
+  SELECT 1 FROM iam_scope_rule
+  WHERE id = 8023
+);
+
+INSERT INTO iam_scope_rule (id, assignment_id, permission_code, scope_type, org_unit_id, category_code, item_code, expression_json, priority, status, created_at)
+SELECT 8024, 7011, 'score.export.assigned', 'ORG_SUBTREE', 2002, NULL, NULL, '{"scoreRole":"college_reviewer"}', 70, 'ACTIVE', CURRENT_TIMESTAMP()
+WHERE NOT EXISTS (
+  SELECT 1 FROM iam_scope_rule
+  WHERE id = 8024
+);
+
+INSERT INTO iam_scope_rule (id, assignment_id, permission_code, scope_type, org_unit_id, category_code, item_code, expression_json, priority, status, created_at)
+SELECT 8025, 7012, 'score.export.assigned', 'ALL', NULL, NULL, NULL, '{"superAdmin":true}', 1000, 'ACTIVE', CURRENT_TIMESTAMP()
+WHERE NOT EXISTS (
+  SELECT 1 FROM iam_scope_rule
+  WHERE id = 8025
 );
