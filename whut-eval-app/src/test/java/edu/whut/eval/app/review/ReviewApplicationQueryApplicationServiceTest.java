@@ -5,14 +5,18 @@ import edu.whut.eval.application.application.query.ApplicationAttachmentView;
 import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
 import edu.whut.eval.application.application.query.ReviewApplicationListItemView;
 import edu.whut.eval.application.application.query.ReviewApplicationQueryRow;
+import edu.whut.eval.application.application.query.ReviewTaskSummaryCounts;
+import edu.whut.eval.application.application.query.ReviewTaskSummaryView;
 import edu.whut.eval.application.application.query.ReviewLogView;
 import edu.whut.eval.application.application.repository.ReviewApplicationQueryRepository;
 import edu.whut.eval.application.application.service.ReviewApplicationAccessValidator;
 import edu.whut.eval.application.application.service.ReviewApplicationQueryApplicationService;
+import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.domain.application.model.ApplicationReviewAction;
 import edu.whut.eval.domain.application.model.ApplicationReviewLog;
+import edu.whut.eval.domain.application.query.ApplicationAccessContext;
 import edu.whut.eval.domain.application.query.ReviewApplicationPageQuery;
 import edu.whut.eval.domain.application.repository.ApplicationReviewLogRepository;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
@@ -66,6 +70,35 @@ class ReviewApplicationQueryApplicationServiceTest {
         assertThat(item.applicantUserName()).isEqualTo("张三");
         assertThat(item.orgUnitName()).isEqualTo("计算机学院 1 班");
         assertThat(item.currentReviewNode()).isEqualTo("SINGLE_REVIEW");
+    }
+
+    @Test
+    void shouldReturnReviewTaskSummaryUsingReviewTaskPermissionAndApplicationReviewScope() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(taskViewer());
+        given(reviewApplicationQueryRepository.countReviewTaskSummary(any(), any(), any()))
+                .willReturn(new ReviewTaskSummaryCounts(5, 2, 1, 1));
+
+        ReviewTaskSummaryView result = service.getReviewTaskSummary();
+
+        assertThat(result.pendingCount()).isEqualTo(5);
+        assertThat(result.approvedToday()).isEqualTo(2);
+        assertThat(result.returnedToday()).isEqualTo(1);
+        assertThat(result.rejectedToday()).isEqualTo(1);
+        assertThat(result.processedToday()).isEqualTo(4);
+        org.mockito.ArgumentCaptor<ApplicationAccessContext> contextCaptor =
+                org.mockito.ArgumentCaptor.forClass(ApplicationAccessContext.class);
+        verify(reviewApplicationQueryRepository).countReviewTaskSummary(contextCaptor.capture(), any(), any());
+        assertThat(contextCaptor.getValue().getPermissionCode()).isEqualTo(AuthorizationPermissionCodes.APPLICATION_REVIEW);
+    }
+
+    @Test
+    void shouldDenyReviewTaskSummaryWithoutReviewTaskViewPermission() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
+
+        assertThatThrownBy(service::getReviewTaskSummary)
+                .isInstanceOf(AccessDeniedAppException.class)
+                .hasMessage("当前用户无工作台查看权限");
+        verifyNoInteractions(reviewApplicationQueryRepository, reviewApplicationAccessValidator, applicationReviewLogRepository);
     }
 
     @Test
@@ -202,6 +235,18 @@ class ReviewApplicationQueryApplicationServiceTest {
                 "COUNSELOR",
                 Set.of("COUNSELOR"),
                 Set.of("application.review"),
+                List.of()
+        );
+    }
+
+    private UserAuthorizationContext taskViewer() {
+        return new UserAuthorizationContext(
+                1010L,
+                "A0010",
+                "Counselor",
+                "COUNSELOR",
+                Set.of("COUNSELOR"),
+                Set.of("review.task.view", "application.review"),
                 List.of()
         );
     }

@@ -3,6 +3,7 @@ package edu.whut.eval.infra.persistence.repository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.application.query.ReviewApplicationQueryRow;
+import edu.whut.eval.application.application.query.ReviewTaskSummaryCounts;
 import edu.whut.eval.application.application.repository.ReviewApplicationQueryRepository;
 import edu.whut.eval.domain.application.query.ApplicationAccessContext;
 import edu.whut.eval.domain.application.query.ReviewApplicationPageQuery;
@@ -18,6 +19,7 @@ import edu.whut.eval.infra.security.sql.SqlPredicateFragment;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -90,6 +92,21 @@ public class MybatisPlusReviewApplicationQueryRepository implements ReviewApplic
         materializeScoringSnapshot(row);
         row.setAttachments(reviewApplicationQueryMapper.selectAttachments(applicationId));
         return Optional.of(row);
+    }
+
+    @Override
+    public ReviewTaskSummaryCounts countReviewTaskSummary(ApplicationAccessContext accessContext,
+                                                         LocalDateTime dayStart,
+                                                         LocalDateTime dayEnd) {
+        SqlPredicateFragment fragment = scopeFragment(accessContext);
+        ReviewTaskSummaryCounts counts = reviewApplicationQueryMapper.countReviewTaskSummary(
+                fragment.getExpression(),
+                fragment.getParameters(),
+                accessContext.getUserId(),
+                dayStart,
+                dayEnd
+        );
+        return counts == null ? new ReviewTaskSummaryCounts(0, 0, 0, 0) : counts;
     }
 
     private SqlPredicateFragment scopeFragment(ApplicationAccessContext accessContext) {

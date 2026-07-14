@@ -7,6 +7,7 @@ import edu.whut.eval.application.application.query.ReviewApplicationSummaryView;
 import edu.whut.eval.application.application.query.ReviewApplicantView;
 import edu.whut.eval.application.application.query.ReviewLogView;
 import edu.whut.eval.application.application.query.ReviewScoringSnapshotView;
+import edu.whut.eval.application.application.query.ReviewTaskSummaryView;
 import edu.whut.eval.application.application.service.ReviewApplicationCommandApplicationService;
 import edu.whut.eval.application.application.service.ReviewApplicationQueryApplicationService;
 import edu.whut.eval.application.auth.service.AccessSessionService;
@@ -25,6 +26,7 @@ import edu.whut.eval.infra.security.jwt.JwtTokenResolver;
 import edu.whut.eval.infra.security.web.RestAccessDeniedHandler;
 import edu.whut.eval.infra.security.web.RestAuthenticationEntryPoint;
 import edu.whut.eval.interfaces.review.ReviewApplicationController;
+import edu.whut.eval.interfaces.review.ReviewTaskController;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.BeforeEach;
@@ -57,10 +59,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(controllers = ReviewApplicationController.class)
+@WebMvcTest(controllers = {ReviewApplicationController.class, ReviewTaskController.class})
 @ContextConfiguration(classes = ReviewApplicationSecurityIntegrationTest.TestApplication.class)
 @Import({
         ReviewApplicationController.class,
+        ReviewTaskController.class,
         SecurityConfiguration.class,
         RestAuthenticationEntryPoint.class,
         RestAccessDeniedHandler.class,
@@ -132,6 +135,8 @@ class ReviewApplicationSecurityIntegrationTest {
                 new ReviewLogView(31000L, "RETURN", 1010L, null, "COUNSELOR", "补充材料",
                         Instant.parse("2026-07-07T11:00:00Z"))
         ));
+        given(reviewApplicationQueryApplicationService.getReviewTaskSummary())
+                .willReturn(new ReviewTaskSummaryView(5, 2, 1, 1, 4));
         given(reviewApplicationCommandApplicationService.approve(any()))
                 .willReturn(new ReviewActionResultView(21013L, ApplicationSubmissionStatus.APPROVED, 2L, 31001L, Instant.now()));
     }
@@ -161,6 +166,20 @@ class ReviewApplicationSecurityIntegrationTest {
     }
 
     @Test
+    void shouldRejectUserWithoutReviewTaskViewOnSummary() throws Exception {
+        mockMvc.perform(get("/api/review/tasks/summary")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "application.review")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void shouldAllowUserWithReviewTaskViewOnSummary() throws Exception {
+        mockMvc.perform(get("/api/review/tasks/summary")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1013L, "review.task.view")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void shouldAllowReviewerWithApplicationReviewOnDetail() throws Exception {
         mockMvc.perform(get("/api/review/applications/21013")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "application.review")))
@@ -184,6 +203,9 @@ class ReviewApplicationSecurityIntegrationTest {
     private Set<String> authoritiesFor(Long userId) {
         if (userId == 1010L) {
             return Set.of("application.review");
+        }
+        if (userId == 1013L) {
+            return Set.of("review.task.view");
         }
         return Set.of("application.submit");
     }

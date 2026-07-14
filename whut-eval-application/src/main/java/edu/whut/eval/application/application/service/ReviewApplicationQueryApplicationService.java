@@ -9,6 +9,8 @@ import edu.whut.eval.application.application.query.ReviewApplicationSummaryView;
 import edu.whut.eval.application.application.query.ReviewApplicantView;
 import edu.whut.eval.application.application.query.ReviewLogView;
 import edu.whut.eval.application.application.query.ReviewScoringSnapshotView;
+import edu.whut.eval.application.application.query.ReviewTaskSummaryCounts;
+import edu.whut.eval.application.application.query.ReviewTaskSummaryView;
 import edu.whut.eval.application.application.repository.ReviewApplicationQueryRepository;
 import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
@@ -53,6 +55,24 @@ public class ReviewApplicationQueryApplicationService {
         return new PageResult<>(page.total(), page.records().stream().map(this::toListItem).toList());
     }
 
+    public ReviewTaskSummaryView getReviewTaskSummary() {
+        UserAuthorizationContext reviewer = requiredTaskViewer();
+        LocalDateTime dayStart = LocalDateTime.now(ZoneOffset.UTC).toLocalDate().atStartOfDay();
+        ReviewTaskSummaryCounts counts = reviewApplicationQueryRepository.countReviewTaskSummary(
+                toAccessContext(reviewer),
+                dayStart,
+                dayStart.plusDays(1)
+        );
+        long processedToday = counts.approvedToday() + counts.returnedToday() + counts.rejectedToday();
+        return new ReviewTaskSummaryView(
+                counts.pendingCount(),
+                counts.approvedToday(),
+                counts.returnedToday(),
+                counts.rejectedToday(),
+                processedToday
+        );
+    }
+
     public ReviewApplicationDetailView getReviewDetail(Long applicationId) {
         UserAuthorizationContext reviewer = requiredReviewer();
         ReviewApplicationQueryRow row = reviewApplicationQueryRepository.findReviewApplicationDetail(applicationId)
@@ -88,6 +108,14 @@ public class ReviewApplicationQueryApplicationService {
         UserAuthorizationContext reviewer = userAuthorizationContextAssembler.requiredAuthorizationContext();
         if (!reviewer.hasAuthority(AuthorizationPermissionCodes.APPLICATION_REVIEW)) {
             throw new AccessDeniedAppException("当前审核人无审核权限");
+        }
+        return reviewer;
+    }
+
+    private UserAuthorizationContext requiredTaskViewer() {
+        UserAuthorizationContext reviewer = userAuthorizationContextAssembler.requiredAuthorizationContext();
+        if (!reviewer.hasAuthority(AuthorizationPermissionCodes.REVIEW_TASK_VIEW)) {
+            throw new AccessDeniedAppException("当前用户无工作台查看权限");
         }
         return reviewer;
     }

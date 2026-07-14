@@ -49,6 +49,39 @@ public class ReviewApplicationQuerySqlProvider {
         return buildSql(selectColumns() + REVIEW_BASE, params, false, true);
     }
 
+    public String buildCountReviewTaskSummary(Map<String, Object> params) {
+        String expression = params == null ? "" : (String) params.get("expression");
+        List<String> conditions = new ArrayList<>();
+        if (expression != null && !expression.isBlank()) {
+            conditions.add("(" + expression + ")");
+        }
+        String scopeCondition = conditions.isEmpty() ? "1 = 1" : String.join(" AND ", conditions);
+        return """
+                SELECT
+                    COALESCE(COUNT(DISTINCT CASE WHEN scoped.status = 'SUBMITTED' THEN scoped.application_id END), 0) AS pendingCount,
+                    COALESCE(COUNT(DISTINCT CASE WHEN scoped.review_action = 'APPROVE' THEN scoped.application_id END), 0) AS approvedToday,
+                    COALESCE(COUNT(DISTINCT CASE WHEN scoped.review_action = 'RETURN' THEN scoped.application_id END), 0) AS returnedToday,
+                    COALESCE(COUNT(DISTINCT CASE WHEN scoped.review_action = 'REJECT' THEN scoped.application_id END), 0) AS rejectedToday
+                FROM (
+                    SELECT review_base.application_id,
+                           review_base.applicant_user_id,
+                           review_base.org_unit_id,
+                           review_base.org_path,
+                           review_base.category_code,
+                           review_base.item_code,
+                           review_base.status,
+                           l.action AS review_action
+                """ + REVIEW_BASE + """
+                    LEFT JOIN application_review_log l
+                           ON l.application_id = review_base.application_id
+                          AND l.reviewer_id = #{reviewerId}
+                          AND l.reviewed_at >= #{dayStart}
+                          AND l.reviewed_at < #{dayEnd}
+                    WHERE """ + scopeCondition + """
+                ) scoped
+                """;
+    }
+
     private String buildSql(String selectFromSql, Map<String, Object> params, boolean paged, boolean detail) {
         String expression = params == null ? "" : (String) params.get("expression");
         ReviewApplicationPageQuery query = params == null || !params.containsKey("query")

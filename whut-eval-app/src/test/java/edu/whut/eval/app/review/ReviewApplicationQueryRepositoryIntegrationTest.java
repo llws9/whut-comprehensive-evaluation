@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.application.query.ReviewApplicationQueryRow;
+import edu.whut.eval.application.application.query.ReviewTaskSummaryCounts;
 import edu.whut.eval.application.application.repository.ReviewApplicationQueryRepository;
 import edu.whut.eval.application.auth.service.DefaultAuthorizationScopeEvaluator;
 import edu.whut.eval.application.auth.service.DefaultScopePredicateBuilder;
@@ -91,6 +92,20 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
     }
 
     @Test
+    void shouldCountReviewTaskSummaryByScopeReviewerAndTodayWindow() {
+        ReviewTaskSummaryCounts counts = repository.countReviewTaskSummary(
+                accessContext(),
+                java.time.LocalDateTime.of(2026, 7, 7, 0, 0),
+                java.time.LocalDateTime.of(2026, 7, 8, 0, 0)
+        );
+
+        assertThat(counts.pendingCount()).isEqualTo(2);
+        assertThat(counts.approvedToday()).isEqualTo(1);
+        assertThat(counts.returnedToday()).isEqualTo(2);
+        assertThat(counts.rejectedToday()).isEqualTo(1);
+    }
+
+    @Test
     void shouldRejectUnsupportedReviewListStatus() {
         assertThatThrownBy(() -> new ReviewApplicationPageQuery(1, 20, null, null, null, "DRAFT", null, null))
                 .isInstanceOf(ValidationException.class)
@@ -107,6 +122,7 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
     private void recreateTables() {
         jdbcTemplate.execute("DROP TABLE IF EXISTS application_attachment");
         jdbcTemplate.execute("DROP TABLE IF EXISTS application_fact");
+        jdbcTemplate.execute("DROP TABLE IF EXISTS application_review_log");
         jdbcTemplate.execute("DROP TABLE IF EXISTS application_submission");
         jdbcTemplate.execute("DROP TABLE IF EXISTS iam_user");
         jdbcTemplate.execute("DROP TABLE IF EXISTS org_unit");
@@ -155,6 +171,17 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
                     updated_at DATETIME NOT NULL
                 )
                 """);
+        jdbcTemplate.execute("""
+                CREATE TABLE application_review_log (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    application_id BIGINT NOT NULL,
+                    action VARCHAR(32) NOT NULL,
+                    reviewer_id BIGINT NOT NULL,
+                    review_role VARCHAR(64) NULL,
+                    reason VARCHAR(1000) NULL,
+                    reviewed_at DATETIME NOT NULL
+                )
+                """);
     }
 
     private void insertRows() {
@@ -171,11 +198,39 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
                 INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
                 VALUES (21014, 1002, 3000, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', '2025-2026', '上学期', '不可见申请', '申请说明', 'SUBMITTED', '2026-07-06 10:00:00', '2026-07-06 09:00:00', '2026-07-06 10:00:00', 1)
                 """);
+        jdbcTemplate.update("""
+                INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
+                VALUES (21015, 1001, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', '2025-2026', '上学期', '已通过申请', '申请说明', 'APPROVED', '2026-07-05 10:00:00', '2026-07-05 09:00:00', '2026-07-07 09:10:00', 2)
+                """);
+        jdbcTemplate.update("""
+                INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
+                VALUES (21016, 1001, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', '2025-2026', '上学期', '已退回申请', '申请说明', 'RETURNED', '2026-07-05 10:00:00', '2026-07-05 09:00:00', '2026-07-07 10:10:00', 2)
+                """);
+        jdbcTemplate.update("""
+                INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
+                VALUES (21017, 1001, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', '2025-2026', '上学期', '已拒绝申请', '申请说明', 'REJECTED', '2026-07-05 10:00:00', '2026-07-05 09:00:00', '2026-07-07 11:10:00', 2)
+                """);
+        jdbcTemplate.update("""
+                INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
+                VALUES (21018, 1001, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', '2025-2026', '上学期', '昨日通过申请', '申请说明', 'APPROVED', '2026-07-05 10:00:00', '2026-07-05 09:00:00', '2026-07-06 11:10:00', 2)
+                """);
+        jdbcTemplate.update("""
+                INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
+                VALUES (21019, 1002, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', '2025-2026', '上学期', '今日退回后重提申请', '申请说明', 'SUBMITTED', '2026-07-07 12:30:00', '2026-07-07 12:00:00', '2026-07-07 12:30:00', 3)
+                """);
         jdbcTemplate.update("INSERT INTO application_attachment (application_id, file_id, storage_key, original_filename, content_type, size, uploaded_by, sort_no) VALUES (21013, 'file-1', 'storage/private/a.pdf', 'a.pdf', 'application/pdf', 128, 1001, 0)");
         jdbcTemplate.update("""
                 INSERT INTO application_fact (application_id, score_value, display_text, evidence_count, extra_json, created_at, updated_at)
                 VALUES (21013, 2.00, NULL, 1, '{"optionCode":"PAPER_CORE_FIRST_AUTHOR","maxPoints":"6.00","exceedsMaxPoints":false}', '2026-07-06 10:00:00', '2026-07-06 10:00:00')
                 """);
+        jdbcTemplate.update("INSERT INTO application_review_log (application_id, action, reviewer_id, review_role, reason, reviewed_at) VALUES (21015, 'APPROVE', 1010, 'COUNSELOR', '同意', '2026-07-07 09:00:00')");
+        jdbcTemplate.update("INSERT INTO application_review_log (application_id, action, reviewer_id, review_role, reason, reviewed_at) VALUES (21016, 'RETURN', 1010, 'COUNSELOR', '补充', '2026-07-07 10:00:00')");
+        jdbcTemplate.update("INSERT INTO application_review_log (application_id, action, reviewer_id, review_role, reason, reviewed_at) VALUES (21017, 'REJECT', 1010, 'COUNSELOR', '拒绝', '2026-07-07 11:00:00')");
+        jdbcTemplate.update("INSERT INTO application_review_log (application_id, action, reviewer_id, review_role, reason, reviewed_at) VALUES (21018, 'APPROVE', 1010, 'COUNSELOR', '昨日同意', '2026-07-06 09:00:00')");
+        jdbcTemplate.update("INSERT INTO application_review_log (application_id, action, reviewer_id, review_role, reason, reviewed_at) VALUES (21014, 'APPROVE', 1010, 'COUNSELOR', '不可见', '2026-07-07 12:00:00')");
+        jdbcTemplate.update("INSERT INTO application_review_log (application_id, action, reviewer_id, review_role, reason, reviewed_at) VALUES (21015, 'APPROVE', 1011, 'COUNSELOR', '其他审核人', '2026-07-07 13:00:00')");
+        jdbcTemplate.update("INSERT INTO application_review_log (application_id, action, reviewer_id, review_role, reason, reviewed_at) VALUES (21019, 'RETURN', 1010, 'COUNSELOR', '退回后重提', '2026-07-07 12:10:00')");
+        jdbcTemplate.update("INSERT INTO application_review_log (application_id, action, reviewer_id, review_role, reason, reviewed_at) VALUES (21019, 'RETURN', 1010, 'COUNSELOR', '重复日志不应放大摘要', '2026-07-07 12:11:00')");
     }
 
     private ApplicationAccessContext accessContext() {
