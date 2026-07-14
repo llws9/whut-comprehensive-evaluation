@@ -2,11 +2,11 @@
 
 > 当前状态：`PARTIAL_IMPLEMENTED`
 >
-> 当前 Minimal D 已落地范围：`D-1 / D-2 / D-3 / D-4 / D-5 / D-6 / D-12`。
+> 当前 Minimal D 已落地范围：`D-1 / D-2 / D-3 / D-4 / D-5 / D-6 / D-7 / D-8 / D-9 / D-12`。
 >
-> `D-7 / D-8 / D-9 / D-10 / D-11` 当前状态为 `DEFERRED_AFTER_MINIMAL_D`。这些接口仍是 D 组目标态契约，不属于当前 Minimal D smoke gate 的通过范围。
+> D-7 / D-8 / D-9 当前已实现，入口为 `AdminScoreImportController`。`D-10 / D-11` 当前状态为 `DEFERRED_AFTER_MINIMAL_D`，这些接口仍是 D 组目标态契约，不属于当前 Minimal D smoke gate 的通过范围。
 >
-> 当前 Java Controller 暴露学生已审核成绩查询、学生最终成绩表头/明细/提交、教师最终成绩列表/详情/确认；暂未暴露 `/api/admin/imports/**`、`/api/admin/exports/**` 或 `/api/admin/final-records/unsubmitted`。自动 smoke gate 不覆盖 D-7 至 D-11。
+> 当前 Java Controller 暴露学生已审核成绩查询、学生最终成绩表头/明细/提交、教师最终成绩列表/详情/确认，以及 `/api/admin/imports/mentor-scores`、`/api/admin/imports/lectures`、`/api/admin/imports/cas-activities`。暂未暴露成绩导出或 `/api/admin/final-records/unsubmitted`。自动 smoke gate 不覆盖 D-10 至 D-11。
 
 ## 1. 模块背景
 
@@ -110,9 +110,9 @@ flowchart LR
 | D-5 | `GET` | `/api/admin/final-records` | 教师端分页查询最终成绩 | `CURRENT_IMPLEMENTED` |
 | D-6 | `GET` | `/api/admin/final-records/{recordId}` | 教师端查询最终成绩详情 | `CURRENT_IMPLEMENTED` |
 | D-12 | `POST` | `/api/admin/final-records/{recordId}/confirm` | 教师确认最终成绩 | `CURRENT_IMPLEMENTED` |
-| D-7 | `POST` | `/api/admin/imports/mentor-scores` | 导入导师/固定成绩 | `DEFERRED_AFTER_MINIMAL_D` |
-| D-8 | `POST` | `/api/admin/imports/lectures` | 导入讲座 | `DEFERRED_AFTER_MINIMAL_D` |
-| D-9 | `POST` | `/api/admin/imports/cas-activities` | 导入文体活动 | `DEFERRED_AFTER_MINIMAL_D` |
+| D-7 | `POST` | `/api/admin/imports/mentor-scores` | 导入导师/固定成绩 | `CURRENT_IMPLEMENTED` |
+| D-8 | `POST` | `/api/admin/imports/lectures` | 导入讲座 | `CURRENT_IMPLEMENTED` |
+| D-9 | `POST` | `/api/admin/imports/cas-activities` | 导入文体活动 | `CURRENT_IMPLEMENTED` |
 | D-10 | `GET` | `/api/admin/exports/final-scores` | 导出成绩 | `DEFERRED_AFTER_MINIMAL_D` |
 | D-11 | `GET` | `/api/admin/final-records/unsubmitted` | 查询未提交学生名单 | `DEFERRED_AFTER_MINIMAL_D` |
 
@@ -357,6 +357,7 @@ flowchart LR
 - 鉴权：`score.import`
 - Content-Type：`multipart/form-data`
 - 语义冻结：同步解析 Excel 并即时入库；合法行导入成功，非法行写入 `failedRows`
+- 当前实现：已由 `whut-eval-interfaces` 的 `AdminScoreImportController`、`MentorScoreImportApplicationService` 和 `MybatisMentorScoreImportRepository` 落地；写入 `DRAFT` 最终成绩和 `source_type = 'IMPORT'` 的 `final_component_score`。
 
 请求参数：
 

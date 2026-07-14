@@ -3,6 +3,8 @@ package edu.whut.eval.infra.persistence.repository;
 import edu.whut.eval.application.finalrecord.query.FinalComponentScoreRow;
 import edu.whut.eval.application.finalrecord.query.FinalRecordQueryRow;
 import edu.whut.eval.application.finalrecord.query.UnsubmittedStudentRow;
+import edu.whut.eval.application.finalrecord.exporting.FinalScoreExportQuery;
+import edu.whut.eval.application.finalrecord.exporting.FinalScoreExportRow;
 import edu.whut.eval.application.finalrecord.repository.FinalRecordQueryRepository;
 import edu.whut.eval.domain.auth.model.ApplicationScopeClause;
 import edu.whut.eval.domain.auth.model.ApplicationScopePredicate;
@@ -78,6 +80,19 @@ public class MybatisPlusFinalRecordQueryRepository implements FinalRecordQueryRe
         }
         List<UnsubmittedStudentRow> records = finalRecordQueryMapper.selectUnsubmittedStudents(fragment, query);
         return new PageResult<>(total, records);
+    }
+
+    @Override
+    public List<FinalScoreExportRow> listAdminFinalScoreExportRows(FinalRecordAccessContext accessContext,
+                                                                   FinalScoreExportQuery query,
+                                                                   int limit) {
+        SqlPredicateFragment fragment = scopeFragment(accessContext);
+        return finalRecordQueryMapper.selectAdminFinalScoreExportRows(
+                fragment.getExpression(),
+                fragment.getParameters(),
+                query,
+                limit
+        );
     }
 
     @Override

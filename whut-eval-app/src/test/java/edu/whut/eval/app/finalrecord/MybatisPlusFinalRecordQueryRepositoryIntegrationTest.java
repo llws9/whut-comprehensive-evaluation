@@ -6,6 +6,9 @@ import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.auth.service.DefaultAuthorizationScopeEvaluator;
 import edu.whut.eval.application.auth.service.JsonScopeRuleExpressionInterpreter;
+import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
+import edu.whut.eval.application.finalrecord.exporting.FinalScoreExportQuery;
+import edu.whut.eval.application.finalrecord.exporting.FinalScoreExportRow;
 import edu.whut.eval.application.finalrecord.query.FinalComponentScoreRow;
 import edu.whut.eval.application.finalrecord.query.FinalRecordQueryRow;
 import edu.whut.eval.application.finalrecord.query.UnsubmittedStudentRow;
@@ -45,6 +48,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -85,7 +89,7 @@ class MybatisPlusFinalRecordQueryRepositoryIntegrationTest {
                 """);
         jdbcTemplate.execute("""
                 CREATE TABLE org_membership (
-                  id BIGINT PRIMARY KEY,
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
                   user_id BIGINT NOT NULL,
                   org_unit_id BIGINT NOT NULL,
                   membership_type VARCHAR(32) NOT NULL,
@@ -123,9 +127,19 @@ class MybatisPlusFinalRecordQueryRepositoryIntegrationTest {
                   source_ref_id VARCHAR(64) NULL,
                   created_at DATETIME NOT NULL)
                 """);
-        insertLegacyOrgUnit(2002L, "计算机与人工智能学院", "/WHUT/CS", "COLLEGE");
-        insertStudent(1001L, "2024305001", "张三", 2010L, "计科一班", "/WHUT/CS/CS2022/CS2201");
-        insertStudent(1002L, "2024305002", "李四", 2011L, "计科二班", "/WHUT/CS/CS2022/CS2202");
+        insertOrgUnit(2001L, null, "SCHOOL", "WHUT", "武汉理工大学", "/WHUT", "ACTIVE");
+        insertOrgUnit(2002L, 2001L, "COLLEGE", "CS", "计算机与人工智能学院", "/WHUT/CS", "ACTIVE");
+        insertOrgUnit(2003L, 2001L, "COLLEGE", "ART", "艺术与设计学院", "/WHUT/ART", "ACTIVE");
+        insertOrgUnit(2005L, 2002L, "GRADE", "CS2022", "2022级计算机", "/WHUT/CS/CS2022", "ACTIVE");
+        insertOrgUnit(2006L, 2002L, "GRADE", "CS2023", "2023级计算机", "/WHUT/CS/CS2023", "ACTIVE");
+        insertOrgUnit(2007L, 2003L, "GRADE", "ART2022", "艺术设计 2022 级", "/WHUT/ART/ART2022", "ACTIVE");
+        insertOrgUnit(2009L, 2002L, "DEPARTMENT", "CS_YB", "计算机学院研工办", "/WHUT/CS/CS_YB", "ACTIVE");
+        insertOrgUnit(2010L, 2005L, "CLASS", "CS2201", "计科一班", "/WHUT/CS/CS2022/CS2201", "ACTIVE");
+        insertOrgUnit(2011L, 2005L, "CLASS", "CS2202", "计科二班", "/WHUT/CS/CS2022/CS2202", "ACTIVE");
+        insertOrgUnit(2012L, 2007L, "CLASS", "ART2201", "艺术一班", "/WHUT/ART/ART2022/ART2201", "ACTIVE");
+        insertOrgUnit(2013L, 2006L, "CLASS", "CS2301", "CS2201", "/WHUT/CS/CS2023/CS2301", "ACTIVE");
+        insertStudent(1001L, "2024305001", "张三", 2010L);
+        insertStudent(1002L, "2024305002", "李四", 2011L);
         insertFinalRecord(41001L, 1001L, "2025-2026", "SUBMITTED", "2026-07-07 12:00:00");
         insertFinalRecord(41002L, 1002L, "2025-2026", "SUBMITTED", "2026-07-07 13:00:00");
         insertComponent(41001L, "INTELLECTUAL", "INTELLECTUAL_PAPER", "2.00", "论文已审核通过", "21013");
@@ -520,6 +534,196 @@ class MybatisPlusFinalRecordQueryRepositoryIntegrationTest {
         ), " OR ");
     }
 
+    @Test
+    void shouldExportDefaultStatusesWithinOrgSubtreeAndOrderRows() {
+        insertStudent(1003L, "2024304000", "王五", 2010L);
+        insertStudent(1004L, "2024305999", "艺术学生", 2012L);
+        insertStudent(1005L, "2024305005", "草稿学生", 2010L);
+        insertStudent(1006L, "2024305006", "往年学生", 2010L);
+        insertFinalRecord(41003L, 1003L, "2025-2026", "CONFIRMED", "2026-07-07 11:00:00");
+        insertFinalRecord(41004L, 1004L, "2025-2026", "SUBMITTED", "2026-07-07 10:00:00");
+        insertFinalRecord(41005L, 1005L, "2025-2026", "DRAFT", "2026-07-07 09:00:00");
+        insertFinalRecord(41006L, 1006L, "2024-2025", "SUBMITTED", "2026-07-07 08:00:00");
+
+        List<FinalScoreExportRow> rows = exportRows(
+                accessContextWithExportOrgSubtree(2002L),
+                new FinalScoreExportQuery("2025-2026", null, null, List.of()),
+                20
+        );
+
+        assertThat(rows).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41003L, 41001L, 41002L);
+        assertThat(rows.get(0))
+                .extracting(FinalScoreExportRow::studentUserNo,
+                        FinalScoreExportRow::studentUserName,
+                        FinalScoreExportRow::gradeCode,
+                        FinalScoreExportRow::gradeName,
+                        FinalScoreExportRow::classCode,
+                        FinalScoreExportRow::className,
+                        FinalScoreExportRow::status)
+                .containsExactly("2024304000", "王五", "CS2022", "2022级计算机", "CS2201", "计科一班", "CONFIRMED");
+    }
+
+    @Test
+    void shouldExportWithExplicitStatusAndCaseSensitiveGradeClassFilters() {
+        insertStudent(1003L, "2024304000", "王五", 2010L);
+        insertStudent(1007L, "2024305007", "赵六", 2013L);
+        insertOrgUnit(2014L, 2002L, "GRADE", "EE2024", "CS2022", "/WHUT/CS/EE2024", "ACTIVE");
+        insertOrgUnit(2015L, 2014L, "CLASS", "EE2401", "电气一班", "/WHUT/CS/EE2024/EE2401", "ACTIVE");
+        insertStudent(1008L, "2024305008", "歧义年级学生", 2015L);
+        insertOrgUnit(2016L, 2005L, "CLASS", "SAME2201", "SAME2201", "/WHUT/CS/CS2022/SAME2201", "ACTIVE");
+        insertStudent(1009L, "2024305009", "同码同名班级学生", 2016L);
+        insertFinalRecord(41003L, 1003L, "2025-2026", "CONFIRMED", "2026-07-07 11:00:00");
+        insertFinalRecord(41007L, 1007L, "2025-2026", "CONFIRMED", "2026-07-07 10:00:00");
+        insertFinalRecord(41008L, 1008L, "2025-2026", "SUBMITTED", "2026-07-07 09:00:00");
+        insertFinalRecord(41009L, 1009L, "2025-2026", "SUBMITTED", "2026-07-07 08:00:00");
+
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", "CONFIRMED", "CS2022", List.of("CS2201")),
+                20
+        )).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41003L);
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", null, "cs2022", List.of()),
+                20
+        )).isEmpty();
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", null, null, List.of("cs2201")),
+                20
+        )).isEmpty();
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", "CONFIRMED", null, List.of("CS2201", "CS2201", " CS2201 ")),
+                20
+        )).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41003L, 41007L);
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", "CONFIRMED", null, List.of("CS2201','x")),
+                20
+        )).isEmpty();
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", null, "CS2022", List.of()),
+                20
+        )).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41003L, 41001L, 41002L, 41009L, 41008L);
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", null, null, List.of("SAME2201")),
+                20
+        )).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41009L);
+    }
+
+    @Test
+    void shouldExportOrderByStudentNoThenFinalRecordIdForTiedClassRows() {
+        insertStudent(1003L, "2024304000", "王五", 2010L);
+        insertStudent(1004L, "2024305001", "同号学生一", 2010L);
+        insertStudent(1005L, "2024305001", "同号学生二", 2010L);
+        insertFinalRecord(41003L, 1003L, "2025-2026", "SUBMITTED", "2026-07-07 11:00:00");
+        insertFinalRecord(41004L, 1004L, "2025-2026", "SUBMITTED", "2026-07-07 10:00:00");
+        insertFinalRecord(41005L, 1005L, "2025-2026", "SUBMITTED", "2026-07-07 09:00:00");
+
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", null, null, List.of("CS2201")),
+                20
+        )).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41003L, 41001L, 41004L, 41005L);
+    }
+
+    @Test
+    void shouldHandleNoDerivedClassRowsAndLimitForExport() {
+        insertStudentWithoutMembership(1003L, "2024305003", "王五");
+        insertStudent(1004L, "2024305004", "部门学生", 2009L);
+        insertFinalRecord(41003L, 1003L, "2025-2026", "SUBMITTED", "2026-07-07 11:00:00");
+        insertFinalRecord(41004L, 1004L, "2025-2026", "SUBMITTED", "2026-07-07 10:00:00");
+
+        List<FinalScoreExportRow> allRows = exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", null, null, List.of()),
+                20
+        );
+
+        assertThat(allRows).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41001L, 41002L, 41003L, 41004L);
+        assertThat(allRows.subList(2, 4))
+                .allSatisfy(row -> assertThat(row)
+                        .extracting(FinalScoreExportRow::gradeCode, FinalScoreExportRow::classCode)
+                        .containsExactly(null, null));
+        assertThat(exportRows(
+                accessContextWithExportOrgSubtree(2002L),
+                new FinalScoreExportQuery("2025-2026", null, null, List.of()),
+                20
+        )).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41001L, 41002L);
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", null, "CS2022", List.of()),
+                20
+        )).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41001L, 41002L);
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", null, null, List.of()),
+                2
+        )).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41001L, 41002L);
+    }
+
+    @Test
+    void shouldUseSmallestActivePrimaryMembershipForExport() {
+        insertStudentWithoutMembership(1010L, "2024304010", "多归属学生");
+        insertMembership(9001L, 1010L, 2011L, true, "ACTIVE");
+        insertMembership(9000L, 1010L, 2010L, true, "ACTIVE");
+        insertFinalRecord(41010L, 1010L, "2025-2026", "SUBMITTED", "2026-07-07 10:00:00");
+
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", null, null, List.of("CS2201")),
+                20
+        )).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41010L, 41001L);
+    }
+
+    @Test
+    void shouldReturnEmptyExportForUnsupportedOrMissingExportScopes() {
+        assertThat(exportRows(
+                accessContextWithExportCategoryOnlyScope(),
+                new FinalScoreExportQuery("2025-2026", null, null, List.of()),
+                20
+        )).isEmpty();
+        assertThat(exportRows(
+                accessContextWithNoActiveExportScope(),
+                new FinalScoreExportQuery("2025-2026", null, null, List.of()),
+                20
+        )).isEmpty();
+    }
+
+    @Test
+    void shouldAllowFiveHundredClassTokensAndRejectFiveHundredOneBeforeRepository() {
+        List<String> fiveHundredTokens = IntStream.rangeClosed(1, 500)
+                .mapToObj(index -> index == 500 ? "CS2201" : "NO_MATCH_" + index)
+                .toList();
+
+        assertThat(exportRows(
+                accessContextWithAllExportScope(),
+                new FinalScoreExportQuery("2025-2026", null, null, fiveHundredTokens),
+                20
+        )).extracting(FinalScoreExportRow::finalRecordId)
+                .containsExactly(41001L);
+        assertThatThrownBy(() -> new FinalScoreExportQuery(
+                "2025-2026",
+                null,
+                null,
+                IntStream.rangeClosed(1, 501).mapToObj(index -> "CLASS_" + index).toList()
+        )).isInstanceOf(ValidationException.class);
+    }
+
     private FinalRecordAccessContext accessContextWithAllScope() {
         return new FinalRecordAccessContext(
                 1010L, "T1010", "Counselor", "teacher", Set.of("counselor"), Set.of("score.view.assigned"),
@@ -558,6 +762,71 @@ class MybatisPlusFinalRecordQueryRepositoryIntegrationTest {
                 List.of(new IamScopeRule(2L, "score.view.assigned", "CATEGORY", null, "INTELLECTUAL", null, null, 80, "ACTIVE")),
                 "score.view.assigned"
         );
+    }
+
+    private FinalRecordAccessContext accessContextWithAllExportScope() {
+        return accessContext(
+                Set.of(AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED),
+                List.of(new IamScopeRule(3L, AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED, "ALL", null, null, null, null, 100, "ACTIVE")),
+                AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED
+        );
+    }
+
+    private FinalRecordAccessContext accessContextWithExportOrgSubtree(Long orgUnitId) {
+        return accessContext(
+                Set.of(AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED),
+                List.of(new IamScopeRule(1L, AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED, "ORG_SUBTREE", orgUnitId, null, null, null, 80, "ACTIVE")),
+                AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED
+        );
+    }
+
+    private FinalRecordAccessContext accessContextWithExportCategoryOnlyScope() {
+        return accessContext(
+                Set.of(AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED),
+                List.of(new IamScopeRule(2L, AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED, "CATEGORY", null, "INTELLECTUAL", null, null, 80, "ACTIVE")),
+                AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED
+        );
+    }
+
+    private FinalRecordAccessContext accessContextWithNoActiveExportScope() {
+        return accessContext(
+                Set.of(AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED),
+                List.of(new IamScopeRule(2L, AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED, "ALL", null, null, null, null, 80, "INACTIVE")),
+                AuthorizationPermissionCodes.SCORE_EXPORT_ASSIGNED
+        );
+    }
+
+    private FinalRecordAccessContext accessContext(Set<String> authorities,
+                                                   List<IamScopeRule> scopeRules,
+                                                   String permissionCode) {
+        return new FinalRecordAccessContext(
+                1010L, "T1010", "Counselor", "teacher", Set.of("counselor"), authorities, scopeRules, permissionCode
+        );
+    }
+
+    private List<FinalScoreExportRow> exportRows(FinalRecordAccessContext accessContext,
+                                                 FinalScoreExportQuery query,
+                                                 int limit) {
+        return repository.listAdminFinalScoreExportRows(accessContext, query, limit);
+    }
+
+    private void insertStudent(Long userId, String userNo, String userName, Long orgUnitId) {
+        insertStudentWithoutMembership(userId, userNo, userName);
+        insertMembership(null, userId, orgUnitId, true, "ACTIVE");
+    }
+
+    private void insertStudentWithoutMembership(Long userId, String userNo, String userName) {
+        jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (?, ?, ?, 'ACTIVE')", userId, userNo, userName);
+    }
+
+    private void insertMembership(Long id, Long userId, Long orgUnitId, boolean primary, String status) {
+        if (id == null) {
+            jdbcTemplate.update("INSERT INTO org_membership (user_id, org_unit_id, membership_type, is_primary, status) VALUES (?, ?, 'STUDENT', ?, ?)",
+                    userId, orgUnitId, primary ? 1 : 0, status);
+        } else {
+            jdbcTemplate.update("INSERT INTO org_membership (id, user_id, org_unit_id, membership_type, is_primary, status) VALUES (?, ?, ?, 'STUDENT', ?, ?)",
+                    id, userId, orgUnitId, primary ? 1 : 0, status);
+        }
     }
 
     private void insertStudent(Long userId, String userNo, String userName, Long orgUnitId, String orgName, String orgPath) {
