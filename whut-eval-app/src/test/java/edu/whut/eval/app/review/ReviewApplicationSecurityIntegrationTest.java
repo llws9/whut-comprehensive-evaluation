@@ -4,6 +4,7 @@ import edu.whut.eval.application.application.query.ReviewActionResultView;
 import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
 import edu.whut.eval.application.application.query.ReviewApplicationSummaryView;
 import edu.whut.eval.application.application.query.ReviewApplicantView;
+import edu.whut.eval.application.application.query.ReviewLogView;
 import edu.whut.eval.application.application.query.ReviewScoringSnapshotView;
 import edu.whut.eval.application.application.service.ReviewApplicationCommandApplicationService;
 import edu.whut.eval.application.application.service.ReviewApplicationQueryApplicationService;
@@ -123,6 +124,10 @@ class ReviewApplicationSecurityIntegrationTest {
             );
         });
         given(reviewApplicationQueryApplicationService.getReviewDetail(21013L)).willReturn(detailView());
+        given(reviewApplicationQueryApplicationService.listReviewLogs(21013L)).willReturn(List.of(
+                new ReviewLogView(31000L, "RETURN", 1010L, null, "COUNSELOR", "补充材料",
+                        Instant.parse("2026-07-07T11:00:00Z"))
+        ));
         given(reviewApplicationCommandApplicationService.approve(any()))
                 .willReturn(new ReviewActionResultView(21013L, ApplicationSubmissionStatus.APPROVED, 2L, 31001L, Instant.now()));
     }
@@ -145,6 +150,13 @@ class ReviewApplicationSecurityIntegrationTest {
     @Test
     void shouldAllowReviewerWithApplicationReviewOnDetail() throws Exception {
         mockMvc.perform(get("/api/review/applications/21013")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "application.review")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldAllowReviewerWithApplicationReviewOnLogs() throws Exception {
+        mockMvc.perform(get("/api/review/applications/21013/logs")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "application.review")))
                 .andExpect(status().isOk());
     }

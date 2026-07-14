@@ -6,6 +6,7 @@ import edu.whut.eval.application.application.command.ReturnReviewCommand;
 import edu.whut.eval.application.application.query.ReviewActionResultView;
 import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
 import edu.whut.eval.application.application.query.ReviewApplicationListItemView;
+import edu.whut.eval.application.application.query.ReviewLogView;
 import edu.whut.eval.application.application.service.ReviewApplicationCommandApplicationService;
 import edu.whut.eval.application.application.service.ReviewApplicationQueryApplicationService;
 import edu.whut.eval.common.api.ApiResponse;
@@ -24,6 +25,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 @RestController
 @Validated
@@ -58,6 +61,12 @@ public class ReviewApplicationController {
     @GetMapping("/{applicationId}")
     public ApiResponse<ReviewApplicationDetailView> getDetail(@PathVariable Long applicationId) {
         return ApiResponse.success(reviewApplicationQueryApplicationService.getReviewDetail(applicationId));
+    }
+
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_REVIEW)")
+    @GetMapping("/{applicationId}/logs")
+    public ApiResponse<List<ReviewLogView>> listLogs(@PathVariable Long applicationId) {
+        return ApiResponse.success(reviewApplicationQueryApplicationService.listReviewLogs(applicationId));
     }
 
     @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_REVIEW)")

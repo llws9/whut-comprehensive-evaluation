@@ -1,6 +1,7 @@
 package edu.whut.eval.app.review;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import edu.whut.eval.application.application.query.ApplicationAttachmentView;
 import edu.whut.eval.application.application.query.ReviewActionResultView;
 import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
@@ -17,6 +18,8 @@ import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
 import edu.whut.eval.interfaces.review.ReviewApplicationController;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -44,7 +47,9 @@ class ReviewApplicationControllerWebMvcTest {
         queryService = mock(ReviewApplicationQueryApplicationService.class);
         commandService = mock(ReviewApplicationCommandApplicationService.class);
         controller = new ReviewApplicationController(queryService, commandService);
-        objectMapper = new ObjectMapper();
+        objectMapper = Jackson2ObjectMapperBuilder.json()
+                .featuresToDisable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .build();
     }
 
     @Test
@@ -103,6 +108,28 @@ class ReviewApplicationControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.attachments[0].storageKey").doesNotExist())
                 .andExpect(jsonPath("$.data.reviewLogs[0].action").value("RETURN"))
                 .andExpect(jsonPath("$.data.allowedActions[0]").value("APPROVE"));
+    }
+
+    @Test
+    void shouldListReviewLogs() throws Exception {
+        given(queryService.listReviewLogs(21013L)).willReturn(List.of(
+                new ReviewLogView(31000L, "RETURN", 1010L, null, "COUNSELOR", "补充材料",
+                        Instant.parse("2026-07-07T11:00:00Z"))
+        ));
+
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
+                .build()
+                .perform(get("/api/review/applications/21013/logs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data[0].reviewLogId").value(31000))
+                .andExpect(jsonPath("$.data[0].action").value("RETURN"))
+                .andExpect(jsonPath("$.data[0].reviewerId").value(1010))
+                .andExpect(jsonPath("$.data[0].reviewRole").value("COUNSELOR"))
+                .andExpect(jsonPath("$.data[0].reason").value("补充材料"))
+                .andExpect(jsonPath("$.data[0].reviewedAt").value("2026-07-07T11:00:00Z"));
     }
 
     @Test

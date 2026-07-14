@@ -280,6 +280,7 @@ class TeamDeliverySqlConsistencyTest {
         assertThat(doc).doesNotContain("当前代码尚未提供 `/api/review/**` 审核动作 Controller");
         assertThat(doc).contains("| C-3 | `GET` | `/api/review/applications` | 分页查询待审/已审申请 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-4 | `GET` | `/api/review/applications/{applicationId}` | 查询审核详情 | `CURRENT_IMPLEMENTED` |");
+        assertThat(doc).contains("| C-6 | `GET` | `/api/review/applications/{applicationId}/logs` | 查询审核轨迹 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-7 | `POST` | `/api/review/applications/{applicationId}/approve` | 审批通过 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-8 | `POST` | `/api/review/applications/{applicationId}/return` | 退回补充 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-9 | `POST` | `/api/review/applications/{applicationId}/reject` | 审批拒绝 | `CURRENT_IMPLEMENTED` |");

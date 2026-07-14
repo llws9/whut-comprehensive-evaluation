@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
 import edu.whut.eval.application.application.query.ReviewApplicationListItemView;
 import edu.whut.eval.application.application.query.ReviewApplicationQueryRow;
+import edu.whut.eval.application.application.query.ReviewLogView;
 import edu.whut.eval.application.application.repository.ReviewApplicationQueryRepository;
 import edu.whut.eval.application.application.service.ReviewApplicationAccessValidator;
 import edu.whut.eval.application.application.service.ReviewApplicationQueryApplicationService;
@@ -94,6 +95,33 @@ class ReviewApplicationQueryApplicationServiceTest {
     }
 
     @Test
+    void shouldListReviewLogsAfterAccessValidation() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
+        given(reviewApplicationQueryRepository.findReviewApplicationDetail(21013L)).willReturn(Optional.of(submittedRow()));
+        given(applicationReviewLogRepository.listByApplicationId(21013L)).willReturn(List.of(new ApplicationReviewLog(
+                31000L,
+                21013L,
+                ApplicationReviewAction.RETURN,
+                1010L,
+                "COUNSELOR",
+                "补充材料",
+                Instant.parse("2026-07-07T11:00:00Z")
+        )));
+
+        List<ReviewLogView> result = service.listReviewLogs(21013L);
+
+        assertThat(result).hasSize(1);
+        ReviewLogView log = result.get(0);
+        assertThat(log.reviewLogId()).isEqualTo(31000L);
+        assertThat(log.action()).isEqualTo("RETURN");
+        assertThat(log.reviewerId()).isEqualTo(1010L);
+        assertThat(log.reviewRole()).isEqualTo("COUNSELOR");
+        assertThat(log.reason()).isEqualTo("补充材料");
+        assertThat(log.reviewedAt()).isEqualTo(Instant.parse("2026-07-07T11:00:00Z"));
+        verify(reviewApplicationAccessValidator).requireAccess(any(), any());
+    }
+
+    @Test
     void shouldReturnEmptyAllowedActionsForApprovedDetail() {
         ReviewApplicationQueryRow row = submittedRow();
         row.setStatus("APPROVED");
@@ -115,6 +143,19 @@ class ReviewApplicationQueryApplicationServiceTest {
                 .given(reviewApplicationAccessValidator).requireAccess(any(), any());
 
         assertThatThrownBy(() -> service.getReviewDetail(21013L))
+                .isInstanceOf(AccessDeniedAppException.class)
+                .hasMessage("当前审核人无权访问该申请");
+        verifyNoInteractions(applicationReviewLogRepository);
+    }
+
+    @Test
+    void shouldDenyExistingOutOfScopeReviewLogsInsteadOfHidingThemAsNotFound() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
+        given(reviewApplicationQueryRepository.findReviewApplicationDetail(21013L)).willReturn(Optional.of(submittedRow()));
+        willThrow(new AccessDeniedAppException("当前审核人无权访问该申请"))
+                .given(reviewApplicationAccessValidator).requireAccess(any(), any());
+
+        assertThatThrownBy(() -> service.listReviewLogs(21013L))
                 .isInstanceOf(AccessDeniedAppException.class)
                 .hasMessage("当前审核人无权访问该申请");
         verifyNoInteractions(applicationReviewLogRepository);

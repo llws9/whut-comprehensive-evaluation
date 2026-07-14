@@ -65,6 +65,17 @@ public class ReviewApplicationQueryApplicationService {
         return toDetail(row, logs);
     }
 
+    public List<ReviewLogView> listReviewLogs(Long applicationId) {
+        UserAuthorizationContext reviewer = requiredReviewer();
+        ReviewApplicationQueryRow row = reviewApplicationQueryRepository.findReviewApplicationDetail(applicationId)
+                .orElseThrow(() -> new ResourceNotFoundException("申请不存在"));
+        reviewApplicationAccessValidator.requireAccess(reviewer, row);
+        return applicationReviewLogRepository.listByApplicationId(applicationId)
+                .stream()
+                .map(this::toLogView)
+                .toList();
+    }
+
     private UserAuthorizationContext requiredReviewer() {
         UserAuthorizationContext reviewer = userAuthorizationContextAssembler.requiredAuthorizationContext();
         if (!reviewer.hasAuthority(AuthorizationPermissionCodes.APPLICATION_REVIEW)) {
