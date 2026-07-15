@@ -83,6 +83,35 @@ class ApplicationSubmissionStateMachineTest {
     }
 
     @Test
+    void shouldDeleteDraftAndReturnedApplications() {
+        ApplicationSubmission deletedDraft = applicationWithStatus(ApplicationSubmissionStatus.DRAFT).deleteByStudent(0L);
+        ApplicationSubmission deletedReturned = applicationWithStatus(ApplicationSubmissionStatus.RETURNED).deleteByStudent(0L);
+
+        assertThat(deletedDraft.getStatus()).isEqualTo(ApplicationSubmissionStatus.DELETED);
+        assertThat(deletedDraft.getVersion()).isEqualTo(1L);
+        assertThat(deletedReturned.getStatus()).isEqualTo(ApplicationSubmissionStatus.DELETED);
+        assertThat(deletedReturned.getVersion()).isEqualTo(1L);
+    }
+
+    @Test
+    void shouldRejectDeleteFromSubmittedApprovedRejectedWithdrawnAndDeleted() {
+        for (ApplicationSubmissionStatus status : List.of(
+                ApplicationSubmissionStatus.SUBMITTED,
+                ApplicationSubmissionStatus.APPROVED,
+                ApplicationSubmissionStatus.REJECTED,
+                ApplicationSubmissionStatus.WITHDRAWN,
+                ApplicationSubmissionStatus.DELETED
+        )) {
+            ApplicationSubmission submission = applicationWithStatus(status);
+
+            assertThatThrownBy(() -> submission.deleteByStudent(0L))
+                    .as("delete from " + status)
+                    .isInstanceOf(ConflictException.class)
+                    .hasMessage("当前申请状态不允许删除");
+        }
+    }
+
+    @Test
     void shouldApproveReturnAndRejectSubmittedApplication() {
         ApplicationSubmission submitted = applicationWithStatus(ApplicationSubmissionStatus.SUBMITTED);
 

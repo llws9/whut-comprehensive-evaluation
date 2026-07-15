@@ -215,6 +215,32 @@ public class ApplicationSubmission {
     }
 
     /**
+     * 学生删除草稿或退回态申请，保留表内审计痕迹。
+     */
+    public ApplicationSubmission deleteByStudent(long expectedVersion) {
+        assertDeletableByStudent();
+        assertExpectedVersion(expectedVersion);
+        return new ApplicationSubmission(
+                applicationId,
+                applicantUserId,
+                orgUnitId,
+                categoryCode,
+                itemCode,
+                academicYear,
+                term,
+                title,
+                description,
+                evidenceAttachments,
+                ApplicationSubmissionStatus.DELETED,
+                submittedAt,
+                createdAt,
+                Instant.now(),
+                version + 1,
+                scoringSnapshot
+        );
+    }
+
+    /**
      * 审核通过当前申请。
      */
     public ApplicationSubmission approve(long expectedVersion) {
@@ -265,6 +291,12 @@ public class ApplicationSubmission {
     private void assertWithdrawable() {
         if (status != ApplicationSubmissionStatus.SUBMITTED) {
             throw new ValidationException("当前申请状态不允许撤回");
+        }
+    }
+
+    private void assertDeletableByStudent() {
+        if (status != ApplicationSubmissionStatus.DRAFT && status != ApplicationSubmissionStatus.RETURNED) {
+            throw new ConflictException("当前申请状态不允许删除");
         }
     }
 

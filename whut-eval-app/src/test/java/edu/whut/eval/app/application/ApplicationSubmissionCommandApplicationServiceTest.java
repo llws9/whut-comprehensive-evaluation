@@ -1,6 +1,7 @@
 package edu.whut.eval.app.application;
 
 import edu.whut.eval.application.application.command.CreateApplicationDraftCommand;
+import edu.whut.eval.application.application.command.DeleteApplicationCommand;
 import edu.whut.eval.application.application.command.SubmitApplicationCommand;
 import edu.whut.eval.application.application.command.UpdateApplicationDraftCommand;
 import edu.whut.eval.application.application.query.ApplicationSubmissionView;
@@ -234,6 +235,36 @@ class ApplicationSubmissionCommandApplicationServiceTest {
     }
 
     @Test
+    void shouldDeleteOwnedDraftApplication() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(currentUser());
+        given(applicationSubmissionRepository.findById(1L)).willReturn(Optional.of(savedDraft()));
+        given(applicationOrgMembershipValidator.isActiveMember(1001L, 10L)).willReturn(true);
+        given(applicationSubmissionRepository.save(any(ApplicationSubmission.class)))
+                .willAnswer(invocation -> invocation.getArgument(0));
+
+        applicationService.deleteOwnedApplication(new DeleteApplicationCommand(1L, 0L));
+
+        ArgumentCaptor<ApplicationSubmission> submissionCaptor = forClass(ApplicationSubmission.class);
+        verify(applicationSubmissionRepository).save(submissionCaptor.capture());
+        assertThat(submissionCaptor.getValue().getStatus()).isEqualTo(ApplicationSubmissionStatus.DELETED);
+        assertThat(submissionCaptor.getValue().getVersion()).isEqualTo(1L);
+    }
+
+    @Test
+    void shouldRejectDeletingAnotherUsersApplication() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(currentUser());
+        given(applicationSubmissionRepository.findById(1L)).willReturn(Optional.of(new ApplicationSubmission(
+                1L, 2002L, 10L, "competition", "item-1", "2025-2026", "1",
+                "申请标题", "申请说明", List.of(sampleAttachment()), ApplicationSubmissionStatus.DRAFT,
+                null, Instant.now(), Instant.now(), 0L
+        )));
+
+        assertThatThrownBy(() -> applicationService.deleteOwnedApplication(new DeleteApplicationCommand(1L, 0L)))
+                .isInstanceOf(AccessDeniedAppException.class)
+                .hasMessage("当前用户无权操作该申请");
+    }
+
+    @Test
     void shouldDeclareTransactionalBoundaryOnWriteMethods() throws NoSuchMethodException {
         Method createMethod = ApplicationSubmissionCommandApplicationService.class.getMethod(
                 "createDraft",
@@ -243,9 +274,14 @@ class ApplicationSubmissionCommandApplicationServiceTest {
                 "submit",
                 SubmitApplicationCommand.class
         );
+        Method deleteMethod = ApplicationSubmissionCommandApplicationService.class.getMethod(
+                "deleteOwnedApplication",
+                DeleteApplicationCommand.class
+        );
 
         assertThat(createMethod.isAnnotationPresent(Transactional.class)).isTrue();
         assertThat(submitMethod.isAnnotationPresent(Transactional.class)).isTrue();
+        assertThat(deleteMethod.isAnnotationPresent(Transactional.class)).isTrue();
     }
 
     private UserAuthorizationContext currentUser() {

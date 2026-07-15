@@ -7,6 +7,7 @@ import edu.whut.eval.application.application.command.WithdrawApplicationCommand;
 import edu.whut.eval.application.application.query.ApplicationAttachmentView;
 import edu.whut.eval.application.application.query.ApplicationSubmissionDetailView;
 import edu.whut.eval.application.application.query.ApplicationSubmissionView;
+import edu.whut.eval.application.application.service.ApplicationOverviewQueryApplicationService;
 import edu.whut.eval.application.application.service.ApplicationSubmissionCommandApplicationService;
 import edu.whut.eval.application.application.service.ApplicationSubmissionDetailApplicationService;
 import edu.whut.eval.application.auth.service.AccessSessionService;
@@ -103,6 +104,9 @@ class StudentApplicationWriteSecurityIntegrationTest {
 
     @MockBean
     private ApplicationSubmissionDetailApplicationService applicationSubmissionDetailApplicationService;
+
+    @MockBean
+    private ApplicationOverviewQueryApplicationService applicationOverviewQueryApplicationService;
 
     @MockBean
     private UserAuthorizationContextLoader userAuthorizationContextLoader;

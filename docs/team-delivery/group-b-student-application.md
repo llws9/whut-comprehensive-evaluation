@@ -2,7 +2,7 @@
 
 > 当前状态：`PARTIAL_IMPLEMENTED`
 >
-> 当前代码已实现学生申请写链路的一部分、学生/管理端查询入口以及配置查询/计分接口；本文档仍包含目标态接口，未实现部分不得直接作为联调契约。
+> 当前代码已实现学生申请写链路、学生首页申请概览、学生/管理端查询入口，以及学生侧测评指标查询/计分适配接口；本文档仍包含目标态接口，未实现部分不得直接作为联调契约。
 
 ## 1. 模块背景
 
@@ -1485,15 +1485,20 @@ B 组主要依赖以下表：
 - 鉴权：需要登录态且必须是本人申请
 - 目标：替代旧系统 `applicationClass + id` 的删除方式，统一按申请主键删除
 
-请求体：无
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `expectedVersion` | `long` | 是 | 乐观锁版本 |
 
 成功返回：`data = null`
 
 约束：
 
 - 仅 `DRAFT` / `RETURNED` 可删除。
-- 删除后只做逻辑删除，不直接删除 `file_asset`。
-- 如果未来存在已引用附件，需要保留 `application_attachment` 历史审计或做软删除。
+- 删除后状态变为 `DELETED`；学生详情按“申请不存在”处理，不作为正常申请回显。
+- 删除后不直接删除 `file_asset`。
+- `DELETED` 不计入同学年同项目活跃申请冲突。
 
 异常返回：
 
@@ -1501,7 +1506,7 @@ B 组主要依赖以下表：
 |---|---:|---|---|
 | 申请不存在 | `404` | `RES-4040` | `applicationId` 无效 |
 | 非本人操作 | `403` | `AUTH-4030` | 只能删除自己的申请 |
-| 非 `DRAFT/RETURNED` 状态删除 | `409` | `BIZ-4090` | `SUBMITTED/APPROVED/REJECTED/WITHDRAWN` 均不允许 |
+| 非 `DRAFT/RETURNED` 状态删除 | `409` | `BIZ-4090` | `SUBMITTED/APPROVED/REJECTED/WITHDRAWN/DELETED` 均不允许 |
 | 版本或状态已变化 | `409` | `BIZ-4090` | 资源已被其他动作处理 |
 
 ### B-7 提交申请
@@ -1572,9 +1577,11 @@ B 组主要依赖以下表：
 ### B-9 查询讲座/活动候选项
 
 - 路由：`GET /api/student/lectures`
-- 鉴权：需要登录态
+- 状态：已实现。当前基于 D 组导入后写入的 `final_component_score` 讲座分项提供学生侧只读视图。
+- 鉴权：需要登录态和 `application.view.self`
 - 目的：替代旧系统讲座查询接口，提供学生申请前可选讲座列表
 - 语义冻结：无匹配数据时返回空分页，不返回 `404`
+- 当前数据源限制：rewrite 阶段尚无独立讲座候选源表或讲座目录表，D-8 也明确不产生 B-9 所需的未申报候选源数据。因此当前实现只返回当前学生在指定学年内已由 D 导入形成的 `INTELLECTUAL_LECTURE` / `IMPORT` 分项；无法表达 `NOT_ATTENDED` 或未被导入的候选讲座。
 
 查询参数：
 
@@ -1591,12 +1598,12 @@ B 组主要依赖以下表：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `lectureId` | `number` | 讲座 ID |
-| `title` | `string` | 讲座标题 |
-| `heldAt` | `string` | 举办时间 |
+| `lectureId` | `number` | 当前实现为 `final_component_score.id`，待独立讲座目录表落地后切换为稳定讲座 ID |
+| `title` | `string` | 当前实现为 `final_component_score.display_text` |
+| `heldAt` | `string` | 优先从 `LECTURE-<academicYearCompact>-yyyyMMddHHmmss-*` 批次号解析，无法解析时回退到分项创建时间 |
 | `academicYear` | `string` | 学年 |
-| `maxScore` | `number` | 该讲座可申报上限分值 |
-| `attendanceStatus` | `string` | `ATTENDED/NOT_ATTENDED/CLAIMED` |
+| `maxScore` | `number` | 当前实现为已导入讲座分项分值 |
+| `attendanceStatus` | `string` | 当前实现固定为 `CLAIMED`；独立候选源表落地后再支持 `ATTENDED/NOT_ATTENDED` |
 
 异常返回：
 
@@ -1609,7 +1616,8 @@ B 组主要依赖以下表：
 ### B-10 查询测评指标及选项（新增）
 
 - 路由：`GET /api/student/evaluation/items`
-- 鉴权：需要登录态
+- 状态：已实现。当前为 `EvaluationConfigApplicationService` 的学生侧适配层。
+- 鉴权：需要登录态和 `application.view.self`
 - 目的：获取指定大类下的测评指标及其可选子项目
 
 查询参数：
@@ -1618,7 +1626,7 @@ B 组主要依赖以下表：
 |---|---|---|---|
 | `categoryCode` | `string` | 是 | 大类编码：MORAL/INTELLECTUAL/SPORTS/LABOR |
 
-成功返回 `data`：`ApiResponse<List<EvaluationItemView>>`
+成功返回 `data`：`ApiResponse<List<StudentEvaluationItemView>>`
 
 `EvaluationItemView` 字段：
 
@@ -1688,7 +1696,8 @@ B 组主要依赖以下表：
 ### B-11 计算申请分值（新增）
 
 - 路由：`POST /api/student/evaluation/calculate-points`
-- 鉴权：需要登录态
+- 状态：已实现。当前为 `EvaluationConfigApplicationService` / 规则引擎的学生侧适配层。
+- 鉴权：需要登录态和 `application.view.self`
 - 目的：根据指标和选项编码计算申请分值
 
 请求体：
@@ -1697,6 +1706,8 @@ B 组主要依赖以下表：
 |---|---|---|---|
 | `itemCode` | `string` | 是 | 指标编码 |
 | `optionCode` | `string` | 是 | 选项编码 |
+
+请求体不接收 `studentId`；后端使用当前登录用户授权上下文构造 `StudentContext`。
 
 成功返回 `data`：
 

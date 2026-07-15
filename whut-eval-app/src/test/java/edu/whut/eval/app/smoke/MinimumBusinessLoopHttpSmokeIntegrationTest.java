@@ -9,6 +9,7 @@ import edu.whut.eval.app.security.AuthTokenResponseAssembler;
 import edu.whut.eval.application.application.repository.ReviewApplicationQueryRepository;
 import edu.whut.eval.application.application.service.ApplicationAttachmentResolver;
 import edu.whut.eval.application.application.service.ApplicationOrgMembershipValidator;
+import edu.whut.eval.application.application.service.ApplicationOverviewQueryApplicationService;
 import edu.whut.eval.application.application.service.ApplicationSubmissionCommandApplicationService;
 import edu.whut.eval.application.application.service.ApplicationSubmissionDetailApplicationService;
 import edu.whut.eval.application.application.service.ReviewApplicationAccessValidator;
@@ -38,6 +39,7 @@ import edu.whut.eval.domain.finalrecord.service.FinalSubmissionWindowPolicy;
 import edu.whut.eval.infra.cache.UserCacheGateway;
 import edu.whut.eval.infra.config.MybatisPlusConfig;
 import edu.whut.eval.infra.persistence.repository.MybatisApplicationAttachmentResolver;
+import edu.whut.eval.infra.persistence.repository.MybatisApplicationOverviewQueryRepository;
 import edu.whut.eval.infra.persistence.repository.MybatisPlusApplicationReviewLogRepository;
 import edu.whut.eval.infra.persistence.repository.MybatisPlusApplicationSubmissionRepository;
 import edu.whut.eval.infra.persistence.repository.MybatisPlusFinalRecordQueryRepository;
@@ -497,6 +499,7 @@ class MinimumBusinessLoopHttpSmokeIntegrationTest {
             MybatisPlusFinalRecordRepository.class,
             MybatisPlusFinalRecordQueryRepository.class,
             MybatisApplicationAttachmentResolver.class,
+            MybatisApplicationOverviewQueryRepository.class,
             RepositoryBackedActiveSubmissionPolicy.class,
             DefaultAuthorizationScopeEvaluator.class,
             DefaultScopePredicateBuilder.class,
@@ -642,6 +645,13 @@ class MinimumBusinessLoopHttpSmokeIntegrationTest {
                 UserAuthorizationContextAssembler assembler,
                 edu.whut.eval.domain.application.repository.ApplicationSubmissionRepository repository) {
             return new ApplicationSubmissionDetailApplicationService(assembler, repository);
+        }
+
+        @Bean
+        ApplicationOverviewQueryApplicationService applicationOverviewQueryApplicationService(
+                UserAuthorizationContextAssembler assembler,
+                edu.whut.eval.domain.application.repository.ApplicationOverviewQueryRepository repository) {
+            return new ApplicationOverviewQueryApplicationService(assembler, repository);
         }
 
         @Bean
