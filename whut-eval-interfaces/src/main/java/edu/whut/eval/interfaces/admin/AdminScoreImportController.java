@@ -43,6 +43,7 @@ public class AdminScoreImportController {
 
     private static final long MAX_LECTURE_IMPORT_BYTES = 5L * 1024 * 1024;
     private static final long MAX_ACTIVITY_IMPORT_BYTES = 5L * 1024 * 1024;
+    private static final long MAX_MENTOR_SCORE_IMPORT_BYTES = 10L * 1024 * 1024;
     private static final DateTimeFormatter LECTURE_RESPONSE_TIME_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
@@ -73,6 +74,10 @@ public class AdminScoreImportController {
         if (!"UPSERT".equals(importMode) && !"STRICT_INSERT".equals(importMode)) {
             throw new ValidationException("importMode 仅允许 UPSERT 或 STRICT_INSERT");
         }
+        if (file.getSize() > MAX_MENTOR_SCORE_IMPORT_BYTES) {
+            throw new ValidationException("导师评分导入文件不超过 10MB");
+        }
+        validateWorkbookFilename(file, "导师评分");
 
         byte[] bytes;
         try {
@@ -161,17 +166,14 @@ public class AdminScoreImportController {
     }
 
     private void validateLectureWorkbookFilename(MultipartFile file) {
-        String filename = file.getOriginalFilename();
-        if (filename == null) {
-            throw new ValidationException("导入模板错误：文件不可解析");
-        }
-        String normalized = filename.trim().toLowerCase(Locale.ROOT);
-        if (!normalized.endsWith(".xlsx") && !normalized.endsWith(".xls")) {
-            throw new ValidationException("导入模板错误：文件不可解析");
-        }
+        validateWorkbookFilename(file, "讲座");
     }
 
     private void validateActivityWorkbookFilename(MultipartFile file) {
+        validateWorkbookFilename(file, "文体活动");
+    }
+
+    private void validateWorkbookFilename(MultipartFile file, String label) {
         String filename = file.getOriginalFilename();
         if (filename == null) {
             throw new ValidationException("导入模板错误：文件不可解析");

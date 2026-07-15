@@ -1,0 +1,5 @@
+studentApplyEnabled: true
+finalSubmitEnabled: false
+maxReviewBatchSize: 100
+studentApplyDeadline: "2026-09-30T23:59:59+08:00"
+finalSubmitDeadline: "2026-10-15T23:59:59+08:00"

@@ -1,0 +1,8 @@
+enabled: false
+endpoint: https://oss-cn-shanghai.aliyuncs.com
+region: cn-shanghai
+accessKeyId: ""
+accessKeySecret: ""
+bucket: whut-eval-local
+publicBaseUrl: ""
+keyPrefix: uploads/local

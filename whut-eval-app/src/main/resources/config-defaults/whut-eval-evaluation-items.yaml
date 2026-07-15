@@ -1,0 +1,104 @@
+evaluation-items:
+  MORAL:
+    - itemCode: MORAL_CONDUCT
+      itemName: 思想品德
+      categoryCode: MORAL
+      categoryName: 德育
+      description: 日常思想品德表现
+      maxPoints: 20
+      applyMode: MENTOR_IMPORT
+      enabled: true
+      sortOrder: 1
+    - itemCode: MORAL_VOLUNTEER
+      itemName: 志愿服务
+      categoryCode: MORAL
+      categoryName: 德育
+      description: 志愿活动参与
+      maxPoints: 10
+      applyMode: STUDENT_APPLY
+      enabled: true
+      sortOrder: 2
+    - itemCode: MORAL_HONOR
+      itemName: 荣誉奖项
+      categoryCode: MORAL
+      categoryName: 德育
+      description: 获得的荣誉称号和奖项
+      maxPoints: 10
+      applyMode: STUDENT_APPLY
+      enabled: true
+      sortOrder: 3
+  INTELLECTUAL:
+    - itemCode: INTELLECTUAL_GPA
+      itemName: 学业成绩
+      categoryCode: INTELLECTUAL
+      categoryName: 智育
+      description: 课程学业成绩（GPA折算）
+      maxPoints: 60
+      applyMode: MENTOR_IMPORT
+      enabled: true
+      sortOrder: 1
+    - itemCode: INTELLECTUAL_COMPETITION
+      itemName: 学科竞赛
+      categoryCode: INTELLECTUAL
+      categoryName: 智育
+      description: 学科竞赛获奖
+      maxPoints: 10
+      applyMode: STUDENT_APPLY
+      enabled: true
+      sortOrder: 2
+    - itemCode: INTELLECTUAL_RESEARCH
+      itemName: 科研创新
+      categoryCode: INTELLECTUAL
+      categoryName: 智育
+      description: 科研论文、专利、项目
+      maxPoints: 10
+      applyMode: STUDENT_APPLY
+      enabled: true
+      sortOrder: 3
+  SPORTS:
+    - itemCode: SPORTS_HEALTH
+      itemName: 体质健康
+      categoryCode: SPORTS
+      categoryName: 体育
+      description: 体质健康测试成绩
+      maxPoints: 10
+      applyMode: MENTOR_IMPORT
+      enabled: true
+      sortOrder: 1
+    - itemCode: SPORTS_COMPETITION
+      itemName: 体育竞赛
+      categoryCode: SPORTS
+      categoryName: 体育
+      description: 体育竞赛获奖
+      maxPoints: 5
+      applyMode: STUDENT_APPLY
+      enabled: true
+      sortOrder: 2
+    - itemCode: SPORTS_LECTURE
+      itemName: 体育讲座
+      categoryCode: SPORTS
+      categoryName: 体育
+      description: 体育讲座参与（批量导入）
+      maxPoints: 2
+      applyMode: LECTURE_IMPORT
+      enabled: true
+      sortOrder: 3
+  LABOR:
+    - itemCode: LABOR_PRACTICE
+      itemName: 劳动实践
+      categoryCode: LABOR
+      categoryName: 劳育
+      description: 劳动实践活动
+      maxPoints: 5
+      applyMode: MENTOR_IMPORT
+      enabled: true
+      sortOrder: 1
+    - itemCode: LABOR_ACTIVITY
+      itemName: 文体活动
+      categoryCode: LABOR
+      categoryName: 劳育
+      description: 文化艺术与社会实践活动
+      maxPoints: 5
+      applyMode: ACTIVITY_IMPORT
+      enabled: true
+      sortOrder: 2

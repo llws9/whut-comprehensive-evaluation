@@ -18,11 +18,18 @@ import java.util.List;
 @Component
 public class ExcelUserImportParser implements UserImportParser {
 
+    private static final int MAX_ROWS = 5000;
     private static final List<String> REQUIRED_HEADERS = List.of("userNo", "userName", "password", "email", "phone");
 
     @Override
     public List<UserImportRowView> parse(byte[] fileContent) {
+        if (fileContent == null) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
         try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(fileContent))) {
+            if (workbook.getNumberOfSheets() == 0) {
+                throw new ValidationException("导入模板错误：缺少工作表");
+            }
             Sheet sheet = workbook.getSheetAt(0);
             DataFormatter formatter = new DataFormatter();
 
@@ -49,6 +56,9 @@ public class ExcelUserImportParser implements UserImportParser {
                 }
 
                 rows.add(new UserImportRowView(i + 1L, userNo, userName, password, email, phone));
+                if (rows.size() > MAX_ROWS) {
+                    throw new ValidationException("用户导入文件最多支持 5000 行且不超过 5MB");
+                }
             }
             return rows;
         } catch (ValidationException e) {

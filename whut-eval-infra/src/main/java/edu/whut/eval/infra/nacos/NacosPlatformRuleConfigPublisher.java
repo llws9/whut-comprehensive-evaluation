@@ -8,6 +8,7 @@ import edu.whut.eval.application.platform.service.ConfigPublishException;
 import edu.whut.eval.application.platform.service.PlatformRuleConfigPublisher;
 import edu.whut.eval.common.exception.ConfigLoadException;
 import edu.whut.eval.domain.config.model.PlatformRuleConfig;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
@@ -15,6 +16,7 @@ import java.time.OffsetDateTime;
 
 @Component
 @Profile("!local")
+@ConditionalOnProperty(prefix = "infra.nacos", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class NacosPlatformRuleConfigPublisher implements PlatformRuleConfigPublisher {
 
     private static final String DEFINITION_NAME = "platform-rule-config";

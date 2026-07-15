@@ -3,13 +3,14 @@ package edu.whut.eval.interfaces.iam;
 import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
 import edu.whut.eval.application.iam.command.CreateUserCommand;
 import edu.whut.eval.application.iam.command.ImportUsersCommand;
+import edu.whut.eval.application.iam.command.UpdateUserStatusCommand;
 import edu.whut.eval.application.iam.query.UserAdminPageItemView;
 import edu.whut.eval.application.iam.query.UserAdminPageQuery;
-import edu.whut.eval.application.iam.command.UpdateUserStatusCommand;
 import edu.whut.eval.application.iam.query.UserCreatedView;
 import edu.whut.eval.application.iam.query.UserImportResultView;
 import edu.whut.eval.application.iam.service.UserAdminApplicationService;
 import edu.whut.eval.common.api.ApiResponse;
+import edu.whut.eval.common.exception.FileStorageException;
 import edu.whut.eval.common.exception.ValidationException;
 import edu.whut.eval.domain.shared.PageResult;
 import edu.whut.eval.interfaces.iam.request.CreateUserRequest;
@@ -20,6 +21,7 @@ import edu.whut.eval.interfaces.iam.response.UserImportResultResponse;
 import edu.whut.eval.interfaces.iam.response.UserPageItemResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
+import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -32,12 +34,16 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 
 @RestController
 @Validated
 @RequestMapping("/api/admin/users")
 public class UserAdminController {
+
+    private static final long MAX_USER_IMPORT_BYTES = 5L * 1024 * 1024;
 
     private final UserAdminApplicationService userAdminApplicationService;
 
@@ -92,23 +98,43 @@ public class UserAdminController {
     }
 
     @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).USER_IMPORT)")
-    @PostMapping("/import")
+    @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResponse<UserImportResultResponse> importUsers(@RequestParam("file") MultipartFile file,
-                                                             @RequestParam(value = "importMode", defaultValue = "UPSERT") String importMode)
-            throws java.io.IOException {
+                                                             @RequestParam(value = "importMode", defaultValue = "UPSERT") String importMode) {
         if (file == null || file.isEmpty()) {
             throw new ValidationException("上传文件不能为空");
         }
         if (importMode == null || (!"UPSERT".equals(importMode) && !"INSERT_ONLY".equals(importMode))) {
             throw new ValidationException("importMode 仅允许 UPSERT 或 INSERT_ONLY");
         }
-        UserImportResultView view = userAdminApplicationService.importUsers(new ImportUsersCommand(file.getBytes(), importMode));
+        if (file.getSize() > MAX_USER_IMPORT_BYTES) {
+            throw new ValidationException("用户导入文件不超过 5MB");
+        }
+        validateWorkbookFilename(file);
+        byte[] bytes;
+        try {
+            bytes = file.getBytes();
+        } catch (IOException exception) {
+            throw new FileStorageException("文件处理失败，请稍后重试", exception);
+        }
+        UserImportResultView view = userAdminApplicationService.importUsers(new ImportUsersCommand(bytes, importMode));
         return ApiResponse.success(new UserImportResultResponse(
                 view.totalCount(),
                 view.successCount(),
                 view.failedCount(),
                 view.failedRows().stream().map(item -> new UserImportFailedRowResponse(item.rowNo(), item.reason())).toList()
         ));
+    }
+
+    private void validateWorkbookFilename(MultipartFile file) {
+        String filename = file.getOriginalFilename();
+        if (filename == null) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
+        String normalized = filename.trim().toLowerCase(Locale.ROOT);
+        if (!normalized.endsWith(".xlsx") && !normalized.endsWith(".xls")) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
     }
 
     private UserPageItemResponse toPageItemResponse(UserAdminPageItemView view) {

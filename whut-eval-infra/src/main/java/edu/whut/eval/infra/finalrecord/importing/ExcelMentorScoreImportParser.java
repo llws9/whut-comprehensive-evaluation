@@ -18,13 +18,24 @@ import java.util.List;
 @Component
 public class ExcelMentorScoreImportParser implements MentorScoreImportParser {
 
+    private static final long MAX_MENTOR_SCORE_IMPORT_BYTES = 10L * 1024 * 1024;
+    private static final int MAX_ROWS = 10000;
     private static final List<String> REQUIRED_HEADERS = List.of(
             "studentNo", "categoryCode", "itemCode", "scoreValue", "displayText", "sourceRefId"
     );
 
     @Override
     public List<MentorScoreImportRow> parse(byte[] fileContent) {
+        if (fileContent == null) {
+            throw new ValidationException("导入模板错误：文件不可解析");
+        }
+        if (fileContent.length > MAX_MENTOR_SCORE_IMPORT_BYTES) {
+            throw new ValidationException("导师评分导入文件不超过 10MB");
+        }
         try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(fileContent))) {
+            if (workbook.getNumberOfSheets() == 0) {
+                throw new ValidationException("导入模板错误：缺少工作表");
+            }
             Sheet sheet = workbook.getSheetAt(0);
             DataFormatter formatter = new DataFormatter();
 
@@ -61,6 +72,9 @@ public class ExcelMentorScoreImportParser implements MentorScoreImportParser {
                         displayText,
                         sourceRefId
                 ));
+                if (rows.size() > MAX_ROWS) {
+                    throw new ValidationException("导师评分导入文件最多支持 10000 行且不超过 10MB");
+                }
             }
             return rows;
         } catch (ValidationException exception) {
