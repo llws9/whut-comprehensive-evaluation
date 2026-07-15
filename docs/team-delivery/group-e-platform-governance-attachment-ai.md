@@ -2,7 +2,7 @@
 
 > 当前状态：`PARTIAL_IMPLEMENTED`
 >
-> 当前代码已实现 `POST /api/files/upload`、`GET /api/files/{fileId}`、`GET /api/files/{fileId}/access-url`、`GET /api/files/public-attachments` 和 Nacos typed config 查询/计算相关能力；公共附件池发布/下架、平台治理写接口与 AI 报告接口仍属于目标态设计。
+> 当前代码已实现 `POST /api/files/upload`、`GET /api/files/{fileId}`、`GET /api/files/{fileId}/access-url`、`GET /api/files/public-attachments`、`POST /api/files/public-attachments`、`PATCH /api/files/public-attachments/{entryId}/offline` 和 Nacos typed config 查询/计算相关能力；平台治理写接口与 AI 报告接口仍属于目标态设计。
 
 ## 1. 模块背景
 
@@ -476,6 +476,7 @@ flowchart LR
 
 - 路由：`POST /api/files/public-attachments`
 - 鉴权：`attachment.pool.publish`
+- 当前实现：校验已上传文件为 `ACTIVE`、同一 `fileId` 不存在有效 `PUBLISHED` 发布记录后，写入 `public_attachment_entry`，状态固定为 `PUBLISHED`
 - 范围冻结：接口允许写入 `ALL/ORG_UNIT/ROLE`；但若目标用途是给 B 组学生申请直接绑定，本期必须发布为 `ALL`
 
 请求体：
@@ -513,6 +514,7 @@ flowchart LR
 
 - 路由：`PATCH /api/files/public-attachments/{entryId}/offline`
 - 鉴权：`attachment.pool.offline`
+- 当前实现：仅允许将 `PUBLISHED` 公共附件记录更新为 `OFFLINE`；下架原因参与请求校验，但当前冻结表结构不持久化 `reason`
 
 请求体：
 

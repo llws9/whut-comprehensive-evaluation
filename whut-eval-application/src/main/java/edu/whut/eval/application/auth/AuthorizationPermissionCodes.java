@@ -48,6 +48,10 @@ public final class AuthorizationPermissionCodes {
     public static final String PLATFORM_RULE_MANAGE = "platform.rule.manage";
     public static final String PLATFORM_SWITCH_MANAGE = "platform.switch.manage";
 
+    // 公共附件池权限
+    public static final String ATTACHMENT_POOL_PUBLISH = "attachment.pool.publish";
+    public static final String ATTACHMENT_POOL_OFFLINE = "attachment.pool.offline";
+
     private AuthorizationPermissionCodes() {
     }
 }

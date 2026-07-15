@@ -46,6 +46,9 @@ class PublicAttachmentQueryRepositoryIntegrationTest {
     @Autowired
     private FileQueryRepository fileQueryRepository;
 
+    @Autowired
+    private PublicAttachmentEntryMapper publicAttachmentEntryMapper;
+
     @BeforeEach
     void setUpSchema() {
         jdbcTemplate.execute("DROP TABLE IF EXISTS application_attachment");
@@ -165,6 +168,50 @@ class PublicAttachmentQueryRepositoryIntegrationTest {
 
         assertThat(fileQueryRepository.existsVisibleApplicationBinding("file-bound", 1001L)).isTrue();
         assertThat(fileQueryRepository.existsVisibleApplicationBinding("file-bound", 1002L)).isFalse();
+    }
+
+    @Test
+    void shouldInsertAndOfflinePublicAttachmentEntry() {
+        insertFileAsset("file-new", "uploads/new.pdf", 9001L, "ACTIVE");
+
+        PublicAttachmentEntryMapper.PublishPublicAttachmentSqlRecord record =
+                new PublicAttachmentEntryMapper.PublishPublicAttachmentSqlRecord(
+                        "file-new",
+                        "新模板",
+                        "填写说明",
+                        "INTELLECTUAL",
+                        "ALL",
+                        null,
+                        1012L,
+                        java.time.LocalDateTime.parse("2026-07-15T10:00:00"),
+                        15
+                );
+
+        int inserted = publicAttachmentEntryMapper.insertPublished(record);
+        Long entryId = record.id();
+
+        assertThat(inserted).isEqualTo(1);
+        assertThat(entryId).isNotNull();
+        assertThat(publicAttachmentEntryMapper.countActivePublishedByFileId("file-new")).isEqualTo(1);
+        assertThat(publicAttachmentEntryMapper.selectById(entryId).orElseThrow().getStatus()).isEqualTo("PUBLISHED");
+
+        int updated = publicAttachmentEntryMapper.offlineById(
+                entryId,
+                "资料过期",
+                java.time.LocalDateTime.parse("2026-07-15T11:00:00")
+        );
+
+        assertThat(updated).isEqualTo(1);
+        assertThat(publicAttachmentEntryMapper.selectById(entryId).orElseThrow().getStatus()).isEqualTo("OFFLINE");
+        assertThat(publicAttachmentEntryMapper.countActivePublishedByFileId("file-new")).isZero();
+
+        int repeatedUpdate = publicAttachmentEntryMapper.offlineById(
+                entryId,
+                "重复下架",
+                java.time.LocalDateTime.parse("2026-07-15T12:00:00")
+        );
+
+        assertThat(repeatedUpdate).isZero();
     }
 
     private void insertFileAsset(String fileId, String storageKey, Long uploaderUserId, String status) {

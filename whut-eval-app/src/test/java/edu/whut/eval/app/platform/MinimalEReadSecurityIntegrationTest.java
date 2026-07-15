@@ -6,6 +6,7 @@ import edu.whut.eval.application.auth.service.UserAuthorizationContextLoader;
 import edu.whut.eval.application.file.query.FileMetadataResponse;
 import edu.whut.eval.application.file.query.PublicAttachmentResponse;
 import edu.whut.eval.application.file.service.FileQueryApplicationService;
+import edu.whut.eval.application.file.service.PublicAttachmentCommandApplicationService;
 import edu.whut.eval.application.platform.query.EvaluationItemResponse;
 import edu.whut.eval.application.platform.query.PlatformMenuStatus;
 import edu.whut.eval.application.platform.service.PlatformReadApplicationService;
@@ -103,6 +104,9 @@ class MinimalEReadSecurityIntegrationTest {
 
     @MockBean
     private FileQueryApplicationService fileQueryApplicationService;
+
+    @MockBean
+    private PublicAttachmentCommandApplicationService publicAttachmentCommandApplicationService;
 
     @MockBean
     private UserAuthorizationContextLoader userAuthorizationContextLoader;

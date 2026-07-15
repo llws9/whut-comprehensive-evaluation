@@ -305,11 +305,20 @@ class TeamDeliverySqlConsistencyTest {
         assertThat(doc).contains("当前状态：`PARTIAL_IMPLEMENTED`");
         assertThat(doc).contains("`GET /api/files/{fileId}`");
         assertThat(doc).contains("`GET /api/files/{fileId}/access-url`");
+        assertThat(doc).contains("`POST /api/files/public-attachments`");
+        assertThat(doc).contains("`PATCH /api/files/public-attachments/{entryId}/offline`");
         assertThat(doc).contains("| E-9 | `GET` | `/api/files/{fileId}` | 查询文件元数据 |");
         assertThat(doc).contains("| E-10 | `GET` | `/api/files/{fileId}/access-url` | 生成文件访问地址 |");
+        assertThat(doc).contains("| E-12 | `POST` | `/api/files/public-attachments` | 发布公共附件 |");
+        assertThat(doc).contains("| E-13 | `PATCH` | `/api/files/public-attachments/{entryId}/offline` | 下架公共附件 |");
         assertThat(doc).contains("当前实现：返回文件基础元数据、`sourceType`、`canPreview`、`canDownload`");
         assertThat(doc).contains("当前实现：校验 `disposition` 与 `expireSeconds` 后，基于 `oss-storage-config.publicBaseUrl` 与 `storageKey` 返回 `PUBLIC_URL`");
+        assertThat(doc).contains("当前实现：校验已上传文件为 `ACTIVE`、同一 `fileId` 不存在有效 `PUBLISHED` 发布记录后");
+        assertThat(doc).contains("当前实现：仅允许将 `PUBLISHED` 公共附件记录更新为 `OFFLINE`");
+        assertThat(doc).contains("鉴权：`attachment.pool.publish`");
+        assertThat(doc).contains("鉴权：`attachment.pool.offline`");
         assertThat(doc).doesNotContain("文件读取、公共附件池管理、平台治理 CRUD 与 AI 报告接口仍属于目标态设计");
+        assertThat(doc).doesNotContain("公共附件池发布/下架、平台治理写接口与 AI 报告接口仍属于目标态设计");
     }
 
     @Test
