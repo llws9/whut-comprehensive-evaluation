@@ -2,7 +2,7 @@
 
 > 当前状态：`PARTIAL_IMPLEMENTED`
 >
-> 当前代码已实现 `POST /api/files/upload`、`GET /api/files/{fileId}`、`GET /api/files/{fileId}/access-url`、`GET /api/files/public-attachments`、`POST /api/files/public-attachments`、`PATCH /api/files/public-attachments/{entryId}/offline` 和 Nacos typed config 查询/计算相关能力；平台治理写接口与 AI 报告接口仍属于目标态设计。
+> 当前代码已实现 `GET/PATCH /api/platform/menu/status`、`GET/PUT /api/platform/menu/deadline`、`GET/POST/PATCH /api/platform/evaluation-items`、`POST /api/files/upload`、`GET /api/files/{fileId}`、`GET /api/files/{fileId}/access-url`、`GET /api/files/public-attachments`、`POST /api/files/public-attachments`、`PATCH /api/files/public-attachments/{entryId}/offline` 和 Nacos typed config 查询/计算相关能力；AI 报告接口仍属于目标态设计。
 
 ## 1. 模块背景
 
@@ -319,7 +319,7 @@ flowchart LR
 - 鉴权：`evaluation.item.manage`
 - 允许修改：`itemName/applyMode/reviewMode/scoreMode/capRuleJson/status`
 
-成功返回：`data = null`
+成功返回：`data = 最新项目定义快照`
 
 异常返回：
 

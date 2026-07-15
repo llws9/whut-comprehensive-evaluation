@@ -5,12 +5,14 @@ import edu.whut.eval.application.platform.query.PlatformMenuDeadline;
 import edu.whut.eval.application.platform.query.PlatformMenuStatus;
 import edu.whut.eval.application.platform.query.PlatformMenuStatusUpdateResult;
 import edu.whut.eval.application.platform.service.ConfigPublishException;
+import edu.whut.eval.application.platform.service.EvaluationItemCommandApplicationService;
 import edu.whut.eval.application.platform.service.PlatformReadApplicationService;
 import edu.whut.eval.application.platform.service.PlatformRuleCommandApplicationService;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
 import edu.whut.eval.interfaces.platform.PlatformReadController;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -205,6 +207,11 @@ class PlatformReadControllerWebMvcTest {
         @Bean
         StubPlatformRuleCommandApplicationService platformRuleCommandApplicationService() {
             return new StubPlatformRuleCommandApplicationService();
+        }
+
+        @Bean
+        EvaluationItemCommandApplicationService evaluationItemCommandApplicationService() {
+            return Mockito.mock(EvaluationItemCommandApplicationService.class);
         }
     }
 

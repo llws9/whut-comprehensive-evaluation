@@ -15,7 +15,9 @@ class PlatformReadControllerSecurityAnnotationTest {
     void shouldProtectPlatformRuleWriteEndpointsWithSwitchManageAuthority() throws Exception {
         Map<String, String> expectedExpressions = Map.of(
                 "updateMenuStatus", "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).PLATFORM_SWITCH_MANAGE)",
-                "replaceMenuDeadline", "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).PLATFORM_SWITCH_MANAGE)"
+                "replaceMenuDeadline", "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).PLATFORM_SWITCH_MANAGE)",
+                "createEvaluationItem", "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).EVALUATION_ITEM_MANAGE)",
+                "patchEvaluationItem", "hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).EVALUATION_ITEM_MANAGE)"
         );
 
         for (Map.Entry<String, String> expectedExpression : expectedExpressions.entrySet()) {

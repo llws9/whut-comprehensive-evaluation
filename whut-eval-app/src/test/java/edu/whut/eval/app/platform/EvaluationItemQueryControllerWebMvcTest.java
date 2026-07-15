@@ -1,10 +1,15 @@
 package edu.whut.eval.app.platform;
 
+import edu.whut.eval.application.platform.query.EvaluationItemCommandResult;
 import edu.whut.eval.application.platform.query.EvaluationItemResponse;
+import edu.whut.eval.application.platform.service.EvaluationItemCommandApplicationService;
+import edu.whut.eval.application.platform.service.ConfigPublishException;
 import edu.whut.eval.application.platform.service.PlatformReadApplicationService;
 import edu.whut.eval.application.platform.service.PlatformRuleCommandApplicationService;
+import edu.whut.eval.common.exception.ConflictException;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
 import edu.whut.eval.interfaces.platform.PlatformReadController;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +30,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -43,6 +50,16 @@ class EvaluationItemQueryControllerWebMvcTest {
 
     @Autowired
     private StubPlatformReadApplicationService platformReadApplicationService;
+
+    @Autowired
+    private StubEvaluationItemCommandApplicationService evaluationItemCommandApplicationService;
+
+    @BeforeEach
+    void resetStubs() {
+        platformReadApplicationService.items = List.of();
+        platformReadApplicationService.lastCategoryCode = null;
+        evaluationItemCommandApplicationService.reset();
+    }
 
     @Test
     void shouldReturnFlatEvaluationItemList() throws Exception {
@@ -92,6 +109,154 @@ class EvaluationItemQueryControllerWebMvcTest {
         assertThat(platformReadApplicationService.lastCategoryCode).isEqualTo("INTELLECTUAL");
     }
 
+    @Test
+    void shouldCreateEvaluationItemWithManageAuthority() throws Exception {
+        evaluationItemCommandApplicationService.createResult = new EvaluationItemCommandResult(
+                "INTELLECTUAL",
+                "智育",
+                "INTELLECTUAL_PATENT",
+                "专利授权",
+                "发明专利加分",
+                new BigDecimal("8.00"),
+                "min(raw, 8)",
+                "STUDENT_APPLY",
+                true,
+                "ACTIVE",
+                30,
+                "intellectual-patent"
+        );
+
+        mockMvc.perform(post("/api/platform/evaluation-items")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "categoryCode": "INTELLECTUAL",
+                                  "itemCode": "INTELLECTUAL_PATENT",
+                                  "itemName": "专利授权",
+                                  "description": "发明专利加分",
+                                  "maxPoints": 8.00,
+                                  "maxPointsExpression": "min(raw, 8)",
+                                  "applyMode": "STUDENT_APPLY",
+                                  "status": "ACTIVE",
+                                  "sortOrder": 30,
+                                  "optionsKey": "intellectual-patent"
+                                }
+                                """)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .with(SecurityMockMvcRequestPostProcessors.user("admin")
+                                .authorities(() -> "evaluation.item.manage")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.itemCode").value("INTELLECTUAL_PATENT"))
+                .andExpect(jsonPath("$.data.categoryName").value("智育"))
+                .andExpect(jsonPath("$.data.maxPoints").value(8.00))
+                .andExpect(jsonPath("$.data.status").value("ACTIVE"));
+        assertThat(evaluationItemCommandApplicationService.lastCreateCommand.itemCode())
+                .isEqualTo("INTELLECTUAL_PATENT");
+        assertThat(evaluationItemCommandApplicationService.lastCreateCommand.sortOrder())
+                .isEqualTo(30);
+    }
+
+    @Test
+    void shouldRejectEvaluationItemCreateWithoutManageAuthority() throws Exception {
+        mockMvc.perform(post("/api/platform/evaluation-items")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "categoryCode": "INTELLECTUAL",
+                                  "itemCode": "INTELLECTUAL_PATENT",
+                                  "itemName": "专利授权",
+                                  "applyMode": "STUDENT_APPLY"
+                                }
+                                """)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .with(SecurityMockMvcRequestPostProcessors.user("student")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void shouldReturn409WhenEvaluationItemCreateConflicts() throws Exception {
+        evaluationItemCommandApplicationService.createConflict = true;
+
+        mockMvc.perform(post("/api/platform/evaluation-items")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "categoryCode": "INTELLECTUAL",
+                                  "itemCode": "INTELLECTUAL_PAPER",
+                                  "itemName": "论文发表",
+                                  "applyMode": "STUDENT_APPLY"
+                                }
+                                """)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .with(SecurityMockMvcRequestPostProcessors.user("admin")
+                                .authorities(() -> "evaluation.item.manage")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("BIZ-4090"))
+                .andExpect(jsonPath("$.message").value("itemCode 已存在: INTELLECTUAL_PAPER"));
+    }
+
+    @Test
+    void shouldPatchEvaluationItemWithManageAuthority() throws Exception {
+        evaluationItemCommandApplicationService.patchResult = new EvaluationItemCommandResult(
+                "INTELLECTUAL",
+                "智育",
+                "INTELLECTUAL_PAPER",
+                "高水平论文",
+                "学术论文发表加分",
+                new BigDecimal("10.00"),
+                "min(raw, 10)",
+                "STUDENT_APPLY",
+                false,
+                "INACTIVE",
+                25,
+                "intellectual-paper"
+        );
+
+        mockMvc.perform(patch("/api/platform/evaluation-items/INTELLECTUAL_PAPER")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "itemName": "高水平论文",
+                                  "maxPoints": 10.00,
+                                  "status": "INACTIVE",
+                                  "sortOrder": 25
+                                }
+                                """)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .with(SecurityMockMvcRequestPostProcessors.user("admin")
+                                .authorities(() -> "evaluation.item.manage")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.itemCode").value("INTELLECTUAL_PAPER"))
+                .andExpect(jsonPath("$.data.itemName").value("高水平论文"))
+                .andExpect(jsonPath("$.data.enabled").value(false))
+                .andExpect(jsonPath("$.data.status").value("INACTIVE"));
+        assertThat(evaluationItemCommandApplicationService.lastPatchCommand.itemCode())
+                .isEqualTo("INTELLECTUAL_PAPER");
+        assertThat(evaluationItemCommandApplicationService.lastPatchCommand.sortOrder())
+                .isEqualTo(25);
+    }
+
+    @Test
+    void shouldReturnExternalErrorWhenEvaluationItemPublishFails() throws Exception {
+        evaluationItemCommandApplicationService.patchPublishFails = true;
+
+        mockMvc.perform(patch("/api/platform/evaluation-items/INTELLECTUAL_PAPER")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "itemName": "高水平论文"
+                                }
+                                """)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .with(SecurityMockMvcRequestPostProcessors.user("admin")
+                                .authorities(() -> "evaluation.item.manage")))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("EXT-5033"))
+                .andExpect(jsonPath("$.message").value("Failed to publish evaluation-items-config"));
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     @EnableMethodSecurity
@@ -110,6 +275,11 @@ class EvaluationItemQueryControllerWebMvcTest {
         PlatformRuleCommandApplicationService platformRuleCommandApplicationService() {
             return Mockito.mock(PlatformRuleCommandApplicationService.class);
         }
+
+        @Bean
+        StubEvaluationItemCommandApplicationService evaluationItemCommandApplicationService() {
+            return new StubEvaluationItemCommandApplicationService();
+        }
     }
 
     static class StubPlatformReadApplicationService extends PlatformReadApplicationService {
@@ -125,6 +295,49 @@ class EvaluationItemQueryControllerWebMvcTest {
         public List<EvaluationItemResponse> listEvaluationItems(String categoryCode) {
             this.lastCategoryCode = categoryCode;
             return items;
+        }
+    }
+
+    static class StubEvaluationItemCommandApplicationService extends EvaluationItemCommandApplicationService {
+
+        private EvaluationItemCommandResult createResult;
+        private EvaluationItemCommandResult patchResult;
+        private edu.whut.eval.application.platform.command.CreateEvaluationItemCommand lastCreateCommand;
+        private edu.whut.eval.application.platform.command.PatchEvaluationItemCommand lastPatchCommand;
+        private boolean createConflict;
+        private boolean patchPublishFails;
+
+        StubEvaluationItemCommandApplicationService() {
+            super(null, null);
+        }
+
+        void reset() {
+            createResult = null;
+            patchResult = null;
+            lastCreateCommand = null;
+            lastPatchCommand = null;
+            createConflict = false;
+            patchPublishFails = false;
+        }
+
+        @Override
+        public EvaluationItemCommandResult create(
+                edu.whut.eval.application.platform.command.CreateEvaluationItemCommand command) {
+            lastCreateCommand = command;
+            if (createConflict) {
+                throw new ConflictException("itemCode 已存在: " + command.itemCode());
+            }
+            return createResult;
+        }
+
+        @Override
+        public EvaluationItemCommandResult patch(
+                edu.whut.eval.application.platform.command.PatchEvaluationItemCommand command) {
+            lastPatchCommand = command;
+            if (patchPublishFails) {
+                throw new ConfigPublishException("Failed to publish evaluation-items-config");
+            }
+            return patchResult;
         }
     }
 }
