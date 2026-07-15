@@ -5,6 +5,8 @@ import edu.whut.eval.application.application.query.ApplicationAttachmentView;
 import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
 import edu.whut.eval.application.application.query.ReviewApplicationListItemView;
 import edu.whut.eval.application.application.query.ReviewApplicationQueryRow;
+import edu.whut.eval.application.application.query.ReviewMetaGradesView;
+import edu.whut.eval.application.application.query.ReviewOrgUnitOptionView;
 import edu.whut.eval.application.application.query.ReviewTaskSummaryCounts;
 import edu.whut.eval.application.application.query.ReviewTaskSummaryView;
 import edu.whut.eval.application.application.query.ReviewLogView;
@@ -98,6 +100,37 @@ class ReviewApplicationQueryApplicationServiceTest {
         assertThatThrownBy(service::getReviewTaskSummary)
                 .isInstanceOf(AccessDeniedAppException.class)
                 .hasMessage("当前用户无工作台查看权限");
+        verifyNoInteractions(reviewApplicationQueryRepository, reviewApplicationAccessValidator, applicationReviewLogRepository);
+    }
+
+    @Test
+    void shouldReturnReviewGradeMetadataUsingReviewTaskPermissionAndApplicationReviewScope() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(taskViewer());
+        given(reviewApplicationQueryRepository.findReviewGradeMetadata(any()))
+                .willReturn(new ReviewMetaGradesView(
+                        List.of("2024-2025", "2025-2026"),
+                        List.of(new ReviewOrgUnitOptionView(2010L, "计算机 2101 班", "CLASS")),
+                        2010L
+                ));
+
+        ReviewMetaGradesView result = service.getReviewGradeMetadata();
+
+        assertThat(result.gradeList()).containsExactly("2024-2025", "2025-2026");
+        assertThat(result.orgUnitList()).containsExactly(new ReviewOrgUnitOptionView(2010L, "计算机 2101 班", "CLASS"));
+        assertThat(result.defaultOrgUnitId()).isEqualTo(2010L);
+        org.mockito.ArgumentCaptor<ApplicationAccessContext> contextCaptor =
+                org.mockito.ArgumentCaptor.forClass(ApplicationAccessContext.class);
+        verify(reviewApplicationQueryRepository).findReviewGradeMetadata(contextCaptor.capture());
+        assertThat(contextCaptor.getValue().getPermissionCode()).isEqualTo(AuthorizationPermissionCodes.APPLICATION_REVIEW);
+    }
+
+    @Test
+    void shouldDenyReviewGradeMetadataWithoutReviewTaskViewPermission() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(reviewer());
+
+        assertThatThrownBy(service::getReviewGradeMetadata)
+                .isInstanceOf(AccessDeniedAppException.class)
+                .hasMessage("当前用户无元数据查询权限");
         verifyNoInteractions(reviewApplicationQueryRepository, reviewApplicationAccessValidator, applicationReviewLogRepository);
     }
 

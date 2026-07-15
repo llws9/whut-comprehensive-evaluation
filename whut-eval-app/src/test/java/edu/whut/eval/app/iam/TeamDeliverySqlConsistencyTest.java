@@ -276,11 +276,14 @@ class TeamDeliverySqlConsistencyTest {
         assertThat(doc).contains("当前状态：`PARTIAL_IMPLEMENTED`");
         assertThat(doc).contains("当前 Java Controller 已提供");
         assertThat(doc).contains("ReviewTaskController");
+        assertThat(doc).contains("ReviewMetaController");
         assertThat(doc).contains("ReviewApplicationController");
         assertThat(doc).contains("/api/review/tasks/summary");
+        assertThat(doc).contains("/api/review/meta/grades");
         assertThat(doc).contains("/api/review/applications");
         assertThat(doc).doesNotContain("当前代码尚未提供 `/api/review/**` 审核动作 Controller");
         assertThat(doc).contains("| C-1 | `GET` | `/api/review/tasks/summary` | 审核工作台摘要 | `CURRENT_IMPLEMENTED` |");
+        assertThat(doc).contains("| C-2 | `GET` | `/api/review/meta/grades` | 获取可选年级/组织过滤条件 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-3 | `GET` | `/api/review/applications` | 分页查询待审/已审申请 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-4 | `GET` | `/api/review/applications/{applicationId}` | 查询审核详情 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-5 | `GET` | `/api/review/applications/{applicationId}/attachments` | 查看附件列表 | `CURRENT_IMPLEMENTED` |");

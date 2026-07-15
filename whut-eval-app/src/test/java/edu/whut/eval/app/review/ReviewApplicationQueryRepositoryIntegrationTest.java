@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.application.query.ReviewApplicationQueryRow;
+import edu.whut.eval.application.application.query.ReviewMetaGradesView;
+import edu.whut.eval.application.application.query.ReviewOrgUnitOptionView;
 import edu.whut.eval.application.application.query.ReviewTaskSummaryCounts;
 import edu.whut.eval.application.application.repository.ReviewApplicationQueryRepository;
 import edu.whut.eval.application.auth.service.DefaultAuthorizationScopeEvaluator;
@@ -99,10 +101,22 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
                 java.time.LocalDateTime.of(2026, 7, 8, 0, 0)
         );
 
-        assertThat(counts.pendingCount()).isEqualTo(2);
+        assertThat(counts.pendingCount()).isEqualTo(3);
         assertThat(counts.approvedToday()).isEqualTo(1);
         assertThat(counts.returnedToday()).isEqualTo(2);
         assertThat(counts.rejectedToday()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldLoadReviewGradeMetadataByVisibleApplications() {
+        ReviewMetaGradesView metadata = repository.findReviewGradeMetadata(accessContext());
+
+        assertThat(metadata.gradeList()).containsExactly("2024-2025", "2025-2026");
+        assertThat(metadata.orgUnitList()).containsExactly(
+                new ReviewOrgUnitOptionView(2010L, "计算机 2101 班", "CLASS"),
+                new ReviewOrgUnitOptionView(2011L, "计算机 2102 班", "CLASS")
+        );
+        assertThat(metadata.defaultOrgUnitId()).isEqualTo(2010L);
     }
 
     @Test
@@ -127,7 +141,7 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
         jdbcTemplate.execute("DROP TABLE IF EXISTS iam_user");
         jdbcTemplate.execute("DROP TABLE IF EXISTS org_unit");
         jdbcTemplate.execute("CREATE TABLE iam_user (id BIGINT PRIMARY KEY, user_no VARCHAR(64), user_name VARCHAR(128), status VARCHAR(32))");
-        jdbcTemplate.execute("CREATE TABLE org_unit (id BIGINT PRIMARY KEY, unit_name VARCHAR(128), path VARCHAR(255), status VARCHAR(32))");
+        jdbcTemplate.execute("CREATE TABLE org_unit (id BIGINT PRIMARY KEY, unit_name VARCHAR(128), unit_type VARCHAR(32), path VARCHAR(255), status VARCHAR(32))");
         jdbcTemplate.execute("""
                 CREATE TABLE application_submission (
                     application_id BIGINT PRIMARY KEY,
@@ -187,9 +201,10 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
     private void insertRows() {
         jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1001, '20210001', '张三', 'ACTIVE')");
         jdbcTemplate.update("INSERT INTO iam_user (id, user_no, user_name, status) VALUES (1002, '20210002', '李四', 'ACTIVE')");
-        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, path, status) VALUES (2002, '计算机与人工智能学院', '/WHUT/CS', 'ACTIVE')");
-        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, path, status) VALUES (2010, '计算机 2101 班', '/WHUT/CS/CS2021/CS2101', 'ACTIVE')");
-        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, path, status) VALUES (3000, '外部班级', '/WHUT/ART/ART2021/ART2101', 'ACTIVE')");
+        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, unit_type, path, status) VALUES (2002, '计算机与人工智能学院', 'COLLEGE', '/WHUT/CS', 'ACTIVE')");
+        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, unit_type, path, status) VALUES (2010, '计算机 2101 班', 'CLASS', '/WHUT/CS/CS2021/CS2101', 'ACTIVE')");
+        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, unit_type, path, status) VALUES (2011, '计算机 2102 班', 'CLASS', '/WHUT/CS/CS2021/CS2102', 'ACTIVE')");
+        jdbcTemplate.update("INSERT INTO org_unit (id, unit_name, unit_type, path, status) VALUES (3000, '外部班级', 'CLASS', '/WHUT/ART/ART2021/ART2101', 'ACTIVE')");
         jdbcTemplate.update("""
                 INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
                 VALUES (21013, 1001, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', '2025-2026', '上学期', '期刊论文录用申请', '申请说明', 'SUBMITTED', '2026-07-06 10:00:00', '2026-07-06 09:00:00', '2026-07-06 10:00:00', 1)
@@ -217,6 +232,10 @@ class ReviewApplicationQueryRepositoryIntegrationTest {
         jdbcTemplate.update("""
                 INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
                 VALUES (21019, 1002, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', '2025-2026', '上学期', '今日退回后重提申请', '申请说明', 'SUBMITTED', '2026-07-07 12:30:00', '2026-07-07 12:00:00', '2026-07-07 12:30:00', 3)
+                """);
+        jdbcTemplate.update("""
+                INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, academic_year, term, title, description, status, submitted_at, created_at, updated_at, version)
+                VALUES (21020, 1002, 2011, 'MORAL', 'MORAL_SERVICE', '2024-2025', '下学期', '志愿服务申请', '申请说明', 'SUBMITTED', '2026-07-07 13:30:00', '2026-07-07 13:00:00', '2026-07-07 13:30:00', 1)
                 """);
         jdbcTemplate.update("INSERT INTO application_attachment (application_id, file_id, storage_key, original_filename, content_type, size, uploaded_by, sort_no) VALUES (21013, 'file-1', 'storage/private/a.pdf', 'a.pdf', 'application/pdf', 128, 1001, 0)");
         jdbcTemplate.update("""

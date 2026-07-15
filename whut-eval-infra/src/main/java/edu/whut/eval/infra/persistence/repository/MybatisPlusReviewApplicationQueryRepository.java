@@ -3,6 +3,8 @@ package edu.whut.eval.infra.persistence.repository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.application.query.ReviewApplicationQueryRow;
+import edu.whut.eval.application.application.query.ReviewMetaGradesView;
+import edu.whut.eval.application.application.query.ReviewOrgUnitOptionView;
 import edu.whut.eval.application.application.query.ReviewTaskSummaryCounts;
 import edu.whut.eval.application.application.repository.ReviewApplicationQueryRepository;
 import edu.whut.eval.domain.application.query.ApplicationAccessContext;
@@ -107,6 +109,21 @@ public class MybatisPlusReviewApplicationQueryRepository implements ReviewApplic
                 dayEnd
         );
         return counts == null ? new ReviewTaskSummaryCounts(0, 0, 0, 0) : counts;
+    }
+
+    @Override
+    public ReviewMetaGradesView findReviewGradeMetadata(ApplicationAccessContext accessContext) {
+        SqlPredicateFragment fragment = scopeFragment(accessContext);
+        List<String> gradeList = reviewApplicationQueryMapper.selectReviewGradeList(
+                fragment.getExpression(),
+                fragment.getParameters()
+        );
+        List<ReviewOrgUnitOptionView> orgUnitList = reviewApplicationQueryMapper.selectReviewOrgUnitOptions(
+                fragment.getExpression(),
+                fragment.getParameters()
+        );
+        Long defaultOrgUnitId = orgUnitList.isEmpty() ? null : orgUnitList.get(0).orgUnitId();
+        return new ReviewMetaGradesView(gradeList, orgUnitList, defaultOrgUnitId);
     }
 
     private SqlPredicateFragment scopeFragment(ApplicationAccessContext accessContext) {

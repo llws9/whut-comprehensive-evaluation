@@ -6,6 +6,8 @@ import edu.whut.eval.application.application.query.ReviewApplicationDetailView;
 import edu.whut.eval.application.application.query.ReviewApplicationSummaryView;
 import edu.whut.eval.application.application.query.ReviewApplicantView;
 import edu.whut.eval.application.application.query.ReviewLogView;
+import edu.whut.eval.application.application.query.ReviewMetaGradesView;
+import edu.whut.eval.application.application.query.ReviewOrgUnitOptionView;
 import edu.whut.eval.application.application.query.ReviewScoringSnapshotView;
 import edu.whut.eval.application.application.query.ReviewTaskSummaryView;
 import edu.whut.eval.application.application.service.ReviewApplicationCommandApplicationService;
@@ -26,6 +28,7 @@ import edu.whut.eval.infra.security.jwt.JwtTokenResolver;
 import edu.whut.eval.infra.security.web.RestAccessDeniedHandler;
 import edu.whut.eval.infra.security.web.RestAuthenticationEntryPoint;
 import edu.whut.eval.interfaces.review.ReviewApplicationController;
+import edu.whut.eval.interfaces.review.ReviewMetaController;
 import edu.whut.eval.interfaces.review.ReviewTaskController;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
@@ -59,11 +62,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(controllers = {ReviewApplicationController.class, ReviewTaskController.class})
+@WebMvcTest(controllers = {ReviewApplicationController.class, ReviewTaskController.class, ReviewMetaController.class})
 @ContextConfiguration(classes = ReviewApplicationSecurityIntegrationTest.TestApplication.class)
 @Import({
         ReviewApplicationController.class,
         ReviewTaskController.class,
+        ReviewMetaController.class,
         SecurityConfiguration.class,
         RestAuthenticationEntryPoint.class,
         RestAccessDeniedHandler.class,
@@ -137,6 +141,12 @@ class ReviewApplicationSecurityIntegrationTest {
         ));
         given(reviewApplicationQueryApplicationService.getReviewTaskSummary())
                 .willReturn(new ReviewTaskSummaryView(5, 2, 1, 1, 4));
+        given(reviewApplicationQueryApplicationService.getReviewGradeMetadata())
+                .willReturn(new ReviewMetaGradesView(
+                        List.of("2024-2025", "2025-2026"),
+                        List.of(new ReviewOrgUnitOptionView(2010L, "计算机 2101 班", "CLASS")),
+                        2010L
+                ));
         given(reviewApplicationCommandApplicationService.approve(any()))
                 .willReturn(new ReviewActionResultView(21013L, ApplicationSubmissionStatus.APPROVED, 2L, 31001L, Instant.now()));
     }
@@ -175,6 +185,20 @@ class ReviewApplicationSecurityIntegrationTest {
     @Test
     void shouldAllowUserWithReviewTaskViewOnSummary() throws Exception {
         mockMvc.perform(get("/api/review/tasks/summary")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1013L, "review.task.view")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldRejectUserWithoutReviewTaskViewOnGradesMeta() throws Exception {
+        mockMvc.perform(get("/api/review/meta/grades")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1010L, "application.review")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void shouldAllowUserWithReviewTaskViewOnGradesMeta() throws Exception {
+        mockMvc.perform(get("/api/review/meta/grades")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAuthorities(1013L, "review.task.view")))
                 .andExpect(status().isOk());
     }

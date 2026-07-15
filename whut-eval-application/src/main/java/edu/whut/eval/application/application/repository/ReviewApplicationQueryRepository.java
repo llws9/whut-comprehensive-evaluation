@@ -1,6 +1,7 @@
 package edu.whut.eval.application.application.repository;
 
 import edu.whut.eval.application.application.query.ReviewApplicationQueryRow;
+import edu.whut.eval.application.application.query.ReviewMetaGradesView;
 import edu.whut.eval.application.application.query.ReviewTaskSummaryCounts;
 import edu.whut.eval.domain.application.query.ApplicationAccessContext;
 import edu.whut.eval.domain.application.query.ReviewApplicationPageQuery;
@@ -22,4 +23,6 @@ public interface ReviewApplicationQueryRepository {
     ReviewTaskSummaryCounts countReviewTaskSummary(ApplicationAccessContext accessContext,
                                                    LocalDateTime dayStart,
                                                    LocalDateTime dayEnd);
+
+    ReviewMetaGradesView findReviewGradeMetadata(ApplicationAccessContext accessContext);
 }

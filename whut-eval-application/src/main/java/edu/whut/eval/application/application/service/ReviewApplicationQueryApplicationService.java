@@ -8,6 +8,7 @@ import edu.whut.eval.application.application.query.ReviewApplicationQueryRow;
 import edu.whut.eval.application.application.query.ReviewApplicationSummaryView;
 import edu.whut.eval.application.application.query.ReviewApplicantView;
 import edu.whut.eval.application.application.query.ReviewLogView;
+import edu.whut.eval.application.application.query.ReviewMetaGradesView;
 import edu.whut.eval.application.application.query.ReviewScoringSnapshotView;
 import edu.whut.eval.application.application.query.ReviewTaskSummaryCounts;
 import edu.whut.eval.application.application.query.ReviewTaskSummaryView;
@@ -73,6 +74,11 @@ public class ReviewApplicationQueryApplicationService {
         );
     }
 
+    public ReviewMetaGradesView getReviewGradeMetadata() {
+        UserAuthorizationContext reviewer = requiredMetaViewer();
+        return reviewApplicationQueryRepository.findReviewGradeMetadata(toAccessContext(reviewer));
+    }
+
     public ReviewApplicationDetailView getReviewDetail(Long applicationId) {
         UserAuthorizationContext reviewer = requiredReviewer();
         ReviewApplicationQueryRow row = reviewApplicationQueryRepository.findReviewApplicationDetail(applicationId)
@@ -116,6 +122,14 @@ public class ReviewApplicationQueryApplicationService {
         UserAuthorizationContext reviewer = userAuthorizationContextAssembler.requiredAuthorizationContext();
         if (!reviewer.hasAuthority(AuthorizationPermissionCodes.REVIEW_TASK_VIEW)) {
             throw new AccessDeniedAppException("当前用户无工作台查看权限");
+        }
+        return reviewer;
+    }
+
+    private UserAuthorizationContext requiredMetaViewer() {
+        UserAuthorizationContext reviewer = userAuthorizationContextAssembler.requiredAuthorizationContext();
+        if (!reviewer.hasAuthority(AuthorizationPermissionCodes.REVIEW_TASK_VIEW)) {
+            throw new AccessDeniedAppException("当前用户无元数据查询权限");
         }
         return reviewer;
     }

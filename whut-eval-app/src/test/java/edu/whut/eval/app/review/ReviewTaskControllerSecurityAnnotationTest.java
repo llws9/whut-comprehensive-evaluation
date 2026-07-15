@@ -1,6 +1,7 @@
 package edu.whut.eval.app.review;
 
 import edu.whut.eval.interfaces.review.ReviewTaskController;
+import edu.whut.eval.interfaces.review.ReviewMetaController;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.access.prepost.PreAuthorize;
 
@@ -19,6 +20,24 @@ class ReviewTaskControllerSecurityAnnotationTest {
     void shouldRequireReviewTaskViewAuthorityOnTaskEndpoints() {
         Set<String> endpointMethods = Set.of("getSummary");
         Set<String> annotatedMethods = Arrays.stream(ReviewTaskController.class.getDeclaredMethods())
+                .filter(method -> endpointMethods.contains(method.getName()))
+                .peek(method -> {
+                    PreAuthorize preAuthorize = method.getAnnotation(PreAuthorize.class);
+                    assertThat(preAuthorize)
+                            .as(method.getName() + " must declare @PreAuthorize")
+                            .isNotNull();
+                    assertThat(preAuthorize.value()).isEqualTo(REVIEW_TASK_VIEW_AUTH);
+                })
+                .map(java.lang.reflect.Method::getName)
+                .collect(Collectors.toSet());
+
+        assertThat(annotatedMethods).containsExactlyInAnyOrderElementsOf(endpointMethods);
+    }
+
+    @Test
+    void shouldRequireReviewTaskViewAuthorityOnMetaEndpoints() {
+        Set<String> endpointMethods = Set.of("getGrades");
+        Set<String> annotatedMethods = Arrays.stream(ReviewMetaController.class.getDeclaredMethods())
                 .filter(method -> endpointMethods.contains(method.getName()))
                 .peek(method -> {
                     PreAuthorize preAuthorize = method.getAnnotation(PreAuthorize.class);

@@ -2,7 +2,7 @@
 
 > 当前状态：`PARTIAL_IMPLEMENTED`
 >
-> 当前 Java Controller 已提供 `ReviewTaskController` 与 `ReviewApplicationController`，覆盖 C-1/C-3/C-4/C-5/C-6/C-7/C-8/C-9/C-10：审核工作台摘要、审核列表、审核详情、附件摘要、审核轨迹、审批通过、退回补充、审批拒绝、批量审批通过。C-2 仍为目标态设计；C-5 当前返回附件元数据摘要，访问 URL 生成仍待 E-9/E-10 集成。
+> 当前 Java Controller 已提供 `ReviewTaskController`、`ReviewMetaController` 与 `ReviewApplicationController`，覆盖 C-1/C-2/C-3/C-4/C-5/C-6/C-7/C-8/C-9/C-10：审核工作台摘要、审核元数据、审核列表、审核详情、附件摘要、审核轨迹、审批通过、退回补充、审批拒绝、批量审批通过。C-5 当前返回附件元数据摘要，访问 URL 生成仍待 E-9/E-10 集成。
 
 ## 1. 模块背景
 
@@ -92,7 +92,7 @@ flowchart LR
 | 编号 | 方法 | 路由 | 用途 | 当前状态 |
 |---|---|---|---|---|
 | C-1 | `GET` | `/api/review/tasks/summary` | 审核工作台摘要 | `CURRENT_IMPLEMENTED` |
-| C-2 | `GET` | `/api/review/meta/grades` | 获取可选年级/组织过滤条件 | `TARGET_BLUEPRINT` |
+| C-2 | `GET` | `/api/review/meta/grades` | 获取可选年级/组织过滤条件 | `CURRENT_IMPLEMENTED` |
 | C-3 | `GET` | `/api/review/applications` | 分页查询待审/已审申请 | `CURRENT_IMPLEMENTED` |
 | C-4 | `GET` | `/api/review/applications/{applicationId}` | 查询审核详情 | `CURRENT_IMPLEMENTED` |
 | C-5 | `GET` | `/api/review/applications/{applicationId}/attachments` | 查看附件列表 | `CURRENT_IMPLEMENTED` |

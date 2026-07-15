@@ -50,12 +50,7 @@ public class ReviewApplicationQuerySqlProvider {
     }
 
     public String buildCountReviewTaskSummary(Map<String, Object> params) {
-        String expression = params == null ? "" : (String) params.get("expression");
-        List<String> conditions = new ArrayList<>();
-        if (expression != null && !expression.isBlank()) {
-            conditions.add("(" + expression + ")");
-        }
-        String scopeCondition = conditions.isEmpty() ? "1 = 1" : String.join(" AND ", conditions);
+        String scopeCondition = scopeCondition(params);
         return """
                 SELECT
                     COALESCE(COUNT(DISTINCT CASE WHEN scoped.status = 'SUBMITTED' THEN scoped.application_id END), 0) AS pendingCount,
@@ -79,6 +74,37 @@ public class ReviewApplicationQuerySqlProvider {
                           AND l.reviewed_at < #{dayEnd}
                     WHERE """ + scopeCondition + """
                 ) scoped
+                """;
+    }
+
+    public String buildSelectReviewGradeList(Map<String, Object> params) {
+        return """
+                SELECT DISTINCT academic_year
+                """ + REVIEW_BASE + """
+                WHERE """ + scopeCondition(params) + """
+                ORDER BY academic_year ASC
+                """;
+    }
+
+    public String buildSelectReviewOrgUnitOptions(Map<String, Object> params) {
+        return """
+                SELECT DISTINCT
+                       org_unit_id AS orgUnitId,
+                       org_unit_name AS orgUnitName,
+                       org_unit_type AS orgUnitType
+                FROM (
+                    SELECT review_base.org_unit_id,
+                           review_base.org_unit_name,
+                           ou.unit_type AS org_unit_type,
+                           review_base.applicant_user_id,
+                           review_base.org_path,
+                           review_base.category_code,
+                           review_base.item_code
+                """ + REVIEW_BASE + """
+                    JOIN org_unit ou ON ou.id = review_base.org_unit_id
+                    WHERE """ + scopeCondition(params) + """
+                ) scoped
+                ORDER BY orgUnitId ASC
                 """;
     }
 
@@ -155,5 +181,13 @@ public class ReviewApplicationQuerySqlProvider {
         if (query.getKeyword() != null && !query.getKeyword().isBlank()) {
             conditions.add("(user_name LIKE CONCAT('%', #{query.keyword}, '%') OR user_no LIKE CONCAT('%', #{query.keyword}, '%'))");
         }
+    }
+
+    private String scopeCondition(Map<String, Object> params) {
+        String expression = params == null ? "" : (String) params.get("expression");
+        if (expression == null || expression.isBlank()) {
+            return "1 = 1";
+        }
+        return "(" + expression + ")";
     }
 }
