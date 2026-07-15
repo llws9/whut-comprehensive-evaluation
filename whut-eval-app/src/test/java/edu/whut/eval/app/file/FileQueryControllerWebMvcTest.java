@@ -51,6 +51,9 @@ class FileQueryControllerWebMvcTest {
                 "application/pdf",
                 128L,
                 "ACTIVE",
+                "SELF_UPLOAD",
+                true,
+                true,
                 LocalDateTime.parse("2026-07-06T10:00:00")
         );
 
@@ -63,6 +66,9 @@ class FileQueryControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.contentType").value("application/pdf"))
                 .andExpect(jsonPath("$.data.size").value(128))
                 .andExpect(jsonPath("$.data.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.data.sourceType").value("SELF_UPLOAD"))
+                .andExpect(jsonPath("$.data.canPreview").value(true))
+                .andExpect(jsonPath("$.data.canDownload").value(true))
                 .andExpect(jsonPath("$.data.createdAt").exists())
                 .andExpect(jsonPath("$.data.bucket").doesNotExist())
                 .andExpect(jsonPath("$.data.storageKey").doesNotExist())
@@ -74,16 +80,22 @@ class FileQueryControllerWebMvcTest {
         fileQueryApplicationService.accessUrl = new FileAccessUrlResponse(
                 "file-own",
                 "https://cdn.example.com/uploads/own.pdf",
+                "PUBLIC_URL",
                 null
         );
 
         mockMvc.perform(get("/api/files/file-own/access-url")
+                        .param("disposition", "attachment")
+                        .param("expireSeconds", "600")
                         .with(SecurityMockMvcRequestPostProcessors.user("student")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.fileId").value("file-own"))
                 .andExpect(jsonPath("$.data.accessUrl").value("https://cdn.example.com/uploads/own.pdf"))
+                .andExpect(jsonPath("$.data.accessMode").value("PUBLIC_URL"))
                 .andExpect(jsonPath("$.data.expiresAt").doesNotExist());
+        org.assertj.core.api.Assertions.assertThat(fileQueryApplicationService.lastDisposition).isEqualTo("attachment");
+        org.assertj.core.api.Assertions.assertThat(fileQueryApplicationService.lastExpireSeconds).isEqualTo(600);
     }
 
     @Test
@@ -133,6 +145,8 @@ class FileQueryControllerWebMvcTest {
         private FileMetadataResponse metadata;
         private FileAccessUrlResponse accessUrl;
         private List<PublicAttachmentResponse> publicAttachments = List.of();
+        private String lastDisposition;
+        private int lastExpireSeconds;
 
         StubFileQueryApplicationService() {
             super(null, null, null);
@@ -145,6 +159,13 @@ class FileQueryControllerWebMvcTest {
 
         @Override
         public FileAccessUrlResponse getAccessUrl(String fileId) {
+            return accessUrl;
+        }
+
+        @Override
+        public FileAccessUrlResponse getAccessUrl(String fileId, String disposition, int expireSeconds) {
+            lastDisposition = disposition;
+            lastExpireSeconds = expireSeconds;
             return accessUrl;
         }
 

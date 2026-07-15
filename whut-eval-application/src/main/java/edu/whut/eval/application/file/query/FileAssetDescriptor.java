@@ -10,17 +10,31 @@ public class FileAssetDescriptor {
     private final String contentType;
     private final Long size;
     private final Long uploaderUserId;
+    private final String uploadChannel;
     private final String status;
     private final LocalDateTime createdAt;
 
     public FileAssetDescriptor(String fileId, String storageKey, String originalFilename, String contentType,
                                Long size, Long uploaderUserId, String status, LocalDateTime createdAt) {
+        this(fileId, storageKey, originalFilename, contentType, size, uploaderUserId, "SELF_UPLOAD", status, createdAt);
+    }
+
+    public FileAssetDescriptor(String fileId,
+                               String storageKey,
+                               String originalFilename,
+                               String contentType,
+                               Long size,
+                               Long uploaderUserId,
+                               String uploadChannel,
+                               String status,
+                               LocalDateTime createdAt) {
         this.fileId = fileId;
         this.storageKey = storageKey;
         this.originalFilename = originalFilename;
         this.contentType = contentType;
         this.size = size;
         this.uploaderUserId = uploaderUserId;
+        this.uploadChannel = uploadChannel;
         this.status = status;
         this.createdAt = createdAt;
     }
@@ -47,6 +61,10 @@ public class FileAssetDescriptor {
 
     public Long getUploaderUserId() {
         return uploaderUserId;
+    }
+
+    public String getUploadChannel() {
+        return uploadChannel;
     }
 
     public String getStatus() {

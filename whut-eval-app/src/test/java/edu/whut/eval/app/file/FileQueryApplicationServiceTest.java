@@ -49,6 +49,9 @@ class FileQueryApplicationServiceTest {
         assertThat(response.getContentType()).isEqualTo("application/pdf");
         assertThat(response.getSize()).isEqualTo(128L);
         assertThat(response.getStatus()).isEqualTo("ACTIVE");
+        assertThat(response.getSourceType()).isEqualTo("SELF_UPLOAD");
+        assertThat(response.isCanPreview()).isTrue();
+        assertThat(response.isCanDownload()).isTrue();
         assertThat(response.getCreatedAt()).isEqualTo(LocalDateTime.parse("2026-07-06T10:00:00"));
     }
 
@@ -72,6 +75,18 @@ class FileQueryApplicationServiceTest {
     }
 
     @Test
+    void shouldAllowFileBoundToVisibleApplicationForReviewer() {
+        fileQueryRepository.file = file("file-bound", "uploads/bound.pdf", 9001L, "ACTIVE");
+        fileQueryRepository.applicationBoundVisible = true;
+
+        FileMetadataResponse response = service.getMetadata("file-bound");
+
+        assertThat(response.getFileId()).isEqualTo("file-bound");
+        assertThat(response.getSourceType()).isEqualTo("SELF_UPLOAD");
+        assertThat(fileQueryRepository.lastBoundUserId).isEqualTo(1001L);
+    }
+
+    @Test
     void shouldReturnNotFoundWhenActiveFileDoesNotExist() {
         fileQueryRepository.file = null;
 
@@ -87,11 +102,30 @@ class FileQueryApplicationServiceTest {
         config.setPublicBaseUrl("https://cdn.example.com/base/");
         typedConfigRepository.save(OssStorageConfigProvider.DEFINITION_NAME, config);
 
-        FileAccessUrlResponse response = service.getAccessUrl("file-own");
+        FileAccessUrlResponse response = service.getAccessUrl("file-own", "attachment", 600);
 
         assertThat(response.getFileId()).isEqualTo("file-own");
         assertThat(response.getAccessUrl()).isEqualTo("https://cdn.example.com/base/uploads/own.pdf");
+        assertThat(response.getAccessMode()).isEqualTo("PUBLIC_URL");
         assertThat(response.getExpiresAt()).isNull();
+    }
+
+    @Test
+    void shouldRejectUnsupportedDisposition() {
+        fileQueryRepository.file = file("file-own", "uploads/own.pdf", 1001L, "ACTIVE");
+
+        assertThatThrownBy(() -> service.getAccessUrl("file-own", "open", 300))
+                .isInstanceOf(edu.whut.eval.common.exception.ValidationException.class)
+                .hasMessage("disposition 仅允许 inline 或 attachment");
+    }
+
+    @Test
+    void shouldRejectTooLargeExpireSeconds() {
+        fileQueryRepository.file = file("file-own", "uploads/own.pdf", 1001L, "ACTIVE");
+
+        assertThatThrownBy(() -> service.getAccessUrl("file-own", "inline", 1801))
+                .isInstanceOf(edu.whut.eval.common.exception.ValidationException.class)
+                .hasMessage("expireSeconds 不能超过 1800");
     }
 
     @Test
@@ -168,6 +202,8 @@ class FileQueryApplicationServiceTest {
 
         private FileAssetDescriptor file;
         private boolean publicVisible;
+        private boolean applicationBoundVisible;
+        private Long lastBoundUserId;
         private List<PublicAttachmentDescriptor> attachments = List.of();
         private String lastCategoryCode;
 
@@ -179,6 +215,13 @@ class FileQueryApplicationServiceTest {
         @Override
         public boolean existsPublishedAllPublicAttachment(String fileId) {
             return publicVisible;
+        }
+
+        @Override
+        public boolean existsVisibleApplicationBinding(String fileId,
+                                                       edu.whut.eval.domain.application.query.ApplicationAccessContext accessContext) {
+            lastBoundUserId = accessContext.getUserId();
+            return applicationBoundVisible;
         }
 
         @Override

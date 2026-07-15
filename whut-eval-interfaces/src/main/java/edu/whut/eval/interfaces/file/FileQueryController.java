@@ -31,8 +31,10 @@ public class FileQueryController {
     }
 
     @GetMapping("/{fileId}/access-url")
-    public ApiResponse<FileAccessUrlResponse> getAccessUrl(@PathVariable String fileId) {
-        return ApiResponse.success(fileQueryApplicationService.getAccessUrl(fileId));
+    public ApiResponse<FileAccessUrlResponse> getAccessUrl(@PathVariable String fileId,
+                                                           @RequestParam(defaultValue = "inline") String disposition,
+                                                           @RequestParam(defaultValue = "300") int expireSeconds) {
+        return ApiResponse.success(fileQueryApplicationService.getAccessUrl(fileId, disposition, expireSeconds));
     }
 
     @GetMapping("/public-attachments")

@@ -665,12 +665,14 @@ class MinimumBusinessLoopHttpSmokeIntegrationTest {
                 UserAuthorizationContextAssembler assembler,
                 ReviewApplicationQueryRepository queryRepository,
                 ReviewApplicationAccessValidator accessValidator,
-                edu.whut.eval.domain.application.repository.ApplicationReviewLogRepository reviewLogRepository) {
+                edu.whut.eval.domain.application.repository.ApplicationReviewLogRepository reviewLogRepository,
+                edu.whut.eval.application.file.service.FileQueryApplicationService fileQueryApplicationService) {
             return new ReviewApplicationQueryApplicationService(
                     assembler,
                     queryRepository,
                     accessValidator,
-                    reviewLogRepository
+                    reviewLogRepository,
+                    fileQueryApplicationService
             );
         }
 

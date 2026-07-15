@@ -2,7 +2,7 @@
 
 > 当前状态：`PARTIAL_IMPLEMENTED`
 >
-> 当前代码已实现 `POST /api/files/upload` 和 Nacos typed config 查询/计算相关能力；文件读取、公共附件池管理、平台治理 CRUD 与 AI 报告接口仍属于目标态设计。
+> 当前代码已实现 `POST /api/files/upload`、`GET /api/files/{fileId}`、`GET /api/files/{fileId}/access-url`、`GET /api/files/public-attachments` 和 Nacos typed config 查询/计算相关能力；公共附件池发布/下架、平台治理写接口与 AI 报告接口仍属于目标态设计。
 
 ## 1. 模块背景
 
@@ -370,6 +370,7 @@ flowchart LR
 - 路由：`GET /api/files/{fileId}`
 - 鉴权：需要登录态
 - 目的：返回统一文件元数据，供学生详情、审核详情、导出页面做文件摘要展示
+- 当前实现：返回文件基础元数据、`sourceType`、`canPreview`、`canDownload`，并按“上传者 + 已发布公共附件 + 已授权申请绑定”三段式规则判定可见性
 - 授权冻结：满足以下任一条件即可读取文件元数据：
 
   1. 当前用户是文件上传者
@@ -408,6 +409,7 @@ flowchart LR
 - 路由：`GET /api/files/{fileId}/access-url`
 - 鉴权：需要登录态
 - 目的：当 `publicUrl` 为空或对象私有化存储时，按需签发短时访问地址，供 B/C/D 组统一读取附件
+- 当前实现：校验 `disposition` 与 `expireSeconds` 后，基于 `oss-storage-config.publicBaseUrl` 与 `storageKey` 返回 `PUBLIC_URL`；`SIGNED_URL` 为返回模型预留能力，后续接入对象存储签名 SDK 后启用
 - 授权冻结：与 E-9 完全一致；只要 E-9 可读，E-10 即可按同一授权上下文生成访问地址
 
 路径参数：

@@ -181,6 +181,9 @@ class MinimalEReadSecurityIntegrationTest {
                         "application/pdf",
                         128L,
                         "ACTIVE",
+                        "SELF_UPLOAD",
+                        true,
+                        true,
                         LocalDateTime.parse("2026-07-06T10:00:00")
                 ));
 

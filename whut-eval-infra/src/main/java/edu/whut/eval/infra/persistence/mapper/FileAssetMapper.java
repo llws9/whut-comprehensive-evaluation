@@ -34,4 +34,27 @@ public interface FileAssetMapper {
               AND status = 'ACTIVE'
             """)
     FileAssetDO selectActiveByFileId(@Param("fileId") String fileId);
+
+    @Select({
+            "<script>",
+            "SELECT COUNT(1) ",
+            "FROM (",
+            "  SELECT aa.file_id AS file_id,",
+            "         s.application_id AS application_id,",
+            "         s.applicant_user_id AS applicant_user_id,",
+            "         s.org_unit_id AS org_unit_id,",
+            "         o.path AS org_path,",
+            "         s.category_code AS category_code,",
+            "         s.item_code AS item_code ",
+            "  FROM application_attachment aa ",
+            "  JOIN application_submission s ON s.application_id = aa.application_id ",
+            "  JOIN org_unit o ON o.id = s.org_unit_id ",
+            ") application_file_binding ",
+            "WHERE file_id = #{fileId} ",
+            "  AND (${expression})",
+            "</script>"
+    })
+    long countVisibleApplicationBinding(@Param("fileId") String fileId,
+                                        @Param("expression") String expression,
+                                        @Param("parameters") java.util.Map<String, Object> parameters);
 }

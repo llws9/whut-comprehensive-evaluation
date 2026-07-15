@@ -133,7 +133,17 @@ class ReviewApplicationSecurityIntegrationTest {
         });
         given(reviewApplicationQueryApplicationService.getReviewDetail(21013L)).willReturn(detailView());
         given(reviewApplicationQueryApplicationService.listReviewAttachments(21013L)).willReturn(List.of(
-                new ApplicationAttachmentView("file-1", "a.pdf", "application/pdf", 128L, 0)
+                new ApplicationAttachmentView(
+                        "file-1",
+                        "a.pdf",
+                        "application/pdf",
+                        128L,
+                        0,
+                        "SELF_UPLOAD",
+                        "https://cdn.example.com/private/uploads/a.pdf",
+                        "PUBLIC_URL",
+                        null
+                )
         ));
         given(reviewApplicationQueryApplicationService.listReviewLogs(21013L)).willReturn(List.of(
                 new ReviewLogView(31000L, "RETURN", 1010L, null, "COUNSELOR", "补充材料",

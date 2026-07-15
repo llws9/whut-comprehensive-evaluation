@@ -6,10 +6,14 @@ import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import edu.whut.eval.application.file.query.FileAssetDescriptor;
 import edu.whut.eval.application.file.query.PublicAttachmentDescriptor;
 import edu.whut.eval.application.file.service.FileQueryRepository;
+import edu.whut.eval.application.auth.service.DefaultAuthorizationScopeEvaluator;
+import edu.whut.eval.application.auth.service.DefaultScopePredicateBuilder;
+import edu.whut.eval.application.auth.service.JsonScopeRuleExpressionInterpreter;
 import edu.whut.eval.infra.config.MybatisPlusConfig;
 import edu.whut.eval.infra.persistence.mapper.FileAssetMapper;
 import edu.whut.eval.infra.persistence.mapper.PublicAttachmentEntryMapper;
 import edu.whut.eval.infra.persistence.repository.MybatisFileQueryRepository;
+import edu.whut.eval.infra.security.sql.ApplicationScopeSqlTranslator;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -44,6 +48,9 @@ class PublicAttachmentQueryRepositoryIntegrationTest {
 
     @BeforeEach
     void setUpSchema() {
+        jdbcTemplate.execute("DROP TABLE IF EXISTS application_attachment");
+        jdbcTemplate.execute("DROP TABLE IF EXISTS application_submission");
+        jdbcTemplate.execute("DROP TABLE IF EXISTS org_unit");
         jdbcTemplate.execute("DROP TABLE IF EXISTS public_attachment_entry");
         jdbcTemplate.execute("DROP TABLE IF EXISTS file_asset");
         jdbcTemplate.execute(
@@ -78,6 +85,26 @@ class PublicAttachmentQueryRepositoryIntegrationTest {
                         "sort_no INT NOT NULL, " +
                         "created_at TIMESTAMP NOT NULL, " +
                         "updated_at TIMESTAMP NOT NULL)"
+        );
+        jdbcTemplate.execute(
+                "CREATE TABLE org_unit (" +
+                        "id BIGINT PRIMARY KEY, " +
+                        "path VARCHAR(255) NOT NULL)"
+        );
+        jdbcTemplate.execute(
+                "CREATE TABLE application_submission (" +
+                        "application_id BIGINT PRIMARY KEY, " +
+                        "applicant_user_id BIGINT NOT NULL, " +
+                        "org_unit_id BIGINT NOT NULL, " +
+                        "category_code VARCHAR(64) NOT NULL, " +
+                        "item_code VARCHAR(64) NOT NULL, " +
+                        "status VARCHAR(32) NOT NULL)"
+        );
+        jdbcTemplate.execute(
+                "CREATE TABLE application_attachment (" +
+                        "id BIGINT AUTO_INCREMENT PRIMARY KEY, " +
+                        "application_id BIGINT NOT NULL, " +
+                        "file_id VARCHAR(64) NOT NULL)"
         );
     }
 
@@ -128,6 +155,18 @@ class PublicAttachmentQueryRepositoryIntegrationTest {
         assertThat(responses.getFirst().getOriginalFilename()).isEqualTo("file-first.pdf");
     }
 
+    @Test
+    void shouldDetectActiveFileBoundToApplicationOwnedByCurrentUser() {
+        insertFileAsset("file-bound", "uploads/bound.pdf", 9001L, "ACTIVE");
+        jdbcTemplate.update("INSERT INTO org_unit (id, path) VALUES (2010, '/WHUT/CS/CS2021/CS2101')");
+        jdbcTemplate.update("INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, status) VALUES (21013, 1001, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', 'SUBMITTED')");
+        jdbcTemplate.update("INSERT INTO application_submission (application_id, applicant_user_id, org_unit_id, category_code, item_code, status) VALUES (21014, 1002, 2010, 'INTELLECTUAL', 'INTELLECTUAL_PAPER', 'SUBMITTED')");
+        jdbcTemplate.update("INSERT INTO application_attachment (application_id, file_id) VALUES (21013, 'file-bound')");
+
+        assertThat(fileQueryRepository.existsVisibleApplicationBinding("file-bound", 1001L)).isTrue();
+        assertThat(fileQueryRepository.existsVisibleApplicationBinding("file-bound", 1002L)).isFalse();
+    }
+
     private void insertFileAsset(String fileId, String storageKey, Long uploaderUserId, String status) {
         jdbcTemplate.update(
                 "INSERT INTO file_asset (file_id, storage_key, bucket, original_filename, content_type, size, sha256, uploader_user_id, uploader_type, upload_channel, status, created_at, updated_at) " +
@@ -151,6 +190,10 @@ class PublicAttachmentQueryRepositoryIntegrationTest {
     @MapperScan(basePackageClasses = {FileAssetMapper.class, PublicAttachmentEntryMapper.class})
     @Import({
             MybatisPlusConfig.class,
+            DefaultAuthorizationScopeEvaluator.class,
+            DefaultScopePredicateBuilder.class,
+            JsonScopeRuleExpressionInterpreter.class,
+            ApplicationScopeSqlTranslator.class,
             MybatisFileQueryRepository.class
     })
     static class TestConfig {
@@ -189,6 +232,11 @@ class PublicAttachmentQueryRepositoryIntegrationTest {
         @Bean
         JdbcTemplate jdbcTemplate(DataSource dataSource) {
             return new JdbcTemplate(dataSource);
+        }
+
+        @Bean
+        com.fasterxml.jackson.databind.ObjectMapper objectMapper() {
+            return new com.fasterxml.jackson.databind.ObjectMapper();
         }
     }
 }

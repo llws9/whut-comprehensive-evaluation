@@ -2,7 +2,7 @@
 
 > 当前状态：`PARTIAL_IMPLEMENTED`
 >
-> 当前 Java Controller 已提供 `ReviewTaskController`、`ReviewMetaController` 与 `ReviewApplicationController`，覆盖 C-1/C-2/C-3/C-4/C-5/C-6/C-7/C-8/C-9/C-10：审核工作台摘要、审核元数据、审核列表、审核详情、附件摘要、审核轨迹、审批通过、退回补充、审批拒绝、批量审批通过。C-5 当前返回附件元数据摘要，访问 URL 生成仍待 E-9/E-10 集成。
+> 当前 Java Controller 已提供 `ReviewTaskController`、`ReviewMetaController` 与 `ReviewApplicationController`，覆盖 C-1/C-2/C-3/C-4/C-5/C-6/C-7/C-8/C-9/C-10：审核工作台摘要、审核元数据、审核列表、审核详情、附件摘要、审核轨迹、审批通过、退回补充、审批拒绝、批量审批通过。C-5 当前已接入 E-9/E-10 统一文件读取能力，返回附件元数据、来源类型与访问地址，不暴露 `storageKey`。
 
 ## 1. 模块背景
 
@@ -238,8 +238,8 @@ flowchart LR
 
 - 路由：`GET /api/review/applications/{applicationId}/attachments`
 - 鉴权：`application.review`
-- 当前实现：返回申请已绑定附件的元数据摘要，不暴露 `storageKey`
-- 后续目标：接入 E-9 查询文件元数据、E-10 生成访问地址；若文件本身已有 `publicUrl`，也应通过统一返回模型暴露，不允许控制器侧直接拼接 `storageKey`
+- 当前实现：以申请已绑定附件快照为列表来源，逐个调用 E-9 查询文件元数据、E-10 生成访问地址，不暴露 `storageKey`
+- 访问地址必须通过统一文件读取模型返回，不允许审核侧直接拼接 `storageKey`
 
 成功返回 `data`：附件列表
 
@@ -250,11 +250,6 @@ flowchart LR
 | `contentType` | `string` | 文件类型 |
 | `size` | `number` | 文件大小 |
 | `sortNo` | `number` | 附件排序号 |
-
-E-9/E-10 集成后的目标扩展字段：
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
 | `sourceType` | `string` | 附件来源类型 |
 | `accessUrl` | `string` | 统一访问地址 |
 | `accessMode` | `string` | `PUBLIC_URL/SIGNED_URL` |

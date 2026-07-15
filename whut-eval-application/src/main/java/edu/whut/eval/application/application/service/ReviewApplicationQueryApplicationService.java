@@ -15,6 +15,9 @@ import edu.whut.eval.application.application.query.ReviewTaskSummaryView;
 import edu.whut.eval.application.application.repository.ReviewApplicationQueryRepository;
 import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
+import edu.whut.eval.application.file.query.FileAccessUrlResponse;
+import edu.whut.eval.application.file.query.FileMetadataResponse;
+import edu.whut.eval.application.file.service.FileQueryApplicationService;
 import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.domain.application.model.ApplicationReviewLog;
@@ -39,15 +42,18 @@ public class ReviewApplicationQueryApplicationService {
     private final ReviewApplicationQueryRepository reviewApplicationQueryRepository;
     private final ReviewApplicationAccessValidator reviewApplicationAccessValidator;
     private final ApplicationReviewLogRepository applicationReviewLogRepository;
+    private final FileQueryApplicationService fileQueryApplicationService;
 
     public ReviewApplicationQueryApplicationService(UserAuthorizationContextAssembler userAuthorizationContextAssembler,
                                                     ReviewApplicationQueryRepository reviewApplicationQueryRepository,
                                                     ReviewApplicationAccessValidator reviewApplicationAccessValidator,
-                                                    ApplicationReviewLogRepository applicationReviewLogRepository) {
+                                                    ApplicationReviewLogRepository applicationReviewLogRepository,
+                                                    FileQueryApplicationService fileQueryApplicationService) {
         this.userAuthorizationContextAssembler = userAuthorizationContextAssembler;
         this.reviewApplicationQueryRepository = reviewApplicationQueryRepository;
         this.reviewApplicationAccessValidator = reviewApplicationAccessValidator;
         this.applicationReviewLogRepository = applicationReviewLogRepository;
+        this.fileQueryApplicationService = fileQueryApplicationService;
     }
 
     public PageResult<ReviewApplicationListItemView> pageReviewApplications(ReviewApplicationPageQuery query) {
@@ -201,12 +207,27 @@ public class ReviewApplicationQueryApplicationService {
     }
 
     private ApplicationAttachmentView toAttachmentView(ReviewApplicationAttachmentRow row) {
+        if (fileQueryApplicationService == null) {
+            return new ApplicationAttachmentView(
+                    row.getFileId(),
+                    row.getOriginalFilename(),
+                    row.getContentType(),
+                    row.getSize(),
+                    row.getSortNo() == null ? 0 : row.getSortNo()
+            );
+        }
+        FileMetadataResponse metadata = fileQueryApplicationService.getMetadata(row.getFileId());
+        FileAccessUrlResponse accessUrl = fileQueryApplicationService.getAccessUrl(row.getFileId());
         return new ApplicationAttachmentView(
                 row.getFileId(),
-                row.getOriginalFilename(),
-                row.getContentType(),
-                row.getSize(),
-                row.getSortNo() == null ? 0 : row.getSortNo()
+                metadata.getOriginalFilename(),
+                metadata.getContentType(),
+                metadata.getSize(),
+                row.getSortNo() == null ? 0 : row.getSortNo(),
+                metadata.getSourceType(),
+                accessUrl.getAccessUrl(),
+                accessUrl.getAccessMode(),
+                accessUrl.getExpiresAt()
         );
     }
 

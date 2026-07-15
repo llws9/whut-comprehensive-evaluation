@@ -137,7 +137,7 @@ class ReviewApplicationControllerWebMvcTest {
     @Test
     void shouldListReviewAttachmentsWithoutStorageKey() throws Exception {
         given(queryService.listReviewAttachments(21013L)).willReturn(List.of(
-                new ApplicationAttachmentView("file-1", "a.pdf", "application/pdf", 128L, 0)
+                attachmentView()
         ));
 
         standaloneSetup(controller)
@@ -151,6 +151,10 @@ class ReviewApplicationControllerWebMvcTest {
                 .andExpect(jsonPath("$.data[0].contentType").value("application/pdf"))
                 .andExpect(jsonPath("$.data[0].size").value(128))
                 .andExpect(jsonPath("$.data[0].sortNo").value(0))
+                .andExpect(jsonPath("$.data[0].sourceType").value("SELF_UPLOAD"))
+                .andExpect(jsonPath("$.data[0].accessUrl").value("https://cdn.example.com/private/uploads/a.pdf"))
+                .andExpect(jsonPath("$.data[0].accessMode").value("PUBLIC_URL"))
+                .andExpect(jsonPath("$.data[0].expiresAt").doesNotExist())
                 .andExpect(jsonPath("$.data[0].storageKey").doesNotExist());
     }
 
@@ -263,9 +267,23 @@ class ReviewApplicationControllerWebMvcTest {
                         new ReviewScoringSnapshotView("OPTION_A", new BigDecimal("2.00"), new BigDecimal("6.00"), 1, false, null)
                 ),
                 new ReviewApplicantView(1001L, "2024305999", "张三", 2010L, "计算机学院 1 班"),
-                List.of(new ApplicationAttachmentView("file-1", "a.pdf", "application/pdf", 128L, 0)),
+                List.of(attachmentView()),
                 List.of(new ReviewLogView(31000L, "RETURN", 1010L, null, "COUNSELOR", "补充材料", Instant.parse("2026-07-07T11:00:00Z"))),
                 status == ApplicationSubmissionStatus.SUBMITTED ? List.of("APPROVE", "RETURN", "REJECT") : List.of()
+        );
+    }
+
+    private ApplicationAttachmentView attachmentView() {
+        return new ApplicationAttachmentView(
+                "file-1",
+                "a.pdf",
+                "application/pdf",
+                128L,
+                0,
+                "SELF_UPLOAD",
+                "https://cdn.example.com/private/uploads/a.pdf",
+                "PUBLIC_URL",
+                null
         );
     }
 

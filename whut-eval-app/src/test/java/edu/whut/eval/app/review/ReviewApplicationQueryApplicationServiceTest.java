@@ -15,6 +15,9 @@ import edu.whut.eval.application.application.service.ReviewApplicationAccessVali
 import edu.whut.eval.application.application.service.ReviewApplicationQueryApplicationService;
 import edu.whut.eval.application.auth.AuthorizationPermissionCodes;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
+import edu.whut.eval.application.file.query.FileAccessUrlResponse;
+import edu.whut.eval.application.file.query.FileMetadataResponse;
+import edu.whut.eval.application.file.service.FileQueryApplicationService;
 import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.domain.application.model.ApplicationReviewAction;
 import edu.whut.eval.domain.application.model.ApplicationReviewLog;
@@ -47,13 +50,15 @@ class ReviewApplicationQueryApplicationServiceTest {
     private final ReviewApplicationQueryRepository reviewApplicationQueryRepository = mock(ReviewApplicationQueryRepository.class);
     private final ReviewApplicationAccessValidator reviewApplicationAccessValidator = mock(ReviewApplicationAccessValidator.class);
     private final ApplicationReviewLogRepository applicationReviewLogRepository = mock(ApplicationReviewLogRepository.class);
+    private final FileQueryApplicationService fileQueryApplicationService = mock(FileQueryApplicationService.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private final ReviewApplicationQueryApplicationService service = new ReviewApplicationQueryApplicationService(
             userAuthorizationContextAssembler,
             reviewApplicationQueryRepository,
             reviewApplicationAccessValidator,
-            applicationReviewLogRepository
+            applicationReviewLogRepository,
+            fileQueryApplicationService
     );
 
     @Test
@@ -175,8 +180,14 @@ class ReviewApplicationQueryApplicationServiceTest {
         assertThat(attachment.getContentType()).isEqualTo("application/pdf");
         assertThat(attachment.getSize()).isEqualTo(128L);
         assertThat(attachment.getSortNo()).isZero();
+        assertThat(attachment.getSourceType()).isEqualTo("SELF_UPLOAD");
+        assertThat(attachment.getAccessUrl()).isEqualTo("https://cdn.example.com/private/uploads/a.pdf");
+        assertThat(attachment.getAccessMode()).isEqualTo("PUBLIC_URL");
+        assertThat(attachment.getExpiresAt()).isNull();
         assertThat(objectMapper.writeValueAsString(attachment)).doesNotContain("storageKey");
         verify(reviewApplicationAccessValidator).requireAccess(any(), any());
+        verify(fileQueryApplicationService).getMetadata("file-1");
+        verify(fileQueryApplicationService).getAccessUrl("file-1");
         verifyNoInteractions(applicationReviewLogRepository);
     }
 
@@ -321,5 +332,26 @@ class ReviewApplicationQueryApplicationServiceTest {
         row.setSize(128L);
         row.setSortNo(0);
         return row;
+    }
+
+    @org.junit.jupiter.api.BeforeEach
+    void setUpFileQueries() {
+        given(fileQueryApplicationService.getMetadata("file-1")).willReturn(new FileMetadataResponse(
+                "file-1",
+                "a.pdf",
+                "application/pdf",
+                128L,
+                "ACTIVE",
+                "SELF_UPLOAD",
+                true,
+                true,
+                LocalDateTime.parse("2026-07-06T10:00:00")
+        ));
+        given(fileQueryApplicationService.getAccessUrl("file-1")).willReturn(new FileAccessUrlResponse(
+                "file-1",
+                "https://cdn.example.com/private/uploads/a.pdf",
+                "PUBLIC_URL",
+                null
+        ));
     }
 }

@@ -287,11 +287,29 @@ class TeamDeliverySqlConsistencyTest {
         assertThat(doc).contains("| C-3 | `GET` | `/api/review/applications` | 分页查询待审/已审申请 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-4 | `GET` | `/api/review/applications/{applicationId}` | 查询审核详情 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-5 | `GET` | `/api/review/applications/{applicationId}/attachments` | 查看附件列表 | `CURRENT_IMPLEMENTED` |");
+        assertThat(doc).contains("C-5 当前已接入 E-9/E-10 统一文件读取能力");
+        assertThat(doc).contains("| `accessUrl` | `string` | 统一访问地址 |");
+        assertThat(doc).doesNotContain("访问 URL 生成仍待 E-9/E-10 集成");
+        assertThat(doc).doesNotContain("后续目标：接入 E-9 查询文件元数据、E-10 生成访问地址");
         assertThat(doc).contains("| C-6 | `GET` | `/api/review/applications/{applicationId}/logs` | 查询审核轨迹 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-7 | `POST` | `/api/review/applications/{applicationId}/approve` | 审批通过 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-8 | `POST` | `/api/review/applications/{applicationId}/return` | 退回补充 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-9 | `POST` | `/api/review/applications/{applicationId}/reject` | 审批拒绝 | `CURRENT_IMPLEMENTED` |");
         assertThat(doc).contains("| C-10 | `POST` | `/api/review/applications/batch-approve` | 批量审批通过 | `CURRENT_IMPLEMENTED` |");
+    }
+
+    @Test
+    void shouldKeepEGroupDocExplicitAboutImplementedFileReadEndpoints() throws Exception {
+        String doc = Files.readString(TEAM_DELIVERY.resolve("group-e-platform-governance-attachment-ai.md"));
+
+        assertThat(doc).contains("当前状态：`PARTIAL_IMPLEMENTED`");
+        assertThat(doc).contains("`GET /api/files/{fileId}`");
+        assertThat(doc).contains("`GET /api/files/{fileId}/access-url`");
+        assertThat(doc).contains("| E-9 | `GET` | `/api/files/{fileId}` | 查询文件元数据 |");
+        assertThat(doc).contains("| E-10 | `GET` | `/api/files/{fileId}/access-url` | 生成文件访问地址 |");
+        assertThat(doc).contains("当前实现：返回文件基础元数据、`sourceType`、`canPreview`、`canDownload`");
+        assertThat(doc).contains("当前实现：校验 `disposition` 与 `expireSeconds` 后，基于 `oss-storage-config.publicBaseUrl` 与 `storageKey` 返回 `PUBLIC_URL`");
+        assertThat(doc).doesNotContain("文件读取、公共附件池管理、平台治理 CRUD 与 AI 报告接口仍属于目标态设计");
     }
 
     @Test
