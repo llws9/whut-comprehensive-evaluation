@@ -7,6 +7,7 @@ import edu.whut.eval.common.exception.AccessDeniedAppException;
 import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.domain.application.model.ApplicationScoringSnapshot;
 import edu.whut.eval.domain.application.model.ApplicationSubmission;
+import edu.whut.eval.domain.application.model.ApplicationSubmissionStatus;
 import edu.whut.eval.domain.application.model.AttachmentRef;
 import edu.whut.eval.domain.application.repository.ApplicationSubmissionRepository;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
@@ -33,6 +34,9 @@ public class ApplicationSubmissionDetailApplicationService {
                 .orElseThrow(() -> new ResourceNotFoundException("申请不存在"));
         if (!authorizationContext.getUserId().equals(submission.getApplicantUserId())) {
             throw new AccessDeniedAppException("当前用户无权查看该申请");
+        }
+        if (submission.getStatus() == ApplicationSubmissionStatus.DELETED) {
+            throw new ResourceNotFoundException("申请不存在");
         }
         return toDetailView(submission);
     }

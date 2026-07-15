@@ -1,6 +1,7 @@
 package edu.whut.eval.application.application.service;
 
 import edu.whut.eval.application.application.command.CreateApplicationDraftCommand;
+import edu.whut.eval.application.application.command.DeleteApplicationCommand;
 import edu.whut.eval.application.application.command.SubmitApplicationCommand;
 import edu.whut.eval.application.application.command.UpdateApplicationDraftCommand;
 import edu.whut.eval.application.application.command.WithdrawApplicationCommand;
@@ -221,6 +222,19 @@ public class ApplicationSubmissionCommandApplicationService {
                 requiredExpectedVersion(command.getExpectedVersion())
         ));
         return toView(saved);
+    }
+
+    /**
+     * 删除当前学生自己的草稿或退回申请。
+     */
+    @Transactional
+    public void deleteOwnedApplication(DeleteApplicationCommand command) {
+        UserAuthorizationContext authorizationContext = userAuthorizationContextAssembler.requiredAuthorizationContext();
+        ApplicationSubmission submission = loadOwnedSubmission(command.applicationId(), authorizationContext.getUserId());
+        validateActiveMembership(authorizationContext.getUserId(), submission.getOrgUnitId());
+        applicationSubmissionRepository.save(submission.deleteByStudent(
+                requiredExpectedVersion(command.expectedVersion())
+        ));
     }
 
     private ApplicationSubmission loadOwnedSubmission(Long applicationId, Long currentUserId) {

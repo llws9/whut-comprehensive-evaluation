@@ -9,7 +9,8 @@ public enum ApplicationSubmissionStatus {
     RETURNED,
     APPROVED,
     REJECTED,
-    WITHDRAWN;
+    WITHDRAWN,
+    DELETED;
 
     /**
      * 当前状态是否允许学生继续编辑。

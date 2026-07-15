@@ -4,6 +4,7 @@ import edu.whut.eval.application.application.query.ApplicationSubmissionDetailVi
 import edu.whut.eval.application.application.service.ApplicationSubmissionDetailApplicationService;
 import edu.whut.eval.application.auth.service.UserAuthorizationContextAssembler;
 import edu.whut.eval.common.exception.AccessDeniedAppException;
+import edu.whut.eval.common.exception.ResourceNotFoundException;
 import edu.whut.eval.domain.application.model.ApplicationScoringSnapshot;
 import edu.whut.eval.domain.application.model.ApplicationSubmission;
 import edu.whut.eval.domain.application.model.ApplicationSubmissionStatus;
@@ -55,6 +56,16 @@ class ApplicationSubmissionDetailApplicationServiceTest {
                 .hasMessage("当前用户无权查看该申请");
     }
 
+    @Test
+    void shouldTreatDeletedApplicationAsNotFoundInOwnedDetail() {
+        given(userAuthorizationContextAssembler.requiredAuthorizationContext()).willReturn(currentUser());
+        given(applicationSubmissionRepository.findById(1L)).willReturn(Optional.of(deletedDraft()));
+
+        assertThatThrownBy(() -> service.getOwnedDetail(1L))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessage("申请不存在");
+    }
+
     private UserAuthorizationContext currentUser() {
         return new UserAuthorizationContext(
                 1001L,
@@ -80,6 +91,10 @@ class ApplicationSubmissionDetailApplicationServiceTest {
 
     private ApplicationSubmission otherUsersDraft() {
         return application(2002L, ApplicationSubmissionStatus.DRAFT, null, 0L, List.of(), null);
+    }
+
+    private ApplicationSubmission deletedDraft() {
+        return application(1001L, ApplicationSubmissionStatus.DELETED, null, 1L, List.of(), null);
     }
 
     private ApplicationSubmission application(Long applicantUserId,

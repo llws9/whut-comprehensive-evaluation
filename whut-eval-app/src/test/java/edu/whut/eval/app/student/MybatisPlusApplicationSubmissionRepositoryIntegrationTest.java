@@ -138,6 +138,20 @@ class MybatisPlusApplicationSubmissionRepositoryIntegrationTest {
     }
 
     @Test
+    void shouldPersistDeletedApplicationAndExcludeItFromActiveClaims() {
+        ApplicationSubmission saved = applicationSubmissionRepository.save(draft("file-1", "uploads/a.pdf"));
+
+        ApplicationSubmission deleted = applicationSubmissionRepository.save(saved.deleteByStudent(saved.getVersion()));
+
+        assertThat(deleted.getStatus().name()).isEqualTo("DELETED");
+        assertThat(deleted.getVersion()).isEqualTo(1L);
+        assertThat(applicationSubmissionRepository.findById(deleted.getApplicationId()))
+                .map(application -> application.getStatus().name())
+                .contains("DELETED");
+        assertThat(applicationSubmissionMapper.countActiveSubmission(1001L, "item-1", "2025-2026", "1", null)).isZero();
+    }
+
+    @Test
     void shouldSaveAndReloadScoringSnapshot() {
         ApplicationSubmission submitted = draft("file-1", "uploads/a.pdf")
                 .submit(0L, new ApplicationScoringSnapshot("OPTION_A", new BigDecimal("2.00"), new BigDecimal("6.00"), 1, false, null));

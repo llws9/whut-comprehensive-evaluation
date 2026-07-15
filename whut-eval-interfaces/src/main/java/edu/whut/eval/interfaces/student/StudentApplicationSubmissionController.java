@@ -1,21 +1,26 @@
 package edu.whut.eval.interfaces.student;
 
 import edu.whut.eval.application.application.command.CreateApplicationDraftCommand;
+import edu.whut.eval.application.application.command.DeleteApplicationCommand;
 import edu.whut.eval.application.application.command.SubmitApplicationCommand;
 import edu.whut.eval.application.application.command.UpdateApplicationDraftCommand;
 import edu.whut.eval.application.application.command.WithdrawApplicationCommand;
+import edu.whut.eval.application.application.query.ApplicationOverviewView;
 import edu.whut.eval.application.application.query.ApplicationSubmissionDetailView;
 import edu.whut.eval.application.application.query.ApplicationSubmissionView;
+import edu.whut.eval.application.application.service.ApplicationOverviewQueryApplicationService;
 import edu.whut.eval.application.application.service.ApplicationSubmissionCommandApplicationService;
 import edu.whut.eval.application.application.service.ApplicationSubmissionDetailApplicationService;
 import edu.whut.eval.common.api.ApiResponse;
 import edu.whut.eval.interfaces.student.request.CreateApplicationDraftRequest;
+import edu.whut.eval.interfaces.student.request.DeleteApplicationRequest;
 import edu.whut.eval.interfaces.student.request.SubmitApplicationRequest;
 import edu.whut.eval.interfaces.student.request.UpdateApplicationDraftRequest;
 import edu.whut.eval.interfaces.student.request.WithdrawApplicationRequest;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -34,11 +39,23 @@ public class StudentApplicationSubmissionController {
 
     private final ApplicationSubmissionCommandApplicationService applicationSubmissionCommandApplicationService;
     private final ApplicationSubmissionDetailApplicationService applicationSubmissionDetailApplicationService;
+    private final ApplicationOverviewQueryApplicationService applicationOverviewQueryApplicationService;
 
     public StudentApplicationSubmissionController(ApplicationSubmissionCommandApplicationService applicationSubmissionCommandApplicationService,
-                                                  ApplicationSubmissionDetailApplicationService applicationSubmissionDetailApplicationService) {
+                                                  ApplicationSubmissionDetailApplicationService applicationSubmissionDetailApplicationService,
+                                                  ApplicationOverviewQueryApplicationService applicationOverviewQueryApplicationService) {
         this.applicationSubmissionCommandApplicationService = applicationSubmissionCommandApplicationService;
         this.applicationSubmissionDetailApplicationService = applicationSubmissionDetailApplicationService;
+        this.applicationOverviewQueryApplicationService = applicationOverviewQueryApplicationService;
+    }
+
+    /**
+     * 查询当前学生申请首页概览。
+     */
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_VIEW_SELF)")
+    @GetMapping("/overview")
+    public ApiResponse<ApplicationOverviewView> getOverview() {
+        return ApiResponse.success(applicationOverviewQueryApplicationService.getCurrentStudentOverview());
     }
 
     /**
@@ -102,6 +119,19 @@ public class StudentApplicationSubmissionController {
                 new WithdrawApplicationCommand(applicationId, request.getReason(), request.getExpectedVersion())
         );
         return ApiResponse.success(view);
+    }
+
+    /**
+     * 删除当前学生自己的草稿或退回申请。
+     */
+    @PreAuthorize("hasAuthority(T(edu.whut.eval.application.auth.AuthorizationPermissionCodes).APPLICATION_UPDATE)")
+    @DeleteMapping("/{applicationId}")
+    public ApiResponse<Void> delete(@PathVariable Long applicationId,
+                                    @Valid @RequestBody DeleteApplicationRequest request) {
+        applicationSubmissionCommandApplicationService.deleteOwnedApplication(
+                new DeleteApplicationCommand(applicationId, request.getExpectedVersion())
+        );
+        return ApiResponse.success(null);
     }
 
     /**

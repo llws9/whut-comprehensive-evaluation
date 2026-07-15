@@ -2,10 +2,13 @@ package edu.whut.eval.app.student;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.whut.eval.application.application.command.CreateApplicationDraftCommand;
+import edu.whut.eval.application.application.command.DeleteApplicationCommand;
 import edu.whut.eval.application.application.command.SubmitApplicationCommand;
 import edu.whut.eval.application.application.query.ApplicationAttachmentView;
+import edu.whut.eval.application.application.query.ApplicationOverviewView;
 import edu.whut.eval.application.application.query.ApplicationSubmissionDetailView;
 import edu.whut.eval.application.application.query.ApplicationSubmissionView;
+import edu.whut.eval.application.application.service.ApplicationOverviewQueryApplicationService;
 import edu.whut.eval.application.application.service.ApplicationSubmissionCommandApplicationService;
 import edu.whut.eval.application.application.service.ApplicationSubmissionDetailApplicationService;
 import edu.whut.eval.common.exception.ConflictException;
@@ -21,6 +24,8 @@ import java.util.List;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -32,6 +37,7 @@ class StudentApplicationSubmissionControllerWebMvcTest {
 
     private ApplicationSubmissionCommandApplicationService applicationSubmissionCommandApplicationService;
     private ApplicationSubmissionDetailApplicationService applicationSubmissionDetailApplicationService;
+    private ApplicationOverviewQueryApplicationService applicationOverviewQueryApplicationService;
     private ObjectMapper objectMapper;
     private StudentApplicationSubmissionController controller;
 
@@ -39,10 +45,12 @@ class StudentApplicationSubmissionControllerWebMvcTest {
     void setUp() {
         applicationSubmissionCommandApplicationService = mock(ApplicationSubmissionCommandApplicationService.class);
         applicationSubmissionDetailApplicationService = mock(ApplicationSubmissionDetailApplicationService.class);
+        applicationOverviewQueryApplicationService = mock(ApplicationOverviewQueryApplicationService.class);
         objectMapper = new ObjectMapper();
         controller = new StudentApplicationSubmissionController(
                 applicationSubmissionCommandApplicationService,
-                applicationSubmissionDetailApplicationService
+                applicationSubmissionDetailApplicationService,
+                applicationOverviewQueryApplicationService
         );
     }
 
@@ -125,6 +133,40 @@ class StudentApplicationSubmissionControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.optionCode").value("OPTION_A"));
     }
 
+    @Test
+    void shouldReturnStudentApplicationOverview() throws Exception {
+        given(applicationOverviewQueryApplicationService.getCurrentStudentOverview())
+                .willReturn(new ApplicationOverviewView(2, 3, 1, 4, 5, "2025-2026"));
+
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build()
+                .perform(get("/api/student/applications/overview"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.draftCount").value(2))
+                .andExpect(jsonPath("$.data.submittedCount").value(3))
+                .andExpect(jsonPath("$.data.returnedCount").value(1))
+                .andExpect(jsonPath("$.data.approvedCount").value(4))
+                .andExpect(jsonPath("$.data.rejectedCount").value(5))
+                .andExpect(jsonPath("$.data.latestAcademicYear").value("2025-2026"));
+    }
+
+    @Test
+    void shouldDeleteDraftApplicationSuccessfully() throws Exception {
+        standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build()
+                .perform(delete("/api/student/applications/1")
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new DeletePayload(0L))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").doesNotExist());
+
+        verify(applicationSubmissionCommandApplicationService).deleteOwnedApplication(any(DeleteApplicationCommand.class));
+    }
+
     private DraftPayload createDraftPayload() {
         return new DraftPayload(
                 10L,
@@ -183,5 +225,8 @@ class StudentApplicationSubmissionControllerWebMvcTest {
     }
 
     private record SubmitPayload(Long expectedVersion) {
+    }
+
+    private record DeletePayload(Long expectedVersion) {
     }
 }
