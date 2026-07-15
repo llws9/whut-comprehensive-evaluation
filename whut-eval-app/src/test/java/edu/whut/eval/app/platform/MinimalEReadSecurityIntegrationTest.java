@@ -10,6 +10,7 @@ import edu.whut.eval.application.file.service.PublicAttachmentCommandApplication
 import edu.whut.eval.application.platform.query.EvaluationItemResponse;
 import edu.whut.eval.application.platform.query.PlatformMenuStatus;
 import edu.whut.eval.application.platform.service.PlatformReadApplicationService;
+import edu.whut.eval.application.platform.service.PlatformRuleCommandApplicationService;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContext;
 import edu.whut.eval.domain.auth.model.UserAuthorizationContextLoadRequest;
 import edu.whut.eval.infra.security.config.JwtConfigurationValidator;
@@ -101,6 +102,9 @@ class MinimalEReadSecurityIntegrationTest {
 
     @MockBean
     private PlatformReadApplicationService platformReadApplicationService;
+
+    @MockBean
+    private PlatformRuleCommandApplicationService platformRuleCommandApplicationService;
 
     @MockBean
     private FileQueryApplicationService fileQueryApplicationService;

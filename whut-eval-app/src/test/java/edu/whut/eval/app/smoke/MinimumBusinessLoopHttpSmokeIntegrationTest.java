@@ -714,5 +714,10 @@ class MinimumBusinessLoopHttpSmokeIntegrationTest {
         LogoutService logoutService() {
             return Mockito.mock(LogoutService.class);
         }
+
+        @Bean
+        edu.whut.eval.application.file.service.FileQueryApplicationService fileQueryApplicationService() {
+            return Mockito.mock(edu.whut.eval.application.file.service.FileQueryApplicationService.class);
+        }
     }
 }

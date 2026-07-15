@@ -240,7 +240,9 @@ INSERT INTO `iam_permission` (`id`, `permission_code`, `permission_name`, `permi
 (5019, 'org.manage', '组织管理', 'iam', 'ACTIVE', '2026-05-01 09:30:18'),
 (5020, 'evaluation.item.manage', '评价项目管理', 'platform', 'ACTIVE', '2026-05-01 09:30:19'),
 (5021, 'platform.rule.manage', '平台规则管理', 'platform', 'ACTIVE', '2026-05-01 09:30:20'),
-(5022, 'platform.switch.manage', '平台开关管理', 'platform', 'ACTIVE', '2026-05-01 09:30:21');
+(5022, 'platform.switch.manage', '平台开关管理', 'platform', 'ACTIVE', '2026-05-01 09:30:21'),
+(5025, 'attachment.pool.publish', '公共附件池发布', 'file', 'ACTIVE', '2026-05-01 09:30:22'),
+(5026, 'attachment.pool.offline', '公共附件池下架', 'file', 'ACTIVE', '2026-05-01 09:30:23');
 
 INSERT INTO `iam_role_permission` (`id`, `role_id`, `permission_id`, `created_at`) VALUES
 (6001, 4001, 5001, '2026-05-01 09:40:00'),
@@ -289,7 +291,9 @@ INSERT INTO `iam_role_permission` (`id`, `role_id`, `permission_id`, `created_at
 (6044, 4006, 5019, '2026-05-01 09:40:43'),
 (6045, 4006, 5020, '2026-05-01 09:40:44'),
 (6046, 4006, 5021, '2026-05-01 09:40:45'),
-(6047, 4006, 5022, '2026-05-01 09:40:46');
+(6047, 4006, 5022, '2026-05-01 09:40:46'),
+(6052, 4006, 5025, '2026-05-01 09:40:47'),
+(6053, 4006, 5026, '2026-05-01 09:40:48');
 
 INSERT INTO `iam_user_role_assignment` (`id`, `user_id`, `role_id`, `org_unit_id`, `source_type`, `effective_from`, `effective_to`, `status`, `assigned_by`, `created_at`) VALUES
 (7001, 1001, 4001, 2010, 'SYSTEM', '2026-05-01 10:00:00', NULL, 'ACTIVE', 1012, '2026-05-01 10:00:00'),

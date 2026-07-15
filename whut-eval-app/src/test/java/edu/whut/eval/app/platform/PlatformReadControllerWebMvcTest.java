@@ -1,10 +1,15 @@
 package edu.whut.eval.app.platform;
 
+import edu.whut.eval.application.platform.query.PlatformMenuDeadlineUpdateResult;
 import edu.whut.eval.application.platform.query.PlatformMenuDeadline;
 import edu.whut.eval.application.platform.query.PlatformMenuStatus;
+import edu.whut.eval.application.platform.query.PlatformMenuStatusUpdateResult;
+import edu.whut.eval.application.platform.service.ConfigPublishException;
 import edu.whut.eval.application.platform.service.PlatformReadApplicationService;
+import edu.whut.eval.application.platform.service.PlatformRuleCommandApplicationService;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
 import edu.whut.eval.interfaces.platform.PlatformReadController;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
@@ -19,7 +24,11 @@ import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequ
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.time.OffsetDateTime;
+
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -38,6 +47,15 @@ class PlatformReadControllerWebMvcTest {
 
     @Autowired
     private StubPlatformReadApplicationService platformReadApplicationService;
+
+    @Autowired
+    private StubPlatformRuleCommandApplicationService platformRuleCommandApplicationService;
+
+    @BeforeEach
+    void resetStubs() {
+        platformReadApplicationService.reset();
+        platformRuleCommandApplicationService.reset();
+    }
 
     @Test
     void shouldReturnMenuStatusForAuthenticatedUser() throws Exception {
@@ -69,6 +87,107 @@ class PlatformReadControllerWebMvcTest {
                 .andExpect(jsonPath("$.data.source").value("NACOS"));
     }
 
+    @Test
+    void shouldPatchMenuStatusWithManageAuthority() throws Exception {
+        platformRuleCommandApplicationService.statusUpdateResult = new PlatformMenuStatusUpdateResult(
+                false,
+                true,
+                OffsetDateTime.parse("2026-07-15T20:00:00+08:00"),
+                "NACOS"
+        );
+
+        mockMvc.perform(patch("/api/platform/menu/status")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "finalSubmitEnabled": true,
+                                  "reason": "开放最终提交"
+                                }
+                                """)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .with(SecurityMockMvcRequestPostProcessors.user("admin")
+                                .authorities(() -> "platform.switch.manage")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.studentApplyEnabled").value(false))
+                .andExpect(jsonPath("$.data.finalSubmitEnabled").value(true))
+                .andExpect(jsonPath("$.data.effectiveAt").exists())
+                .andExpect(jsonPath("$.data.source").value("NACOS"));
+        org.assertj.core.api.Assertions.assertThat(platformRuleCommandApplicationService.lastStatusCommand.finalSubmitEnabled())
+                .isTrue();
+        org.assertj.core.api.Assertions.assertThat(platformRuleCommandApplicationService.lastStatusCommand.reason())
+                .isEqualTo("开放最终提交");
+    }
+
+    @Test
+    void shouldRejectMenuStatusPatchWithoutManageAuthority() throws Exception {
+        mockMvc.perform(patch("/api/platform/menu/status")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "studentApplyEnabled": false,
+                                  "reason": "关闭申请"
+                                }
+                                """)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .with(SecurityMockMvcRequestPostProcessors.user("student")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void shouldReturnExternalErrorWhenMenuStatusPublishFails() throws Exception {
+        platformRuleCommandApplicationService.statusPublishFails = true;
+
+        mockMvc.perform(patch("/api/platform/menu/status")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "studentApplyEnabled": false,
+                                  "reason": "关闭申请"
+                                }
+                                """)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .with(SecurityMockMvcRequestPostProcessors.user("admin")
+                                .authorities(() -> "platform.switch.manage")))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("EXT-5033"))
+                .andExpect(jsonPath("$.message").value("Failed to publish platform-rule-config"));
+    }
+
+    @Test
+    void shouldPutMenuDeadlineWithManageAuthority() throws Exception {
+        platformRuleCommandApplicationService.deadlineUpdateResult = new PlatformMenuDeadlineUpdateResult(
+                "2026-10-01T23:59:59+08:00",
+                "2026-10-20T23:59:59+08:00",
+                "Asia/Shanghai",
+                OffsetDateTime.parse("2026-07-15T20:05:00+08:00"),
+                "NACOS"
+        );
+
+        mockMvc.perform(put("/api/platform/menu/deadline")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "studentApplyDeadline": "2026-10-01T23:59:59+08:00",
+                                  "finalSubmitDeadline": "2026-10-20T23:59:59+08:00",
+                                  "reason": "调整截止时间"
+                                }
+                                """)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .with(SecurityMockMvcRequestPostProcessors.user("admin")
+                                .authorities(() -> "platform.switch.manage")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.studentApplyDeadline").value("2026-10-01T23:59:59+08:00"))
+                .andExpect(jsonPath("$.data.finalSubmitDeadline").value("2026-10-20T23:59:59+08:00"))
+                .andExpect(jsonPath("$.data.timezone").value("Asia/Shanghai"))
+                .andExpect(jsonPath("$.data.effectiveAt").exists())
+                .andExpect(jsonPath("$.data.source").value("NACOS"));
+        org.assertj.core.api.Assertions.assertThat(platformRuleCommandApplicationService.lastDeadlineCommand.reason())
+                .isEqualTo("调整截止时间");
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     @EnableMethodSecurity
@@ -82,6 +201,11 @@ class PlatformReadControllerWebMvcTest {
         StubPlatformReadApplicationService platformReadApplicationService() {
             return new StubPlatformReadApplicationService();
         }
+
+        @Bean
+        StubPlatformRuleCommandApplicationService platformRuleCommandApplicationService() {
+            return new StubPlatformRuleCommandApplicationService();
+        }
     }
 
     static class StubPlatformReadApplicationService extends PlatformReadApplicationService {
@@ -93,6 +217,11 @@ class PlatformReadControllerWebMvcTest {
             super(null);
         }
 
+        void reset() {
+            status = null;
+            deadline = null;
+        }
+
         @Override
         public PlatformMenuStatus getMenuStatus() {
             return status;
@@ -101,6 +230,44 @@ class PlatformReadControllerWebMvcTest {
         @Override
         public PlatformMenuDeadline getMenuDeadline() {
             return deadline;
+        }
+    }
+
+    static class StubPlatformRuleCommandApplicationService extends PlatformRuleCommandApplicationService {
+
+        private PlatformMenuStatusUpdateResult statusUpdateResult;
+        private PlatformMenuDeadlineUpdateResult deadlineUpdateResult;
+        private edu.whut.eval.application.platform.command.UpdatePlatformMenuStatusCommand lastStatusCommand;
+        private edu.whut.eval.application.platform.command.ReplacePlatformDeadlineCommand lastDeadlineCommand;
+        private boolean statusPublishFails;
+
+        StubPlatformRuleCommandApplicationService() {
+            super(null, null);
+        }
+
+        void reset() {
+            statusUpdateResult = null;
+            deadlineUpdateResult = null;
+            lastStatusCommand = null;
+            lastDeadlineCommand = null;
+            statusPublishFails = false;
+        }
+
+        @Override
+        public PlatformMenuStatusUpdateResult updateMenuStatus(
+                edu.whut.eval.application.platform.command.UpdatePlatformMenuStatusCommand command) {
+            lastStatusCommand = command;
+            if (statusPublishFails) {
+                throw new ConfigPublishException("Failed to publish platform-rule-config");
+            }
+            return statusUpdateResult;
+        }
+
+        @Override
+        public PlatformMenuDeadlineUpdateResult replaceDeadline(
+                edu.whut.eval.application.platform.command.ReplacePlatformDeadlineCommand command) {
+            lastDeadlineCommand = command;
+            return deadlineUpdateResult;
         }
     }
 }

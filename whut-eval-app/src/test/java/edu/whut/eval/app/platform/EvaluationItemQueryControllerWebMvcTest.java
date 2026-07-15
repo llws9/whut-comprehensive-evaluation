@@ -2,9 +2,11 @@ package edu.whut.eval.app.platform;
 
 import edu.whut.eval.application.platform.query.EvaluationItemResponse;
 import edu.whut.eval.application.platform.service.PlatformReadApplicationService;
+import edu.whut.eval.application.platform.service.PlatformRuleCommandApplicationService;
 import edu.whut.eval.interfaces.exception.GlobalExceptionHandler;
 import edu.whut.eval.interfaces.platform.PlatformReadController;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -102,6 +104,11 @@ class EvaluationItemQueryControllerWebMvcTest {
         @Bean
         StubPlatformReadApplicationService platformReadApplicationService() {
             return new StubPlatformReadApplicationService();
+        }
+
+        @Bean
+        PlatformRuleCommandApplicationService platformRuleCommandApplicationService() {
+            return Mockito.mock(PlatformRuleCommandApplicationService.class);
         }
     }
 
